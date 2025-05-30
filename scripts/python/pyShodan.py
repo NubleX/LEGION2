@@ -14,11 +14,10 @@ class PyShodanScript():
     def run(self):
         print('Running PyShodan Class')
         if self.dbHost:
-            pyShodanObj = PyShodan()
-            pyShodanObj.apiKey = "SNYEkE0gdwNu9BRURVDjWPXePCquXqht"
+            pyShodanObj = PyShodan(apiKey="SNYEkE0gdwNu9BRURVDjWPXePCquXqht")
             pyShodanObj.createSession()
             pyShodanResults = pyShodanObj.searchIp(self.dbHost.ipv4, allData = True)
-            if type(pyShodanResults) == type(dict()):
+            if isinstance(pyShodanResults, dict):
                 if pyShodanResults:
                     self.dbHost.latitude = pyShodanResults.get('latitude', 'unknown')
                     self.dbHost.longitude = pyShodanResults.get('longitude', 'unknown')
@@ -27,6 +26,8 @@ class PyShodanScript():
                     self.dbHost.city = pyShodanResults.get('city', 'unknown')
                     self.dbHost.countryCode = pyShodanResults.get('country_code', 'unknown')
                     self.session.add(self.dbHost)
+            else:
+                print(f"Unexpected result type from pyShodanObj.searchIp: {type(pyShodanResults)} - {pyShodanResults}")
 
 if __name__ == "__main__":
     pass

@@ -1,5 +1,11 @@
 #!/usr/bin/env python
 """
+LEGION2 - A free and open-source penetration testing tool.
+Copyright (c) 2025 NubleX / Igor Dunaev
+
+Forked from an earlier version of LEGION, which was originally created by Gotham Security.
+It was archived in 2024 and Kali Linux users were left with a broken program.
+
 LEGION (https://gotham-security.com)
 Copyright (c) 2023 Gotham Security
 
@@ -22,16 +28,18 @@ import subprocess
 from app.ApplicationInfo import applicationInfo
 from app.Screenshooter import Screenshooter
 from app.actions.updateProgress.UpdateProgressObservable import UpdateProgressObservable
+from app.actions.updateProgress.AbstractUpdateProgressObservable import AbstractUpdateProgressObservable
 from app.importers.NmapImporter import NmapImporter
 from app.importers.PythonImporter import PythonImporter
 from app.tools.nmap.NmapPaths import getNmapRunningFolder
 from app.auxiliary import unixPath2Win, winPath2Unix, getPid, formatCommandQProcess, isWsl
 from ui.observers.QtUpdateProgressObserver import QtUpdateProgressObserver
+from PyQt6.QtCore import QTimer, QElapsedTimer, QVariant
 
 try:
     import queue
 except:
-    import Queue as queue
+    import queue as queue
 from app.logic import *
 from app.settings import *
 
@@ -75,10 +83,11 @@ class Controller:
         self.pythonImporter.setDB(activeProject.database)
         self.updateOutputFolder()                                       # tell screenshooter where the output folder is
         self.view.start(title)
-
-    def initNmapImporter(self, updateProgressObservable: UpdateProgressObservable):
-        self.nmapImporter = NmapImporter(updateProgressObservable,
-                                         self.logic.activeProject.repositoryContainer.hostRepository)
+    def initNmapImporter(self, updateProgressObservable):
+        self.nmapImporter = NmapImporter(
+            updateProgressObservable,
+            self.logic.activeProject.repositoryContainer.hostRepository
+        )
         self.nmapImporter.done.connect(self.importFinished)
         self.nmapImporter.done.connect(self.view.updateInterface)
         self.nmapImporter.done.connect(self.view.updateToolsTableView)
@@ -237,9 +246,15 @@ class Controller:
         self.logic.projectManager.closeProject(self.logic.activeProject)
 
     def copyToClipboard(self, data):
-        clipboard = QtWidgets.QApplication.clipboard()
-        clipboard.setText(data)  # Assuming item.text() contains the IP or hostname
-
+        from PyQt6.QtGui import QGuiApplication
+        app = QGuiApplication.instance()
+        if app is None:
+            app = QGuiApplication([])
+        clipboard = QGuiApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(data)  # Assuming item.text() contains the IP or hostname
+        else:
+            log.warning("Clipboard is not available.")
     @timing
     def addHosts(self, targetHosts, runHostDiscovery, runStagedNmap, nmapSpeed, scanMode, nmapOptions = []):
         if targetHosts == '':
@@ -669,7 +684,7 @@ class Controller:
             updateElapsed.stop()
             self.processTimers[qProcess.id] = None
             procTime = timer.elapsed() / 1000
-            qProcess.elapsed = procTime
+            qProcess.elapsed = int(procTime)
             self.logic.activeProject.repositoryContainer.processRepository.storeProcessRunningElapsedTime(qProcess.id,
                                                                                                           procTime)
 

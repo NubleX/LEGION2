@@ -1,5 +1,11 @@
 #!/usr/bin/env python
 """
+LEGION2 - A free and open-source penetration testing tool.
+Copyright (c) 2025 NubleX / Igor Dunaev
+
+Forked from an earlier version of LEGION, which was originally created by Gotham Security.
+It was archived in 2024 and Kali Linux users were left with a broken program.
+
 LEGION (https://gotham-security.com)
 Copyright (c) 2023 Gotham Security
 
@@ -122,7 +128,7 @@ if __name__ == "__main__":
         notice=QMessageBox()
         notice.setIcon(QMessageBox.Icon.Critical)
         notice.setText("Cannot continue. The installed NMAP version is 7.92, which has segfaults under zsh.\nPlease follow the instructions at https://github.com/GoVanguard/legion/ to resolve.")
-        notice.exec_()
+        notice.exec()
         exit(1)
 
     # Possibly unneeded
@@ -155,8 +161,11 @@ if __name__ == "__main__":
     app.installEventFilter(myFilter)
 
     # Center the application in screen
-    screenCenter = Screen.availableGeometry().center()
-    MainWindow.move(screenCenter - MainWindow.rect().center())
+    if Screen is not None:
+        screenCenter = Screen.availableGeometry().center()
+        MainWindow.move(screenCenter - MainWindow.rect().center())
+    else:
+        startupLog.warning("No primary screen detected. Cannot center the main window.")
 
     # Show main window
     #MainWindow.showMaximized()

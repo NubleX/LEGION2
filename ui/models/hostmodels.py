@@ -1,6 +1,12 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 """
+LEGION2 - A free and open-source penetration testing tool.
+Copyright (c) 2025 NubleX / Igor Dunaev
+
+Forked from an earlier version of LEGION, which was originally created by Gotham Security.
+It was archived in 2024 and Kali Linux users were left with a broken program.
+
 LEGION (https://gotham-security.com)
 Copyright (c) 2023 Gotham Security
 
@@ -31,17 +37,30 @@ class HostsTableModel(QtCore.QAbstractTableModel):
     def __init__(self, hosts = [[]], headers = [], parent = None):
         QtCore.QAbstractTableModel.__init__(self, parent)
         self.__headers = headers
-        self.__hosts = hosts
+        self._hosts = hosts  # Renamed to avoid conflict
         
     def setHosts(self, hosts):
-        self.__hosts = hosts
+        self._hosts = hosts
+
+    def getSafeHostField(self, row, key_or_index):
+        if row < 0 or row >= len(self._hosts):
+            return None
+        host = self._hosts[row]
+        if isinstance(host, dict):
+            return host.get(key_or_index)
+        elif isinstance(host, tuple):
+            if key_or_index == 'ip':
+                return host[0]
+            elif key_or_index == 'id':
+                return host[1]
+        return None
 
     def rowCount(self, parent):
-        return len(self.__hosts)
+        return len(self._hosts)
 
     def columnCount(self, parent):
-        if len(self.__hosts) != 0:
-            return len(self.__hosts[0])
+        if len(self._hosts) != 0:
+            return len(self._hosts[0])
         return 0
         
     def headerData(self, section, orientation, role):
@@ -50,8 +69,8 @@ class HostsTableModel(QtCore.QAbstractTableModel):
     def data(self, index, role):                # this method takes care of how the information is displayed
         if role == QtCore.Qt.ItemDataRole.DecorationRole:    # to show the operating system icon instead of text
             if index.column() == 1:                                     # if trying to display the operating system
-                os_string = self.__hosts[index.row()]['osMatch']
-                if os_string == '':             # if there is no OS information, use the question mark icon
+                os_string = self.getSafeHostField(index.row(), 'osMatch')
+                if not os_string:  # handles None and empty string
                     return QtGui.QIcon("./images/question-icon.png")
                     
                 elif re.search('[lL]inux', os_string, re.I):
@@ -80,45 +99,49 @@ class HostsTableModel(QtCore.QAbstractTableModel):
             row = index.row()
             column = index.column()
             if column == 0:
-                value = self.__hosts[row]['id']
+                value = self.getSafeHostField(row, 'id')
             elif column == 2:
-                value = self.__hosts[row]['osAccuracy']
+                value = self.getSafeHostField(row, 'osAccuracy')
             elif column == 3:
-                if not self.__hosts[row]['hostname'] == '':
-                    value = self.__hosts[row]['ip'] + ' ('+ self.__hosts[row]['hostname'] +')'
+                hostname = self.getSafeHostField(row, 'hostname')
+                ip = self.getSafeHostField(row, 'ip')
+                ip = ip if ip is not None else ''
+                hostname = hostname if hostname is not None else ''
+                if hostname != '':
+                    value = ip + ' (' + hostname + ')'
                 else:
-                    value = self.__hosts[row]['ip']
+                    value = ip
             elif column == 4:
-                value = self.__hosts[row]['ipv4']
+                value = self.getSafeHostField(row, 'ipv4')
             elif column == 5:
-                value = self.__hosts[row]['ipv6']
+                value = self.getSafeHostField(row, 'ipv6')
             elif column == 6:
-                value = self.__hosts[row]['macaddr']
+                value = self.getSafeHostField(row, 'macaddr')
             elif column == 7:
-                value = self.__hosts[row]['status']
+                value = self.getSafeHostField(row, 'status')
             elif column == 8:
-                value = self.__hosts[row]['hostname']
+                value = self.getSafeHostField(row, 'hostname')
             elif column == 9:
-                value = self.__hosts[row]['vendor']
+                value = self.getSafeHostField(row, 'vendor')
             elif column == 10:
-                value = self.__hosts[row]['uptime']
+                value = self.getSafeHostField(row, 'uptime')
             elif column == 11:
-                value = self.__hosts[row]['lastboot']
+                value = self.getSafeHostField(row, 'lastboot')
             elif column == 12:
-                value = self.__hosts[row]['distance']
+                value = self.getSafeHostField(row, 'distance')
             elif column == 13:
-                value = self.__hosts[row]['checked']
+                value = self.getSafeHostField(row, 'checked')
             elif column == 14:
-                value = self.__hosts[row]['state']
+                value = self.getSafeHostField(row, 'state')
             elif column == 15:
-                value = self.__hosts[row]['count']
+                value = self.getSafeHostField(row, 'count')
             else:
                 value = 'Not set in view model'
             return value
             
         if role == QtCore.Qt.ItemDataRole.FontRole:
             # if a host is checked strike it out and make it italic
-            if index.column() == 3 and self.__hosts[index.row()]['checked'] == 'True':
+            if index.column() == 3 and self.getSafeHostField(index.row(), 'checked') == 'True':
                 checkedFont=QFont()
                 checkedFont.setStrikeOut(True)
                 checkedFont.setItalic(True)
@@ -130,67 +153,55 @@ class HostsTableModel(QtCore.QAbstractTableModel):
 
     # sort function called when the user clicks on a header
     def sort(self, Ncol, order):
-        
         self.layoutAboutToBeChanged.emit()
-        array = []
-        
-        if Ncol == 0 or Ncol == 3:                                      # if sorting by IP address (and by default)
-            log.debug("__hosts: {0}".format(str(self.__hosts)))
-            for i in range(len(self.__hosts)):
-                array.append(IP2Int(self.__hosts[i]['ip']))
+        if Ncol == 0 or Ncol == 3:  # Sort by IP address
+            def ip_key(host):
+                ip = host.get('ip') if isinstance(host, dict) else host[0]
+                try:
+                    result = IP2Int(ip)
+                    if result is None:
+                        return 0
+                    return result
+                except Exception as e:
+                    log.error(f"Error converting IP for host {host}: {e}")
+                    return 0
+            self._hosts.sort(key=ip_key, reverse=(order == QtCore.Qt.SortOrder.DescendingOrder))
+            self.layoutChanged.emit()
+            return
 
-        elif Ncol == 1:                                                 # if sorting by OS
-            for i in range(len(self.__hosts)):
-                
-                os_string = self.__hosts[i]['osMatch']
-                if os_string == '':
-                    array.append('')
-                                    
-                elif re.search('[lL]inux', os_string, re.I):
-                    array.append('Linux')
-                
-                elif re.search('[wW]indows', os_string, re.I):
-                    array.append('Windows')
-                    
-                elif re.search('[cC]isco', os_string, re.I):
-                    array.append('Cisco')
-                    
-                elif re.search('HP ', os_string, re.I):
-                    array.append('Hp')
+        elif Ncol == 1:  # Sort by OS
+            self.sortByOS(order)
+            return
 
-                elif re.search('[vV]x[wW]orks', os_string, re.I):
-                    array.append('Hp')
-                    
-                elif re.search('[vV]m[wW]are', os_string, re.I):
-                    array.append('Vmware')
-                    
-                else:
-                    array.append('')
+        # Add other column sorts as needed
 
-        sortArrayWithArray(array, self.__hosts)                         # sort the array of OS
+        self.layoutChanged.emit()
 
-        if order == Qt.SortOrder.AscendingOrder:                                  # reverse if needed
-            self.__hosts.reverse()
-
-        self.layoutChanged.emit()                            # update the UI (built-in signal)
+    def sortByOS(self, order):
+        array = [self.getSafeHostField(i, 'osMatch') or '' for i in range(len(self._hosts))]
+        zipped = list(zip(array, self._hosts))
+        zipped.sort(key=lambda x: x[0], reverse=(order == QtCore.Qt.SortOrder.DescendingOrder))
+        self._hosts = [host for _, host in zipped]
+        self.layoutChanged.emit()
 
     ### getter functions ###
 
     def getHostIPForRow(self, row):
-        return self.__hosts[row]['ip']
+        return self.getSafeHostField(row, 'ip')
 
     def getHostIdForRow(self, row):
-        return self.__hosts[row]['id']
+        return self.getSafeHostField(row, 'id')
         
     def getHostCheckStatusForRow(self, row):
-        return self.__hosts[row]['checked']
+        return self.getSafeHostField(row, 'checked')
 
     def getHostCheckStatusForIp(self, ip):
-        for i in range(len(self.__hosts)):
-            if str(self.__hosts[i]['ip']) == str(ip):
-                return self.__hosts[i]['checked']
+        for i in range(len(self._hosts)):
+            if str(self.getSafeHostField(i, 'ip')) == str(ip):
+                return self.getSafeHostField(i, 'checked')
             
     def getRowForIp(self, ip):
-        for i in range(len(self.__hosts)):
-            if self.__hosts[i]['ip'] == ip:
+        for i in range(len(self._hosts)):
+            if self.getSafeHostField(i, 'ip') == ip:
                 return i
+        return None

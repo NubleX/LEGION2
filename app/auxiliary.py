@@ -1,6 +1,12 @@
 #!/usr/bin/env python
 
 """
+LEGION2 - A free and open-source penetration testing tool.
+Copyright (c) 2025 NubleX / Igor Dunaev
+
+Forked from an earlier version of LEGION, which was originally created by Gotham Security.
+It was archived in 2024 and Kali Linux users were left with a broken program.
+
 LEGION (https://gotham-security.com)
 Copyright (c) 2023 Gotham Security
 
@@ -17,9 +23,9 @@ Copyright (c) 2023 Gotham Security
 """
 
 import os, sys, socket, locale, webbrowser, \
-    re, platform  # for webrequests, screenshot timeouts, timestamps, browser stuff and regex
+    re, platform, ipaddress  # for webrequests, screenshot timeouts, timestamps, browser stuff and regex
 from PyQt6 import QtCore, QtWidgets
-from PyQt6.QtCore import *  # for QProcess
+from PyQt6.QtCore import QProcess, pyqtSlot, QObject, Qt
 from six import u as unicode
 
 from app.http.isHttps import isHttps
@@ -113,14 +119,15 @@ def sortArrayWithArray(array, arrayToSort):
 # converts an IP address to an integer (for the sort function)
 def IP2Int(ip):
     try:
-        res = 0
         ip = ip.split("/")[0]  # bug fix: remove slash if it's a range
+        # Validate IP
+        ipaddress.IPv4Address(ip)
         o = list(map(int, ip.split('.')))
         res = (16777216 * o[0]) + (65536 * o[1]) + (256 * o[2]) + o[3]
-    except:
+        return res
+    except Exception:
         log.error("Input IP {0} is not valid. Passing for now.".format(str(ip)))
-        pass
-    return res
+        return None
 
 
 # used by the settings dialog when a user cancels and the GUI needs to be reset
@@ -159,18 +166,17 @@ def setTableProperties(table, headersLen, hiddenColumnIndexes=[]):
 def checkHydraResults(output):
     usernames = []
     passwords = []
-    string = '\[[0-9]+\]\[[a-z-]+\].+'  # when a password is found, the line contains [port#][plugin-name]
+    string = r'\[[0-9]+\]\[[a-z-]+\].+'  # when a password is found, the line contains [port#][plugin-name]
     results = re.findall(string, output, re.I)
     if results:
         for line in results:
-            login = re.search('(login:[\s]*)([^\s]+)', line)
+            login = re.search(r'(login:[\s]*)([^\s]+)', line)  # <-- updated to raw string
             if login:
                 log.info('Found username: ' + login.group(2))
                 usernames.append(login.group(2))
-            password = re.search('(password:[\s]*)([^\s]+)', line)
+            password = re.search(r'(password:[\s]*)([^\s]+)', line)  # <-- updated to raw string
             if password:
                 # print 'Found password: ' + password.group(2)
-
                 passwords.append(password.group(2))
         return True, usernames, passwords  # returns the lists of found usernames and passwords
     return False, [], []
@@ -336,7 +342,7 @@ class Filters():
 # TODO: should probably be moved to a new file called test_validation.py
 
 def validateNmapInput(text):  # validate nmap input entered in Add Hosts dialog
-    if re.search('[^a-zA-Z0-9\.\/\-\s]', text) != None:
+    if re.search(r'[^a-zA-Z0-9\.\/\-\s]', text) != None:  # <-- updated to raw string
         return False
     return True
 
@@ -354,18 +360,18 @@ def validateNumeric(text):  # only allows numbers
 
 
 def validateString(text):  # only allows alphanumeric characters, '_' and '-'
-    if text != '' and re.search("[^A-Za-z0-9_-]+", text) == None:
+    if text != '' and re.search(r"[^A-Za-z0-9_-]+", text) == None:  # <-- updated to raw string
         return True
     return False
 
 
 def validateStringWithSpace(text):  # only allows alphanumeric characters, '_', '-' and space
-    if text != '' and re.search("[^A-Za-z0-9_() -]+", text) == None:
+    if text != '' and re.search(r"[^A-Za-z0-9_() -]+", text) == None:  # <-- updated to raw string
         return True
     return False
 
 
 def validateNmapPorts(text):  # only allows alphanumeric characters and the following: ./-'"*,:[any kind of space]
-    if re.search('[^a-zA-Z0-9\.\/\-\'\"\*\,\:\s]', text) != None:
+    if re.search(r'[^a-zA-Z0-9\.\/\-\'\"\*\,\:\s]', text) != None:  # <-- updated to raw string
         return False
     return True

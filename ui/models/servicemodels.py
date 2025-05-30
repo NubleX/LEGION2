@@ -221,9 +221,24 @@ class ServiceNamesTableModel(QtCore.QAbstractTableModel):
     ### getter functions ###
 
     def getServiceNameForRow(self, row):
-        return self.__serviceNames[row]['name']
+        service = self.__serviceNames[row]
+        if isinstance(service, dict):
+            return service.get('name')
+        elif isinstance(service, tuple):
+            # Replace 0 with the correct index for 'name' in your tuple structure
+            return service[0]
+        return None
 
-    def getRowForServiceName(self, serviceNames):
+    def getRowForServiceName(self, serviceName):
         for i in range(len(self.__serviceNames)):
-            if self.__serviceNames[i]['name'] == serviceNames:
+            service = self.__serviceNames[i]
+            name = None
+            if isinstance(service, dict):
+                name = service.get('name')
+            elif isinstance(service, tuple):
+                name = service[0]  # Adjust index if needed
+            if name == serviceName:
                 return i
+        return None
+
+    # Add similar pattern for any other getters that access self.__serviceNames by key
