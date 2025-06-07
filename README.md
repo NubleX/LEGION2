@@ -9,6 +9,8 @@
 ![Language](https://img.shields.io/badge/language-Rust-orange.svg)
 ![Status](https://img.shields.io/badge/status-alpha--development-orange.svg)
 
+</div>
+
 ## ⚠️ ALPHA VERSION WARNING ⚠️
 
 ### Version: 0.0.1-alpha
