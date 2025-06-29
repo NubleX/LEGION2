@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0.0",
+  "identifier": "default",
+  "description": "Capability for LEGION2 penetration testing operations",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "shell:allow-execute",
+    "shell:allow-spawn",
+    "fs:allow-read-file",
+    "fs:allow-write-file", 
+    "fs:allow-read-dir",
+    "fs:allow-create-dir",
+    "fs:allow-copy-file",
+    "fs:allow-remove-file",
+    "fs:allow-rename-file",
+    "fs:allow-exists",
+    "fs:scope-app-recursive",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "nmap",
+          "cmd": "nmap"
+        },
+        {
+          "name": "ping", 
+          "cmd": "ping"
+        },
+        {
+          "name": "masscan",
+          "cmd": "masscan"
+        }
+      ]
+    }
+  ]
+}

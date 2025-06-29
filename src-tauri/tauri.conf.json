@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0.0",
+  "productName": "LEGION2",
+  "version": "0.2.0",
+  "identifier": "com.legion2.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "LEGION2",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all"
+  },
+  "plugins": {
+    "shell": {
+      "scope": [
+        {
+          "name": "nmap",
+          "cmd": "nmap",
+          "args": true
+        },
+        {
+          "name": "ping",
+          "cmd": "ping", 
+          "args": true
+        },
+        {
+          "name": "masscan",
+          "cmd": "masscan",
+          "args": true
+        }
+      ]
+    }
+  }
+}

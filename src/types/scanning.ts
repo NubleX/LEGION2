@@ -38,9 +38,9 @@ export interface ScanOptions {
 
 // Scan execution and progress
 export interface ScanRequest {
-  target: ScanTarget;
-  priority?: number;
-  max_retries?: number;
+  target: string;
+  scan_type: string;
+  options?: Record<string, string>;
 }
 
 export interface NetworkScanRequest {

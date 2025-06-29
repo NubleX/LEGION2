@@ -1,18 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { Target, Shield, Activity, Play, Square, Download, Settings, Zap } from 'lucide-react';
-import useScanStore from './stores/scanStore';
-import useHostStore from './stores/hostStore';
-import HostTable from './components/HostTable';
-import ScanProgress from './components/ScanProgress';
-import ResultViewer from './components/ResultViewer';
-
-// Types for Tauri backend communication
-interface ScanRequest {
-  target: string;
-  scan_type: string;
-  options?: Record<string, any>;
-}
+import useScanStore from './export/stores/scanStore';
+import useHostStore from './export/stores/hostStore';
+import HostTable from './export/components/HostTable';
+import ScanProgress from './export/components/ScanProgress';
+import ResultViewer from './export/components/ResultViewer';
+import './index.css';
 
 // Target input component with Tauri integration
 const TargetInput = () => {

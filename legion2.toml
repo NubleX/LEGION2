@@ -1,7 +1,7 @@
 [tool.poetry.dependencies]
 python = "^3.9"
 pydantic = "^1.10.0"
-httpx = "^0.24.0"  # Modern async HTTP client
+httpx = "^0.24.0"
 python-nmap = "^0.7.1"
 
 [tool.poetry.group.security.dependencies]

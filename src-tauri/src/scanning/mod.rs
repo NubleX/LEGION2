@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
+pub use validation::InputValidator;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanTarget {

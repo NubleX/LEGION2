@@ -1,9 +1,9 @@
 use crate::scanning::*;
 use crate::database::{operations::*, models::*};
-use crate::utils::InputValidator;
+use crate::utils::validation::InputValidator;  // Fixed path
 use crate::AppState;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{State, Emitter};  // Added Emitter trait
 use tokio::sync::mpsc;
 use anyhow::Result as AnyhowResult;
 
