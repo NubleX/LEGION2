@@ -1,5 +1,4 @@
-use super::models::*;
-use sqlx::{SqlitePool, Row};
+use crate::database::{Database, models::*};
 use anyhow::Result;
 use uuid::Uuid;
 use chrono::Utc;
@@ -8,81 +7,55 @@ use std::net::IpAddr;
 pub struct HostOperations;
 
 impl HostOperations {
-    pub async fn create(pool: &SqlitePool, ip: IpAddr, hostname: Option<String>) -> Result<Host> {
+    pub async fn create(db: &Database, ip: IpAddr, hostname: Option<&str>) -> Result<Host> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
         
-        let host = sqlx::query_as!(
-            Host,
-            r#"
-            INSERT INTO hosts (id, ip, hostname, status, created_at, updated_at)
-            VALUES (?, ?, ?, 'unknown', ?, ?)
-            RETURNING *
-            "#,
-            id,
-            ip.to_string(),
-            hostname,
-            now,
-            now
-        )
-        .fetch_one(pool)
-        .await?;
-        
+        let host = Host {
+            id: id.clone(),
+            ip: ip.to_string(),
+            hostname: hostname.map(|s| s.to_string()),
+            mac_address: None,
+            vendor: None,
+            os_name: None,
+            os_family: None,
+            os_accuracy: None,
+            status: "unknown".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+
+        let mut hosts = db.hosts().write().await;
+        hosts.insert(id, host.clone());
+
         Ok(host)
     }
 
-    pub async fn find_by_ip(pool: &SqlitePool, ip: IpAddr) -> Result<Option<Host>> {
-        let host = sqlx::query_as!(
-            Host,
-            "SELECT * FROM hosts WHERE ip = ?",
-            ip.to_string()
-        )
-        .fetch_optional(pool)
-        .await?;
-        
+    pub async fn find_by_ip(db: &Database, ip: IpAddr) -> Result<Option<Host>> {
+        let hosts = db.hosts().read().await;
+        let host = hosts.values().find(|h| h.ip == ip.to_string()).cloned();
         Ok(host)
     }
 
-    pub async fn update_os_info(
-        pool: &SqlitePool,
-        host_id: &str,
-        os_name: &str,
-        os_family: &str,
-        accuracy: f32,
-    ) -> Result<()> {
-        sqlx::query!(
-            r#"
-            UPDATE hosts 
-            SET os_name = ?, os_family = ?, os_accuracy = ?, updated_at = ?
-            WHERE id = ?
-            "#,
-            os_name,
-            os_family,
-            accuracy,
-            Utc::now(),
-            host_id
-        )
-        .execute(pool)
-        .await?;
-        
-        Ok(())
+    pub async fn list_all(db: &Database) -> Result<Vec<Host>> {
+        let hosts = db.hosts().read().await;
+        let mut host_list: Vec<Host> = hosts.values().cloned().collect();
+        host_list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(host_list)
     }
 
-    pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Host>> {
-        let hosts = sqlx::query_as!(Host, "SELECT * FROM hosts ORDER BY created_at DESC")
-            .fetch_all(pool)
-            .await?;
-        
-        Ok(hosts)
-    }
+    pub async fn get_with_ports(db: &Database, host_id: &str) -> Result<(Host, Vec<Port>)> {
+        let hosts = db.hosts().read().await;
+        let host = hosts.get(host_id)
+            .ok_or_else(|| anyhow::anyhow!("Host not found"))?
+            .clone();
 
-    pub async fn get_with_ports(pool: &SqlitePool, host_id: &str) -> Result<(Host, Vec<Port>)> {
-        let host = sqlx::query_as!(Host, "SELECT * FROM hosts WHERE id = ?", host_id)
-            .fetch_one(pool)
-            .await?;
+        let ports_map = db.ports().read().await;
+        let ports: Vec<Port> = ports_map.values()
+            .filter(|p| p.host_id == host_id)
+            .cloned()
+            .collect();
 
-        let ports = PortOperations::find_by_host(pool, host_id).await?;
-        
         Ok((host, ports))
     }
 }
@@ -91,211 +64,61 @@ pub struct PortOperations;
 
 impl PortOperations {
     pub async fn create(
-        pool: &SqlitePool,
+        db: &Database,
         host_id: &str,
         number: u16,
         protocol: &str,
         state: &str,
     ) -> Result<Port> {
         let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
         
-        let port = sqlx::query_as!(
-            Port,
-            r#"
-            INSERT INTO ports (id, host_id, number, protocol, state, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            RETURNING *
-            "#,
-            id,
-            host_id,
-            number as i32,
-            protocol,
-            state,
-            Utc::now()
-        )
-        .fetch_one(pool)
-        .await?;
-        
-        Ok(port)
-    }
-
-    pub async fn update_service_info(
-        pool: &SqlitePool,
-        port_id: &str,
-        service: Option<&str>,
-        version: Option<&str>,
-        banner: Option<&str>,
-    ) -> Result<()> {
-        sqlx::query!(
-            "UPDATE ports SET service = ?, version = ?, banner = ? WHERE id = ?",
-            service,
-            version,
-            banner,
-            port_id
-        )
-        .execute(pool)
-        .await?;
-        
-        Ok(())
-    }
-
-    pub async fn find_by_host(pool: &SqlitePool, host_id: &str) -> Result<Vec<Port>> {
-        let ports = sqlx::query_as!(
-            Port,
-            "SELECT * FROM ports WHERE host_id = ? ORDER BY number",
-            host_id
-        )
-        .fetch_all(pool)
-        .await?;
-        
-        Ok(ports)
-    }
-
-    pub async fn find_open_ports(pool: &SqlitePool, host_id: &str) -> Result<Vec<Port>> {
-        let ports = sqlx::query_as!(
-            Port,
-            "SELECT * FROM ports WHERE host_id = ? AND state = 'open' ORDER BY number",
-            host_id
-        )
-        .fetch_all(pool)
-        .await?;
-        
-        Ok(ports)
-    }
-}
-
-pub struct ScanOperations;
-
-impl ScanOperations {
-    pub async fn create(
-        pool: &SqlitePool,
-        name: &str,
-        targets: &[IpAddr],
-        scan_type: &str,
-    ) -> Result<Scan> {
-        let id = Uuid::new_v4().to_string();
-        let targets_json = serde_json::to_string(targets)?;
-        
-        let scan = sqlx::query_as!(
-            Scan,
-            r#"
-            INSERT INTO scans (id, name, targets, scan_type, status, progress, start_time, created_at)
-            VALUES (?, ?, ?, ?, 'queued', 0.0, ?, ?)
-            RETURNING *
-            "#,
-            id,
-            name,
-            targets_json,
-            scan_type,
-            Utc::now(),
-            Utc::now()
-        )
-        .fetch_one(pool)
-        .await?;
-        
-        Ok(scan)
-    }
-
-    pub async fn update_progress(pool: &SqlitePool, scan_id: &str, progress: f32) -> Result<()> {
-        sqlx::query!(
-            "UPDATE scans SET progress = ? WHERE id = ?",
-            progress,
-            scan_id
-        )
-        .execute(pool)
-        .await?;
-        
-        Ok(())
-    }
-
-    pub async fn update_status(pool: &SqlitePool, scan_id: &str, status: &str) -> Result<()> {
-        let end_time = if status == "completed" || status == "failed" {
-            Some(Utc::now())
-        } else {
-            None
+        let port = Port {
+            id: id.clone(),
+            host_id: host_id.to_string(),
+            number: number as i32,
+            protocol: protocol.to_string(),
+            state: state.to_string(),
+            service: None,
+            version: None,
+            banner: None,
+            created_at: now,
         };
 
-        sqlx::query!(
-            "UPDATE scans SET status = ?, end_time = ? WHERE id = ?",
-            status,
-            end_time,
-            scan_id
-        )
-        .execute(pool)
-        .await?;
-        
-        Ok(())
-    }
+        let mut ports = db.ports().write().await;
+        ports.insert(id, port.clone());
 
-    pub async fn list_recent(pool: &SqlitePool, limit: i32) -> Result<Vec<Scan>> {
-        let scans = sqlx::query_as!(
-            Scan,
-            "SELECT * FROM scans ORDER BY created_at DESC LIMIT ?",
-            limit
-        )
-        .fetch_all(pool)
-        .await?;
-        
-        Ok(scans)
+        Ok(port)
     }
 }
 
 pub struct VulnerabilityOperations;
 
 impl VulnerabilityOperations {
-    pub async fn create(
-        pool: &SqlitePool,
-        host_id: &str,
-        port_id: Option<&str>,
-        name: &str,
-        severity: &str,
-        description: &str,
-        cvss_score: Option<f32>,
-    ) -> Result<Vulnerability> {
-        let id = Uuid::new_v4().to_string();
-        
-        let vuln = sqlx::query_as!(
-            Vulnerability,
-            r#"
-            INSERT INTO vulnerabilities (id, host_id, port_id, name, severity, description, cvss_score, discovered_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            RETURNING *
-            "#,
-            id,
-            host_id,
-            port_id,
-            name,
-            severity,
-            description,
-            cvss_score,
-            Utc::now()
-        )
-        .fetch_one(pool)
-        .await?;
-        
-        Ok(vuln)
-    }
-
-    pub async fn find_by_host(pool: &SqlitePool, host_id: &str) -> Result<Vec<Vulnerability>> {
-        let vulns = sqlx::query_as!(
-            Vulnerability,
-            "SELECT * FROM vulnerabilities WHERE host_id = ? ORDER BY discovered_at DESC",
-            host_id
-        )
-        .fetch_all(pool)
-        .await?;
-        
+    pub async fn find_by_host(db: &Database, host_id: &str) -> Result<Vec<Vulnerability>> {
+        let vulnerabilities = db.vulnerabilities().read().await;
+        let mut vulns: Vec<Vulnerability> = vulnerabilities.values()
+            .filter(|v| v.host_id == host_id)
+            .cloned()
+            .collect();
+        vulns.sort_by(|a, b| b.discovered_at.cmp(&a.discovered_at));
         Ok(vulns)
     }
 
-    pub async fn find_high_severity(pool: &SqlitePool) -> Result<Vec<Vulnerability>> {
-        let vulns = sqlx::query_as!(
-            Vulnerability,
-            "SELECT * FROM vulnerabilities WHERE severity IN ('high', 'critical') ORDER BY discovered_at DESC"
-        )
-        .fetch_all(pool)
-        .await?;
-        
+    pub async fn find_high_severity(db: &Database) -> Result<Vec<Vulnerability>> {
+        let vulnerabilities = db.vulnerabilities().read().await;
+        let mut vulns: Vec<Vulnerability> = vulnerabilities.values()
+            .filter(|v| v.severity == "high" || v.severity == "critical")
+            .cloned()
+            .collect();
+        vulns.sort_by(|a, b| b.discovered_at.cmp(&a.discovered_at));
+        Ok(vulns)
+    }
+
+    pub async fn list_all(db: &Database) -> Result<Vec<Vulnerability>> {
+        let vulnerabilities = db.vulnerabilities().read().await;
+        let mut vulns: Vec<Vulnerability> = vulnerabilities.values().cloned().collect();
+        vulns.sort_by(|a, b| b.discovered_at.cmp(&a.discovered_at));
         Ok(vulns)
     }
 }
@@ -303,66 +126,28 @@ impl VulnerabilityOperations {
 pub struct ProjectOperations;
 
 impl ProjectOperations {
-    pub async fn create(pool: &SqlitePool, name: &str, description: Option<&str>) -> Result<Project> {
+    pub async fn create(db: &Database, name: &str, description: Option<&str>) -> Result<Project> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
         
-        let project = sqlx::query_as!(
-            Project,
-            r#"
-            INSERT INTO projects (id, name, description, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            RETURNING *
-            "#,
-            id,
-            name,
-            description,
-            now,
-            now
-        )
-        .fetch_one(pool)
-        .await?;
-        
+        let project = Project {
+            id: id.clone(),
+            name: name.to_string(),
+            description: description.map(|s| s.to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+
+        let mut projects = db.projects().write().await;
+        projects.insert(id, project.clone());
+
         Ok(project)
     }
 
-    pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Project>> {
-        let projects = sqlx::query_as!(
-            Project,
-            "SELECT * FROM projects ORDER BY updated_at DESC"
-        )
-        .fetch_all(pool)
-        .await?;
-        
-        Ok(projects)
+    pub async fn list_all(db: &Database) -> Result<Vec<Project>> {
+        let projects = db.projects().read().await;
+        let mut project_list: Vec<Project> = projects.values().cloned().collect();
+        project_list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(project_list)
     }
 }
-
-    pub async fn find_by_id(pool: &SqlitePool, project_id: &str) -> Result<Option<Project>> {
-        let project = sqlx::query_as!(
-            Project,
-            "SELECT * FROM projects WHERE id = ?",
-            project_id
-        )
-        .fetch_optional(pool)
-        .await?;
-        
-        Ok(project)
-    }
-
-    pub async fn update_description(
-        pool: &SqlitePool,
-        project_id: &str,
-        description: Option<&str>,
-    ) -> Result<()> {
-        sqlx::query!(
-            "UPDATE projects SET description = ?, updated_at = ? WHERE id = ?",
-            description,
-            Utc::now(),
-            project_id
-        )
-        .execute(pool)
-        .await?;
-        
-        Ok(())
-    }

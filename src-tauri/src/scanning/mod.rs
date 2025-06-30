@@ -1,8 +1,14 @@
+pub mod coordinator;
+pub mod nmap;
+pub mod masscan;
+
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
-pub use validation::InputValidator;
+
+// Re-export validation
+pub use crate::utils::validation::InputValidator;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanTarget {
@@ -76,3 +82,52 @@ pub enum Severity {
     High,
     Critical,
 }
+
+// Additional types needed by commands
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanProgress {
+    pub scan_id: String,
+    pub target_id: String,
+    pub progress: f32,
+    pub current_phase: String,
+    pub discovered_hosts: u32,
+    pub total_ports_scanned: u32,
+    pub open_ports_found: u32,
+    pub estimated_time_remaining: Option<u32>,
+    pub message: Option<String>,
+    pub start_time: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanStatistics {
+    pub total_scans: u32,
+    pub active_scans: u32,
+    pub completed_scans: u32,
+    pub failed_scans: u32,
+    pub total_hosts_discovered: u32,
+    pub total_ports_discovered: u32,
+    pub total_vulnerabilities: u32,
+    pub scan_time_total: u32,
+    pub avg_scan_duration: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Host {
+    pub id: String,
+    pub ip: String,
+    pub hostname: Option<String>,
+    pub os: Option<String>,
+    pub status: String,
+    pub discovered_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: String,
+}
+
+// Coordinator types
+pub use coordinator::ScanCoordinator;

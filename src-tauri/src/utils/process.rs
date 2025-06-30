@@ -1,90 +1,60 @@
-use anyhow::{Result, Context};
 use std::process::Stdio;
-use tokio::process::Command;
-use tokio::io::{AsyncBufReadExt, BufReader, Lines};
-use tokio::sync::mpsc;
 use std::time::Duration;
+use tokio::process::Command;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use anyhow::Result;
 
-pub struct ProcessManager {
-    timeout: Duration,
-}
+pub struct ProcessExecutor;
 
-impl ProcessManager {
-    pub fn new(timeout_secs: u64) -> Self {
-        Self {
-            timeout: Duration::from_secs(timeout_secs),
-        }
-    }
-
-    pub async fn execute_with_timeout(
-        &self,
+impl ProcessExecutor {
+    pub async fn execute_command(
         command: &str,
         args: &[&str],
-    ) -> Result<(String, String)> {
-        let mut cmd = Command::new(command);
-        cmd.args(args)
+        timeout_secs: u64,
+    ) -> Result<(String, String, i32)> {
+        let mut cmd = Command::new(command)
+            .args(args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .spawn()?;
 
-        let output = tokio::time::timeout(self.timeout, cmd.output())
-            .await
-            .context("Command timed out")?
-            .context("Failed to execute command")?;
+        // Set timeout
+        let output = tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            cmd.wait_with_output()
+        ).await??;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let exit_code = output.status.code().unwrap_or(-1);
 
-        Ok((stdout, stderr))
+        Ok((stdout, stderr, exit_code))
     }
 
-    pub async fn execute_streaming<F>(
-        &self,
+    pub async fn execute_with_callback<F>(
         command: &str,
         args: &[&str],
         mut callback: F,
-    ) -> Result<()>
+    ) -> Result<i32>
     where
-        F: FnMut(String) -> Result<()> + Send + 'static,
+        F: FnMut(String) + Send,
     {
         let mut child = Command::new(command)
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
-            .context("Failed to spawn process")?;
+            .spawn()?;
 
-        let stdout = child.stdout.take().unwrap();
-        let mut reader = BufReader::new(stdout).lines();
+        if let Some(stdout) = child.stdout.take() {
+            let reader = BufReader::new(stdout);
+            let mut lines = reader.lines();
 
-        while let Ok(Some(line)) = tokio::time::timeout(Duration::from_millis(100), reader.next_line()).await {
-            if let Some(line) = line? {
-                callback(line)?;
+            while let Ok(Some(line)) = lines.next_line().await {
+                callback(line);
             }
         }
 
-        let _ = child.wait().await?;
-        Ok(())
-    }
-
-    pub async fn kill_process_tree(pid: u32) -> Result<()> {
-        #[cfg(unix)]
-        {
-            use std::process::Command as StdCommand;
-            StdCommand::new("pkill")
-                .args(["-P", &pid.to_string()])
-                .output()
-                .context("Failed to kill process tree")?;
-        }
-
-        #[cfg(windows)]
-        {
-            use std::process::Command as StdCommand;
-            StdCommand::new("taskkill")
-                .args(["/F", "/T", "/PID", &pid.to_string()])
-                .output()
-                .context("Failed to kill process tree")?;
-        }
-
-        Ok(())
+        let status = child.wait().await?;
+        Ok(status.code().unwrap_or(-1))
     }
 }

@@ -1,10 +1,7 @@
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
 use chrono::{DateTime, Utc};
-use uuid::Uuid;
-use std::net::IpAddr;
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Host {
     pub id: String,
     pub ip: String,
@@ -19,7 +16,7 @@ pub struct Host {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Port {
     pub id: String,
     pub host_id: String,
@@ -32,7 +29,7 @@ pub struct Port {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scan {
     pub id: String,
     pub name: String,
@@ -45,7 +42,7 @@ pub struct Scan {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vulnerability {
     pub id: String,
     pub host_id: String,
@@ -58,7 +55,7 @@ pub struct Vulnerability {
     pub discovered_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Script {
     pub id: String,
     pub host_id: String,
@@ -68,7 +65,7 @@ pub struct Script {
     pub executed_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
     pub name: String,

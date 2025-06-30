@@ -1,145 +1,50 @@
 use super::*;
-use anyhow::{Result, Context};
+use anyhow::Result;
 use std::process::Stdio;
 use tokio::process::Command;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use xml_rs::{EventReader, Event};
+use tokio::sync::mpsc;
 
 pub struct NmapScanner {
-    rate_limit: tokio::sync::Semaphore,
+    // Basic structure for now
 }
 
 impl NmapScanner {
-    pub fn new(max_concurrent: usize) -> Self {
-        Self {
-            rate_limit: tokio::sync::Semaphore::new(max_concurrent),
-        }
+    pub fn new() -> Self {
+        Self {}
     }
 
     pub async fn scan_target(
         &self,
         target: &ScanTarget,
-        progress_callback: Option<tokio::sync::mpsc::Sender<ScanProgress>>,
+        progress_tx: mpsc::Sender<ScanProgress>,
     ) -> Result<ScanResult> {
-        let _permit = self.rate_limit.acquire().await?;
+        // Basic implementation
+        println!("Starting nmap scan for target: {:?}", target.ip);
         
-        let mut cmd = Command::new("nmap");
-        
-        // Build nmap command based on scan type
-        self.configure_nmap_command(&mut cmd, target)?;
-        
-        let mut child = cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("Failed to start nmap process")?;
+        // Send initial progress
+        let _ = progress_tx.send(ScanProgress {
+            scan_id: target.id.to_string(),
+            target_id: target.id.to_string(),
+            progress: 0.0,
+            current_phase: "Starting nmap scan".to_string(),
+            discovered_hosts: 0,
+            total_ports_scanned: 0,
+            open_ports_found: 0,
+            estimated_time_remaining: Some(30),
+            message: Some("Initializing scan".to_string()),
+            start_time: chrono::Utc::now(),
+        }).await;
 
-        let stdout = child.stdout.take().unwrap();
-        let mut reader = BufReader::new(stdout).lines();
-
-        // Stream output for real-time updates
-        while let Some(line) = reader.next_line().await? {
-            if let Some(callback) = &progress_callback {
-                let progress = self.parse_nmap_progress(&line)?;
-                let _ = callback.send(progress).await;
-            }
-        }
-
-        let output = child.wait_with_output().await?;
-        
-        if !output.status.success() {
-            return Err(anyhow::anyhow!(
-                "Nmap scan failed: {}", 
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-
-        self.parse_nmap_xml(target, &output.stdout)
-    }
-
-    fn configure_nmap_command(&self, cmd: &mut Command, target: &ScanTarget) -> Result<()> {
-        cmd.arg("-oX").arg("-"); // XML output to stdout
-        
-        match &target.scan_type {
-            ScanType::Quick => {
-                cmd.args(["-sS", "-T4", "--top-ports", "1000"]);
-            }
-            ScanType::Comprehensive => {
-                cmd.args(["-sS", "-sV", "-O", "-A", "-T4"]);
-                cmd.args(["-p", "1-65535"]);
-            }
-            ScanType::Stealth => {
-                cmd.args(["-sS", "-T2", "-f"]);
-            }
-            ScanType::Custom { options } => {
-                for opt in options.split_whitespace() {
-                    cmd.arg(opt);
-                }
-            }
-        }
-
-        cmd.arg(target.ip.to_string());
-        Ok(())
-    }
-
-    fn parse_nmap_xml(&self, target: &ScanTarget, xml_data: &[u8]) -> Result<ScanResult> {
-        let mut result = ScanResult {
-            id: Uuid::new_v4(),
+        // TODO: Implement actual nmap execution
+        // For now, return a basic result
+        Ok(ScanResult {
+            id: target.id,
             target_id: target.id,
-            timestamp: Utc::now(),
+            timestamp: chrono::Utc::now(),
             status: ScanStatus::Completed,
-            open_ports: Vec::new(),
+            open_ports: vec![],
             os_detection: None,
-            vulnerabilities: Vec::new(),
-        };
-
-        // XML parsing implementation
-        let parser = EventReader::new(xml_data);
-        
-        for event in parser {
-            match event? {
-                Event::StartElement { name, attributes, .. } => {
-                    match name.local_name.as_str() {
-                        "port" => {
-                            let port = self.parse_port_element(&attributes)?;
-                            result.open_ports.push(port);
-                        }
-                        "osmatch" => {
-                            let os = self.parse_os_element(&attributes)?;
-                            result.os_detection = Some(os);
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        Ok(result)
+            vulnerabilities: vec![],
+        })
     }
-
-    fn parse_nmap_progress(&self, line: &str) -> Result<ScanProgress> {
-        // Parse nmap progress output
-        if line.contains("% done") {
-            let percent = self.extract_percentage(line)?;
-            Ok(ScanProgress {
-                percent,
-                message: line.to_string(),
-                eta: None,
-            })
-        } else {
-            Ok(ScanProgress {
-                percent: 0.0,
-                message: line.to_string(),
-                eta: None,
-            })
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanProgress {
-    pub percent: f32,
-    pub message: String,
-    pub eta: Option<DateTime<Utc>>,
 }

@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
 export interface ScanTarget {
@@ -131,109 +131,59 @@ export class TauriLegionService {
     });
   }
 
-  // Core scanning commands matching your backend commands.rs
-  async startScan(targetIp: string, scanType: string): Promise<string> {
-    try {
-      return await invoke<string>('start_scan', {
-        targetIp,
-        scanType: scanType.toLowerCase(), // Convert to match backend expectation
-      });
-    } catch (error) {
-      throw new Error(`Failed to start scan: ${error}`);
-    }
+  // Core scanning methods
+  async startScan(target: ScanTarget): Promise<string> {
+    return await invoke('start_scan', { target });
   }
 
   async cancelScan(scanId: string): Promise<void> {
-    try {
-      await invoke<void>('cancel_scan', { scanId });
-    } catch (error) {
-      throw new Error(`Failed to cancel scan: ${error}`);
-    }
+    return await invoke('cancel_scan', { scanId });
   }
 
-  async getScanResults(): Promise<ScanResult[]> {
-    try {
-      return await invoke<ScanResult[]>('get_scan_results');
-    } catch (error) {
-      throw new Error(`Failed to get scan results: ${error}`);
-    }
+  async getScanResults(scanId?: string): Promise<ScanResult[]> {
+    return await invoke('get_scan_results', { scanId });
   }
 
-  async getActiveScans(): Promise<Array<{ id: string; status: any }>> {
-    try {
-      return await invoke<Array<{ id: string; status: any }>>('get_active_scans');
-    } catch (error) {
-      throw new Error(`Failed to get active scans: ${error}`);
-    }
+  async getActiveScans(): Promise<ScanResult[]> {
+    return await invoke('get_active_scans');
   }
 
-  async scanNetworkRange(cidr: string, exclude: string[], scanType: string): Promise<string[]> {
-    try {
-      const range = { cidr, exclude, scan_type: scanType.toLowerCase() };
-      return await invoke<string[]>('scan_network_range', { range });
-    } catch (error) {
-      throw new Error(`Failed to scan network range: ${error}`);
-    }
+  async scanNetworkRange(request: NetworkRangeRequest): Promise<string[]> {
+    return await invoke('scan_network_range', { range: request });
   }
 
   async getScanStatistics(): Promise<ScanStatistics> {
-    try {
-      return await invoke<ScanStatistics>('get_scan_statistics');
-    } catch (error) {
-      throw new Error(`Failed to get scan statistics: ${error}`);
-    }
+    return await invoke('get_scan_statistics');
   }
 
-  // Database commands matching your backend
   async getHosts(): Promise<Host[]> {
-    try {
-      return await invoke<Host[]>('get_hosts');
-    } catch (error) {
-      throw new Error(`Failed to get hosts: ${error}`);
-    }
+    return await invoke('get_hosts');
   }
 
   async getHostDetails(hostId: string): Promise<HostDetails> {
-    try {
-      return await invoke<HostDetails>('get_host_details', { hostId });
-    } catch (error) {
-      throw new Error(`Failed to get host details: ${error}`);
-    }
+    return await invoke('get_host_details', { hostId });
   }
 
-  async getVulnerabilities(severityFilter?: string): Promise<Vulnerability[]> {
-    try {
-      return await invoke<Vulnerability[]>('get_vulnerabilities', { severityFilter });
-    } catch (error) {
-      throw new Error(`Failed to get vulnerabilities: ${error}`);
-    }
+  async getVulnerabilities(): Promise<Vulnerability[]> {
+    return await invoke('get_vulnerabilities');
   }
 
   async createProject(name: string, description?: string): Promise<Project> {
-    try {
-      return await invoke<Project>('create_project', { name, description });
-    } catch (error) {
-      throw new Error(`Failed to create project: ${error}`);
-    }
+    return await invoke('create_project', { name, description });
   }
 
   async listProjects(): Promise<Project[]> {
-    try {
-      return await invoke<Project[]>('list_projects');
-    } catch (error) {
-      throw new Error(`Failed to list projects: ${error}`);
-    }
+    return await invoke('list_projects');
   }
 
   // Progress listener management
-  onScanProgress(scanId: string, callback: (progress: ScanProgress) => void) {
-    this.progressListeners.set(scanId, callback);
+  addProgressListener(id: string, listener: (progress: ScanProgress) => void) {
+    this.progressListeners.set(id, listener);
   }
 
-  removeScanListener(scanId: string) {
-    this.progressListeners.delete(scanId);
+  removeProgressListener(id: string) {
+    this.progressListeners.delete(id);
   }
 }
 
-// Singleton instance
 export const legionService = new TauriLegionService();
