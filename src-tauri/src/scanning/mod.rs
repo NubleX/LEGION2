@@ -1,3 +1,23 @@
+// LEGION2 - A free and open-source penetration testing tool.
+// Copyright (c) 2025 NubleX / Igor Dunaev
+
+// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
+// It was archived in 2024 and Kali Linux users were left with a broken program.
+
+// LEGION (https://gotham-security.com)
+// Copyright (c) 2023 Gotham Security
+
+//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
+//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
+//     version.
+
+//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
+//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+//     details.
+
+//     You should have received a copy of the GNU General Public License along with this program.
+//     If not, see <http://www.gnu.org/licenses/>.
+
 pub mod coordinator;
 pub mod nmap;
 pub mod masscan;
@@ -6,9 +26,12 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
+use std::fmt;
 
-// Re-export validation
-pub use crate::utils::validation::InputValidator;
+// Re-export important types from submodules
+pub use coordinator::{ScanCoordinator, ScanStatistics};
+pub use nmap::NmapScanner;
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanTarget {
@@ -83,6 +106,31 @@ pub enum Severity {
     Critical,
 }
 
+impl fmt::Display for Severity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Severity::Info => write!(f, "info"),
+            Severity::Low => write!(f, "low"),
+            Severity::Medium => write!(f, "medium"),
+            Severity::High => write!(f, "high"),
+            Severity::Critical => write!(f, "critical"),
+        }
+    }
+}
+
+impl Severity {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "critical" => Severity::Critical,
+            "high" => Severity::High,
+            "medium" => Severity::Medium,
+            "low" => Severity::Low,
+            _ => Severity::Info,
+        }
+    }
+}
+
+
 // Additional types needed by commands
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanProgress {
@@ -90,26 +138,15 @@ pub struct ScanProgress {
     pub target_id: String,
     pub progress: f32,
     pub current_phase: String,
-    pub discovered_hosts: u32,
-    pub total_ports_scanned: u32,
-    pub open_ports_found: u32,
-    pub estimated_time_remaining: Option<u32>,
+    pub discovered_hosts: i32,
+    pub total_ports_scanned: i32,
+    pub open_ports_found: i32,
+    pub estimated_time_remaining: Option<i32>,
     pub message: Option<String>,
     pub start_time: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanStatistics {
-    pub total_scans: u32,
-    pub active_scans: u32,
-    pub completed_scans: u32,
-    pub failed_scans: u32,
-    pub total_hosts_discovered: u32,
-    pub total_ports_discovered: u32,
-    pub total_vulnerabilities: u32,
-    pub scan_time_total: u32,
-    pub avg_scan_duration: f32,
-}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Host {
@@ -130,4 +167,3 @@ pub struct Project {
 }
 
 // Coordinator types
-pub use coordinator::ScanCoordinator;

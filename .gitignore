@@ -84,7 +84,10 @@ celerybeat-schedule
 *.sage.py
 
 # Environments
-# .env
+.env
+src-tauri/.env
+src-tauri/target/
+/.env
 .venv
 env/
 venv/
