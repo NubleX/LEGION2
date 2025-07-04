@@ -45,6 +45,10 @@ This project addresses the critical issues that led to LEGION being archived in 
 
 LEGION2 will restore and extend the original LEGION feature set with significant improvements:
 
+<div align="center">
+  <img src="images/legion2/legion2-feauture-branch-nmap-api-running.png" alt="LEGION2 Screenshot" width="1300"/>
+</div>
+
 **Core Scanning Capabilities:**
 
 - Automatic reconnaissance and scanning with NMAP, Whataweb, Nikto, Vulners, Hydra, SMBenum, Dirbuster, SSLyzer, and WebSlayer
