@@ -1,26 +1,7 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024 and Kali Linux users were left with a broken program.
-
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
-
 import { create } from 'zustand';
-import { invoke } from '@tauri-apps/api/core';
-import { legionService } from '../services/tauriApi';
 
 export interface Host {
   id: string;
@@ -38,37 +19,6 @@ export interface Host {
   vulnerability_count: number;
 }
 
-export interface HostPort {
-  id: string;
-  host_id: string;
-  number: number;
-  protocol: string;
-  state: string;
-  service?: string;
-  version?: string;
-  banner?: string;
-  confidence?: number;
-  discovered_at: string;
-}
-
-export interface HostVulnerability {
-  id: string;
-  host_id: string;
-  port_id?: string;
-  name: string;
-  severity: 'low' | 'medium' | 'high' | 'critical';
-  description: string;
-  cvss_score?: number;
-  references?: string[];
-  discovered_at: string;
-}
-
-export interface HostDetails {
-  host: Host;
-  ports: HostPort[];
-  vulnerabilities: HostVulnerability[];
-}
-
 export interface HostFilter {
   status?: 'up' | 'down' | 'unknown';
   os_family?: string;
@@ -79,297 +29,169 @@ export interface HostFilter {
 }
 
 interface HostStore {
-  // State
   hosts: Host[];
-  selectedHost: HostDetails | null;
   filteredHosts: Host[];
   currentFilter: HostFilter;
   isLoading: boolean;
   lastError: string | null;
   
-  // Statistics
-  totalHosts: number;
-  upHosts: number;
-  hostsWithVulnerabilities: number;
-  criticalVulnerabilities: number;
-  
-  // Actions
   loadHosts: () => Promise<void>;
-  loadHostDetails: (hostId: string) => Promise<void>;
-  refreshHost: (hostId: string) => Promise<void>;
-  deleteHost: (hostId: string) => Promise<void>;
-  
-  // Filtering and search
   setFilter: (filter: HostFilter) => void;
   clearFilter: () => void;
   searchHosts: (term: string) => void;
-  
-  // Bulk operations
-  deleteMultipleHosts: (hostIds: string[]) => Promise<void>;
+  deleteHost: (hostId: string) => Promise<void>;
+  loadHostDetails: (hostId: string) => Promise<void>;
   exportHosts: (format: 'json' | 'csv' | 'xml') => Promise<string>;
-  
-  // Utilities
+  deleteMultipleHosts: (hostIds: string[]) => Promise<void>;
+  refreshHost: (hostId: string) => Promise<void>;
   getHostsByStatus: (status: 'up' | 'down' | 'unknown') => Host[];
   getHostsBySeverity: (severity: 'critical' | 'high') => Host[];
   updateStatistics: () => void;
 }
 
+// Mock data for testing layout
+const mockHosts: Host[] = [
+  {
+    id: '1',
+    ip: '192.168.1.1',
+    hostname: 'router.local',
+    os_name: 'Linux',
+    os_family: 'Linux',
+    os_accuracy: 95,
+    status: 'up',
+    last_seen: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    port_count: 5,
+    vulnerability_count: 2
+  },
+  {
+    id: '2', 
+    ip: '192.168.1.100',
+    hostname: 'workstation',
+    os_name: 'Windows 10',
+    os_family: 'Windows',
+    os_accuracy: 87,
+    status: 'up',
+    last_seen: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    port_count: 12,
+    vulnerability_count: 7
+  },
+  {
+    id: '3',
+    ip: '192.168.1.50',
+    hostname: 'server.local',
+    os_name: 'Ubuntu 22.04',
+    os_family: 'Linux',
+    os_accuracy: 99,
+    status: 'up',
+    last_seen: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    port_count: 8,
+    vulnerability_count: 0
+  }
+];
+
 const useHostStore = create<HostStore>((set, get) => ({
-  // Initial state
   hosts: [],
-  selectedHost: null,
   filteredHosts: [],
   currentFilter: {},
   isLoading: false,
   lastError: null,
-  
-  // Statistics
-  totalHosts: 0,
-  upHosts: 0,
-  hostsWithVulnerabilities: 0,
-  criticalVulnerabilities: 0,
 
-  // Load all hosts from backend
   loadHosts: async () => {
     set({ isLoading: true, lastError: null });
     
     try {
-      const rawHosts = await legionService.getHosts();
-      // Ensure all required fields exist (add defaults if missing)
-      const hosts: Host[] = rawHosts.map((h: any) => ({
-        id: h.id,
-        ip: h.ip,
-        hostname: h.hostname ?? '',
-        mac_address: h.mac_address ?? '',
-        os_name: h.os_name ?? '',
-        os_family: h.os_family ?? '',
-        os_accuracy: h.os_accuracy ?? 0,
-        status: h.status ?? 'unknown',
-        last_seen: h.last_seen ?? '',
-        created_at: h.created_at ?? '',
-        updated_at: h.updated_at ?? '',
-        port_count: h.port_count ?? 0,
-        vulnerability_count: h.vulnerability_count ?? 0,
-      }));
-
-      set(state => ({
-        hosts,
-        filteredHosts: applyFilter(hosts, state.currentFilter),
-        isLoading: false,
-      }));
+      // Simulate loading delay
+      await new Promise(resolve => setTimeout(resolve, 500));
       
-      get().updateStatistics();
+      // Use mock data for now
+      set({ 
+        hosts: mockHosts,
+        filteredHosts: mockHosts,
+        isLoading: false 
+      });
     } catch (error) {
       set({ 
-        lastError: String(error),
+        lastError: `Failed to load hosts: ${error}`,
         isLoading: false 
       });
     }
   },
 
-  // Load detailed information for a specific host
-  loadHostDetails: async (hostId: string) => {
-    set({ isLoading: true, lastError: null });
-    
-    try {
-      const hostDetails = await invoke<HostDetails>('get_host_details', { hostId });
-      
-      set({ 
-        selectedHost: hostDetails,
-        isLoading: false 
-      });
-    } catch (error) {
-      set({ 
-        lastError: String(error),
-        isLoading: false 
-      });
-    }
-  },
-
-  // Refresh a single host's data
-  refreshHost: async (hostId: string) => {
-    try {
-      const hostDetails = await invoke<HostDetails>('get_host_details', { hostId });
-      
-      set(state => {
-        const updatedHosts = state.hosts.map(host => 
-          host.id === hostId ? hostDetails.host : host
-        );
-        
-        return {
-          hosts: updatedHosts,
-          filteredHosts: applyFilter(updatedHosts, state.currentFilter),
-          selectedHost: state.selectedHost?.host.id === hostId ? hostDetails : state.selectedHost,
-        };
-      });
-      
-      get().updateStatistics();
-    } catch (error) {
-      set({ lastError: error as string });
-    }
-  },
-
-  // Delete a host
-  deleteHost: async (hostId: string) => {
-    try {
-      await invoke('delete_host', { hostId });
-      
-      set(state => {
-        const updatedHosts = state.hosts.filter(host => host.id !== hostId);
-        
-        return {
-          hosts: updatedHosts,
-          filteredHosts: applyFilter(updatedHosts, state.currentFilter),
-          selectedHost: state.selectedHost?.host.id === hostId ? null : state.selectedHost,
-        };
-      });
-      
-      get().updateStatistics();
-    } catch (error) {
-      set({ lastError: error as string });
-      throw error;
-    }
-  },
-
-  // Set filter criteria
   setFilter: (filter: HostFilter) => {
-    set(state => ({
-      currentFilter: filter,
-      filteredHosts: applyFilter(state.hosts, filter),
-    }));
-  },
+    const hosts = get().hosts;
+    let filtered = hosts;
 
-  // Clear all filters
-  clearFilter: () => {
-    set(state => ({
-      currentFilter: {},
-      filteredHosts: state.hosts,
-    }));
-  },
-
-  // Search hosts by IP, hostname, or other criteria
-  searchHosts: (term: string) => {
-    set(state => {
-      const searchFilter = { ...state.currentFilter, search_term: term };
-      return {
-        currentFilter: searchFilter,
-        filteredHosts: applyFilter(state.hosts, searchFilter),
-      };
-    });
-  },
-
-  // Delete multiple hosts
-  deleteMultipleHosts: async (hostIds: string[]) => {
-    try {
-      await invoke('delete_multiple_hosts', { hostIds });
-      
-      set(state => {
-        const updatedHosts = state.hosts.filter(host => !hostIds.includes(host.id));
-        
-        return {
-          hosts: updatedHosts,
-          filteredHosts: applyFilter(updatedHosts, state.currentFilter),
-          selectedHost: hostIds.includes(state.selectedHost?.host.id || '') ? null : state.selectedHost,
-        };
-      });
-      
-      get().updateStatistics();
-    } catch (error) {
-      set({ lastError: error as string });
-      throw error;
+    if (filter.status) {
+      filtered = filtered.filter(h => h.status === filter.status);
     }
-  },
-
-  // Export hosts in various formats
-  exportHosts: async (format: 'json' | 'csv' | 'xml') => {
-    try {
-      const data = await invoke<string>('export_hosts', { 
-        format,
-        hostIds: get().filteredHosts.map(h => h.id)
-      });
-      return data;
-    } catch (error) {
-      set({ lastError: error as string });
-      throw error;
-    }
-  },
-
-  // Get hosts by status
-  getHostsByStatus: (status: 'up' | 'down' | 'unknown') => {
-    return get().hosts.filter(host => host.status === status);
-  },
-
-// Get hosts with high/critical vulnerabilities
-  getHostsBySeverity: () => {
-    return get().hosts.filter(host => host.vulnerability_count > 0);
-  },
-
-  // Update statistics based on current host data
-  updateStatistics: () => {
-    set(state => {
-      const upHosts = state.hosts.filter(h => h.status === 'up').length;
-      const hostsWithVulns = state.hosts.filter(h => h.vulnerability_count > 0).length;
-      
-      // This is a simplified calculation - in reality, you'd get this from the backend
-      const criticalVulns = state.hosts.reduce((sum, host) => sum + host.vulnerability_count, 0);
-      
-      return {
-        totalHosts: state.hosts.length,
-        upHosts,
-        hostsWithVulnerabilities: hostsWithVulns,
-        criticalVulnerabilities: criticalVulns,
-      };
-    });
-  },
-}));
-
-// Helper function to apply filters to host list
-function applyFilter(hosts: Host[], filter: HostFilter): Host[] {
-  return hosts.filter(host => {
-    // Status filter
-    if (filter.status && host.status !== filter.status) {
-      return false;
-    }
-    
-    // OS family filter
-    if (filter.os_family && host.os_family !== filter.os_family) {
-      return false;
-    }
-    
-    // Vulnerability filter
-    if (filter.has_vulnerabilities !== undefined) {
-      const hasVulns = host.vulnerability_count > 0;
-      if (filter.has_vulnerabilities !== hasVulns) {
-        return false;
-      }
-    }
-    
-    // Port range filter
-    if (filter.port_range && host.port_count) {
-      const { min, max } = filter.port_range;
-      if (host.port_count < min || host.port_count > max) {
-        return false;
-      }
-    }
-    
-    // Search term filter
     if (filter.search_term) {
       const term = filter.search_term.toLowerCase();
-      const searchable = [
-        host.ip,
-        host.hostname,
-        host.os_name,
-        host.mac_address
-      ].filter(Boolean).join(' ').toLowerCase();
-      
-      if (!searchable.includes(term)) {
-        return false;
-      }
+      filtered = filtered.filter(h => 
+        h.ip.includes(term) || 
+        h.hostname?.toLowerCase().includes(term) ||
+        h.os_name?.toLowerCase().includes(term)
+      );
     }
-    
-    return true;
-  });
-}
+    if (filter.has_vulnerabilities) {
+      filtered = filtered.filter(h => h.vulnerability_count > 0);
+    }
 
-export { useHostStore };
+    set({ currentFilter: filter, filteredHosts: filtered });
+  },
+
+  clearFilter: () => {
+    set({ 
+      currentFilter: {},
+      filteredHosts: get().hosts 
+    });
+  },
+
+  searchHosts: (term: string) => {
+    get().setFilter({ ...get().currentFilter, search_term: term });
+  },
+
+  deleteHost: async (hostId: string) => {
+    const hosts = get().hosts.filter(h => h.id !== hostId);
+    set({ hosts, filteredHosts: hosts });
+  },
+
+  loadHostDetails: async (hostId: string) => {
+    console.log('Loading details for host:', hostId);
+  },
+
+  exportHosts: async (format: string) => {
+    return JSON.stringify(get().filteredHosts, null, 2);
+  },
+
+  deleteMultipleHosts: async (hostIds: string[]) => {
+    const hosts = get().hosts.filter(h => !hostIds.includes(h.id));
+    set({ hosts, filteredHosts: hosts });
+  },
+
+  refreshHost: async (hostId: string) => {
+    console.log('Refreshing host:', hostId);
+  },
+
+  getHostsByStatus: (status: 'up' | 'down' | 'unknown') => {
+    return get().hosts.filter(h => h.status === status);
+  },
+
+  getHostsBySeverity: (severity: 'critical' | 'high') => {
+    if (severity === 'critical') {
+      return get().hosts.filter(h => h.vulnerability_count >= 10);
+    }
+    return get().hosts.filter(h => h.vulnerability_count >= 5);
+  },
+
+  updateStatistics: () => {
+    // Update stats logic here
+  }
+}));
+
 export default useHostStore;

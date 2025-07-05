@@ -18,25 +18,48 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-import ScannerPanel from './components/ScannerPanel';
+import ScanForm from './components/ScanForm';
+import NetworkMap from './components/NetworkMap';
+import ToolOutput from './components/ToolOutput';
 
 function App() {
+  const fakeScanStore = {
+    activeScans: []
+  };
+
+  const fakeHostStore = {
+    hosts: []
+  };
+
+  const fakeToolStore = {
+    outputs: []
+  };
+
+  const selectedHost = null;
+  const setSelectedHost = (host: any) => console.log("selected", host);
+
+  const startScan = (config: any) => console.log("starting scan with", config);
+
   return (
     <div className="min-h-screen bg-gray-950 text-white p-6">
-      <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <header className="mb-8">
-          <h1 className="text-3xl font-bold">LEGION2</h1>
-          <p className="text-gray-400 mt-1">Network Penetration Testing Tool</p>
-          <p className="text-xs text-gray-600 mt-2">
-            Copyright (c) 2025 NubleX / Igor Dunaev • Forked from LEGION by Gotham Security
-          </p>
-        </header>
-        
-        {/* Main Scanner Panel */}
-        <main>
-          <ScannerPanel />
-        </main>
+      <div className="flex gap-4 h-screen">
+        <ScanForm
+          className="flex-1 overflow-auto"
+          onStartScan={startScan}
+          isScanning={fakeScanStore.activeScans.length > 0}
+        />
+
+        <NetworkMap
+          className="flex-1 overflow-auto"
+          hosts={fakeHostStore.hosts}
+          onHostSelect={setSelectedHost}
+        />
+
+        <ToolOutput
+          className="flex-1 overflow-auto"
+          outputs={fakeToolStore.outputs}
+          isLive={true}
+        />
       </div>
     </div>
   );

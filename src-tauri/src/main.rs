@@ -23,6 +23,8 @@
     windows_subsystem = "windows"
 )]
 
+use tauri::Manager;
+
 mod commands;
 
 use commands::{start_scan, stop_scan, get_vulnerabilities, is_scanning, ScanState};
@@ -33,9 +35,15 @@ fn main() {
     let scan_state = Mutex::new(ScanState {
         active_scans: HashMap::new(),
     });
-    
+
     tauri::Builder::default()
         .manage(scan_state)
+        .setup(|app| {
+    let window = app.get_webview_window("main").unwrap();
+    window.maximize()?;
+    window.set_decorations(true)?;
+    Ok(())
+})
         .invoke_handler(tauri::generate_handler![
             start_scan,
             stop_scan,
@@ -43,5 +51,5 @@ fn main() {
             is_scanning
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");  
+        .expect("error while running tauri application");
 }
