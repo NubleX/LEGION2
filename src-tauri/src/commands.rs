@@ -18,291 +18,232 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use crate::scanning::*;
-use crate::database::operations::*;
-use crate::AppState;
-use tauri::{State, Window, Emitter};
-use tokio::sync::mpsc;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use tauri::{AppHandle, Manager, State, Emitter};
 use uuid::Uuid;
-use std::str::FromStr;
 
-// Import database types with aliases to avoid conflicts
-use crate::database::models::{
-    Host as DbHost, 
-    Port as DbPort, 
-    Vulnerability as DbVulnerability,
-    Project as DbProject
-};
-
-// Conversion functions between database and scanning types
-impl From<DbVulnerability> for Vulnerability {
-    fn from(db_vuln: DbVulnerability) -> Self {
-        let severity = match db_vuln.severity.as_str() {
-            "info" => Severity::Info,
-            "low" => Severity::Low,
-            "medium" => Severity::Medium,
-            "high" => Severity::High,
-            "critical" => Severity::Critical,
-            _ => Severity::Info,
-        };
-
-        let references = if let Some(ref_str) = db_vuln.references {
-            serde_json::from_str(&ref_str).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        Vulnerability {
-            id: db_vuln.id,
-            name: db_vuln.name,
-            severity,
-            description: db_vuln.description,
-            cvss_score: db_vuln.cvss_score,
-            references,
-        }
-    }
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ScanOptions {
+    #[serde(rename = "targetIp")]
+    target_ip: String,
+    #[serde(rename = "scanType")]
+    scan_type: String,
 }
 
-impl From<DbPort> for Port {
-    fn from(db_port: DbPort) -> Self {
-        Port {
-            number: db_port.number as u16,
-            protocol: db_port.protocol,
-            state: db_port.state,
-            service: db_port.service,
-            version: db_port.version,
-            banner: db_port.banner,
-        }
-    }
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VulnerabilityResult {
+    id: String,
+    severity: String,
+    description: String,
+    port: Option<u16>,
+    service: Option<String>,
 }
 
-impl From<DbHost> for Host {
-    fn from(db_host: DbHost) -> Self {
-        Host {
-            id: db_host.id,
-            ip: db_host.ip,
-            hostname: db_host.hostname,
-            os: db_host.os_name,
-            status: db_host.status,
-            discovered_at: db_host.created_at.to_rfc3339(),
-        }
-    }
+#[derive(Debug, Serialize, Clone)]
+pub struct ScanProgressEvent {
+    #[serde(rename = "scanId")]
+    scan_id: String,
+    progress: f32,
+    message: Option<String>,
 }
 
-impl From<DbProject> for Project {
-    fn from(db_project: DbProject) -> Self {
-        Project {
-            id: db_project.id,
-            name: db_project.name,
-            description: db_project.description,
-            created_at: db_project.created_at.to_rfc3339(),
-        }
-    }
+pub struct ScanState {
+    pub active_scans: HashMap<String, tokio::task::JoinHandle<()>>,
 }
 
-// Commands
+pub type ScanStateStore = Mutex<ScanState>;
+
 #[tauri::command]
 pub async fn start_scan(
-    state: State<'_, AppState>,
-    target: ScanTarget,
-    _window: Window,
+    app: AppHandle,
+    options: ScanOptions,
+    state: State<'_, ScanStateStore>,
 ) -> Result<String, String> {
-    let scan_id = state.scan_coordinator.start_scan(target).await
-        .map_err(|e| e.to_string())?;
-    
-    Ok(scan_id.to_string())
-}
-
-#[tauri::command]
-pub async fn cancel_scan(
-    state: State<'_, AppState>,
-    scan_id: String,
-) -> Result<(), String> {
-    let uuid = Uuid::from_str(&scan_id)
-        .map_err(|e| format!("Invalid scan ID: {}", e))?;
-    
-    state.scan_coordinator.cancel_scan(uuid).await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn get_scan_results(
-    state: State<'_, AppState>,
-    scan_id: Option<String>,
-) -> Result<Vec<ScanResult>, String> {
-    let results = state.scan_results.read().await;
-    
-    if let Some(id) = scan_id {
-        let uuid = Uuid::from_str(&id)
-            .map_err(|e| format!("Invalid scan ID: {}", e))?;
-        Ok(results.iter()
-            .filter(|r| r.id == uuid)
-            .cloned()
-            .collect())
-    } else {
-        Ok(results.clone())
+    // Validate input
+    if !is_valid_target(&options.target_ip) {
+        return Err("Invalid target IP or hostname".to_string());
     }
-}
 
-#[tauri::command]
-pub async fn get_active_scans(
-    state: State<'_, AppState>,
-) -> Result<Vec<ActiveScanInfo>, String> {
-    let active_scans = state.scan_coordinator.get_active_scans().await;
-    
-    Ok(active_scans.into_iter().map(|(id, status)| ActiveScanInfo {
-        id: id.to_string(),
-        status,
-    }).collect())
-}
+    let scan_id = Uuid::new_v4().to_string();
+    let scan_id_clone = scan_id.clone();
+    let app_handle = app.clone();
 
-#[tauri::command]
-pub async fn scan_network_range(
-    state: State<'_, AppState>,
-    range: NetworkRangeRequest,
-    window: Window,
-) -> Result<Vec<String>, String> {
-    use crate::utils::validation::InputValidator;
-    
-    InputValidator::validate_cidr(&range.cidr)
-        .map_err(|e| e.to_string())?;
-    
-    InputValidator::validate_scan_type(&range.scan_type)
-        .map_err(|e| e.to_string())?;
-
-    let scan_type_enum = match range.scan_type.as_str() {
-        "quick" => ScanType::Quick,
-        "comprehensive" => ScanType::Comprehensive,
-        "stealth" => ScanType::Stealth,
-        _ => ScanType::Quick,
-    };
-
-    let (progress_tx, mut progress_rx) = mpsc::channel(100);
-    
-    // Forward network scan progress
-    let window_clone = window.clone();
-    tokio::spawn(async move {
-        while let Some(progress) = progress_rx.recv().await {
-            let _ = window_clone.emit("network-scan-progress", &progress);
+    // Spawn scan task
+    let handle = tokio::spawn(async move {
+        if let Err(e) = run_scan(app_handle, scan_id_clone, options).await {
+            eprintln!("Scan error: {}", e);
         }
     });
 
-    let scan_ids = state.scan_coordinator
-        .scan_network_range(&range.cidr, &range.exclude, scan_type_enum, progress_tx)
-        .await
-        .map_err(|e| e.to_string())?;
-    
-    Ok(scan_ids.into_iter().map(|id| id.to_string()).collect())
+    // Store scan handle
+    state.lock().unwrap().active_scans.insert(scan_id.clone(), handle);
+
+    Ok(scan_id)
 }
 
 #[tauri::command]
-pub async fn get_scan_statistics(
-    state: State<'_, AppState>,
-) -> Result<ScanStatistics, String> {
-    Ok(state.scan_coordinator.get_scan_statistics().await)
-}
-
-// Database commands with type conversion
-#[tauri::command]
-pub async fn get_hosts(
-    state: State<'_, AppState>,
-) -> Result<Vec<Host>, String> {
-    let db_hosts = HostOperations::list_all(&state.database)
-        .await
-        .map_err(|e| e.to_string())?;
+pub async fn stop_scan(
+    scan_id: String,
+    state: State<'_, ScanStateStore>,
+) -> Result<(), String> {
+    let mut scan_state = state.lock().unwrap();
     
-    Ok(db_hosts.into_iter().map(Host::from).collect())
-}
-
-#[tauri::command]
-pub async fn get_host_details(
-    state: State<'_, AppState>,
-    host_id: String,
-) -> Result<HostDetails, String> {
-    let (db_host, db_ports) = HostOperations::get_with_ports(&state.database, &host_id)
-        .await
-        .map_err(|e| e.to_string())?;
-    
-    let db_vulnerabilities = VulnerabilityOperations::find_by_host(&state.database, &host_id)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let host = Host::from(db_host);
-    let ports = db_ports.into_iter().map(Port::from).collect();
-    let vulnerabilities = db_vulnerabilities.into_iter().map(Vulnerability::from).collect();
-
-    Ok(HostDetails {
-        host,
-        ports,
-        vulnerabilities,
-    })
+    if let Some(handle) = scan_state.active_scans.remove(&scan_id) {
+        handle.abort();
+        Ok(())
+    } else {
+        Err("Scan not found".to_string())
+    }
 }
 
 #[tauri::command]
 pub async fn get_vulnerabilities(
-    state: State<'_, AppState>,
     severity_filter: Option<String>,
-) -> Result<Vec<Vulnerability>, String> {
-    let db_vulnerabilities = match severity_filter {
-        Some(_) => VulnerabilityOperations::find_high_severity(&state.database)
-            .await
-            .map_err(|e| e.to_string())?,
-        None => VulnerabilityOperations::list_all(&state.database)
-            .await
-            .map_err(|e| e.to_string())?
+) -> Result<Vec<VulnerabilityResult>, String> {
+    // Mock implementation - replace with actual vulnerability retrieval
+    let mut vulnerabilities = vec![
+        VulnerabilityResult {
+            id: "vuln-1".to_string(),
+            severity: "high".to_string(),
+            description: "Open SSH port detected".to_string(),
+            port: Some(22),
+            service: Some("ssh".to_string()),
+        },
+        VulnerabilityResult {
+            id: "vuln-2".to_string(),
+            severity: "medium".to_string(),
+            description: "HTTP service without HTTPS".to_string(),
+            port: Some(80),
+            service: Some("http".to_string()),
+        },
+    ];
+
+    // Apply filter if provided
+    if let Some(filter) = severity_filter {
+        vulnerabilities.retain(|v| v.severity == filter);
+    }
+
+    Ok(vulnerabilities)
+}
+
+#[tauri::command]
+pub fn is_scanning(state: State<'_, ScanStateStore>) -> bool {
+    !state.lock().unwrap().active_scans.is_empty()
+}
+
+// Helper functions
+fn is_valid_target(target: &str) -> bool {
+    use regex::Regex;
+    
+    let ip_regex = Regex::new(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/[0-9]{1,2})?$").unwrap();
+    let domain_regex = Regex::new(r"^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$").unwrap();
+    
+    ip_regex.is_match(target) || domain_regex.is_match(target)
+}
+
+async fn run_scan(
+    app: AppHandle,
+    scan_id: String,
+    options: ScanOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command;
+
+    let event_name = format!("scan-progress-{}", scan_id);
+
+    // Build nmap command
+    let mut cmd = Command::new("nmap");
+    cmd.arg("-v")
+       .arg("--stats-every")
+       .arg("5s")
+       .arg(&options.target_ip)
+       .stdout(Stdio::piped())
+       .stderr(Stdio::piped());
+
+    // Add scan type specific args
+    match options.scan_type.as_str() {
+        "quick" => {
+            cmd.arg("-T4").arg("-F");
+        }
+        "full" => {
+            cmd.arg("-p-").arg("-sV");
+        }
+        _ => {
+            cmd.arg("-sS");
+        }
+    }
+
+    let mut child = cmd.spawn()?;
+    
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    
+    let mut stdout_reader = BufReader::new(stdout).lines();
+    let mut stderr_reader = BufReader::new(stderr).lines();
+
+    // Process output
+    loop {
+        tokio::select! {
+            line = stdout_reader.next_line() => {
+                match line {
+                    Ok(Some(line)) => {
+                        let progress = parse_nmap_progress(&line);
+                        let event = ScanProgressEvent {
+                            scan_id: scan_id.clone(),
+                            progress,
+                            message: Some(line),
+                        };
+                        // In Tauri v2, use emit instead of emit_all
+                        let _ = app.emit(&event_name, &event);
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        eprintln!("Error reading stdout: {}", e);
+                        break;
+                    }
+                }
+            }
+            err_line = stderr_reader.next_line() => {
+                if let Ok(Some(line)) = err_line {
+                    let event = ScanProgressEvent {
+                        scan_id: scan_id.clone(),
+                        progress: 0.0,
+                        message: Some(format!("Error: {}", line)),
+                    };
+                    let _ = app.emit(&event_name, &event);
+                }
+            }
+        }
+    }
+
+    // Wait for process to complete
+    let _ = child.wait().await?;
+
+    // Send completion event
+    let event = ScanProgressEvent {
+        scan_id: scan_id.clone(),
+        progress: 100.0,
+        message: Some("Scan completed".to_string()),
     };
-    
-    Ok(db_vulnerabilities.into_iter().map(Vulnerability::from).collect())
+    let _ = app.emit(&event_name, &event);
+
+    Ok(())
 }
 
-#[tauri::command]
-pub async fn create_project(
-    state: State<'_, AppState>,
-    name: String,
-    description: Option<String>,
-) -> Result<Project, String> {
-    let db_project = ProjectOperations::create(&state.database, &name, description.as_deref())
-        .await
-        .map_err(|e| e.to_string())?;
-    
-    Ok(Project::from(db_project))
-}
-
-#[tauri::command]
-pub async fn list_projects(
-    state: State<'_, AppState>,
-) -> Result<Vec<Project>, String> {
-    let db_projects = ProjectOperations::list_all(&state.database)
-        .await
-        .map_err(|e| e.to_string())?;
-    
-    Ok(db_projects.into_iter().map(Project::from).collect())
-}
-
-// Request/Response types
-#[derive(Serialize, Deserialize)]
-pub struct NetworkRangeRequest {
-    pub cidr: String,
-    pub exclude: Vec<String>,
-    pub scan_type: String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ActiveScanInfo {
-    pub id: String,
-    pub status: ScanStatus,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ScanProgressEvent {
-    pub target: String,
-    pub progress: ScanProgress,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct HostDetails {
-    pub host: Host,
-    pub ports: Vec<Port>,
-    pub vulnerabilities: Vec<Vulnerability>,
+fn parse_nmap_progress(line: &str) -> f32 {
+    // Simple progress parsing - improve based on actual nmap output
+    if line.contains("% done") {
+        if let Some(pos) = line.find('%') {
+            if pos > 0 {
+                let start = line[..pos].rfind(' ').unwrap_or(0) + 1;
+                if let Ok(percent) = line[start..pos].parse::<f32>() {
+                    return percent;
+                }
+            }
+        }
+    }
+    0.0
 }

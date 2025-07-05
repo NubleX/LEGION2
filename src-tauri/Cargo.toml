@@ -1,34 +1,18 @@
 [package]
 name = "legion2"
-version = "0.2.0"
-description = "LEGION2 - Advanced Penetration Testing Framework"
-authors = ["NubleX nublexer@hotmail.com"]
-license = "GPLv3"
-repository = "https://github.com/nublex/legion2"
+version = "0.2.1-alpha"
+description = "LEGION2 - Network Penetration Testing Tool"
+authors = ["Igor Dunaev"]
 edition = "2021"
-build = "build.rs"
 
 [build-dependencies]
-tauri-build = { version = "2.0", features = [] }
+tauri-build = { version = "2.0.1", features = [] }
 
 [dependencies]
-tauri = { version = "2.0", features = [] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tokio = { version = "1.35", features = ["full"] }
-anyhow = "1.0"
-thiserror = "1.0"
-uuid = { version = "1.6", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
+tauri = { version = "2.0.1", features = [] }
+tauri-plugin-shell = "2.0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "0.8", features = ["v4"] }
 regex = "1.10"
-quick-xml = "0.31"
-cidr = "0.2"
-ipnet = "2.9"
-futures = "0.3"
-env_logger = "0.10"
-log = "0.4"
-
-[features]
-# This feature is used for production builds or when `devPath` points to the filesystem
-# DO NOT REMOVE!!
-custom-protocol = ["tauri/custom-protocol"]

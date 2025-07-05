@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"Default permissions for LEGION2","local":true,"windows":["main"],"permissions":["core:default","core:event:allow-listen","core:event:allow-emit","shell:allow-execute","shell:allow-spawn","shell:allow-open",{"identifier":"shell:allow-execute","allow":[{"args":true,"cmd":"nmap","name":"nmap"},{"args":true,"cmd":"masscan","name":"masscan"},{"args":true,"cmd":"pkexec","name":"pkexec"},{"args":true,"cmd":"legion2-nmap","name":"legion2-nmap"},{"args":true,"cmd":"legion2-masscan","name":"legion2-masscan"}]}]}}
