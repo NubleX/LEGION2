@@ -21,7 +21,7 @@
 import React, { useState } from 'react';
 import { Activity, Clock, Target, Shield, AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
 import useScanStore from '../stores/scanStore';
-import type { ScanResult } from '../../types/scanning';
+import type { ScanResult } from '../types/scanning';
 
 interface ScanProgressProps {
   showDetails?: boolean;

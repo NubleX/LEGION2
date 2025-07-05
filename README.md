@@ -4,14 +4,14 @@
 # LEGION2 - Advanced Penetration Testing Framework
 
 ![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)
-![Version](https://img.shields.io/badge/version-0.2.00--alpha-red.svg)
+![Version](https://img.shields.io/badge/version-0.2.1--alpha-red.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)
 ![Language](https://img.shields.io/badge/language-Rust-orange.svg)
 ![Status](https://img.shields.io/badge/status-alpha--development-orange.svg)
 
 ## ⚠️ ALPHA VERSION WARNING ⚠️
 
-### Version: 0.2.0-alpha
+### Version: 0.2.1-alpha
 
 </div>
 
@@ -46,7 +46,7 @@ This project addresses the critical issues that led to LEGION being archived in 
 LEGION2 will restore and extend the original LEGION feature set with significant improvements:
 
 <div align="center">
-  <img src="images/legion2/legion2-feauture-branch-nmap-api-running.png" alt="LEGION2 Screenshot" width="1300"/>
+  <img src="images/legion2/LEGION2alpha.jpg" alt="LEGION2 Screenshot" width="1300"/>
 </div>
 
 **Core Scanning Capabilities:**

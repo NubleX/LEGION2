@@ -18,28 +18,18 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-import ScannerPanel from './components/ScannerPanel';
+import { invoke } from '@tauri-apps/api/core';
 
-function App() {
-  return (
-    <div className="min-h-screen bg-gray-950 text-white p-6">
-      <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <header className="mb-8">
-          <h1 className="text-3xl font-bold">LEGION2</h1>
-          <p className="text-gray-400 mt-1">Network Penetration Testing Tool</p>
-          <p className="text-xs text-gray-600 mt-2">
-            Copyright (c) 2025 NubleX / Igor Dunaev • Forked from LEGION by Gotham Security
-          </p>
-        </header>
-        
-        {/* Main Scanner Panel */}
-        <main>
-          <ScannerPanel />
-        </main>
-      </div>
-    </div>
-  );
+export async function invokeTauriCommand<T = any>(
+  _cmd: string,
+  _args?: Record<string, any>
+): Promise<T> {
+  throw new Error('Unable to access Tauri API. Make sure the app is running in Tauri context.');
 }
 
-export default App;
+export function callTauriCommand(cmd: string, args = {}) {
+  return invoke(cmd, args);
+}
+
+
+export { listen } from '@tauri-apps/api/event';

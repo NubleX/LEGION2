@@ -21,4 +21,5 @@ class DictToObject(object):
 
     def __repr__(self):
         return '<{0}.incidents={1}  object at {2}>'.format(
+
             self.__class__.__name__, self.outputStructure, hex(id(self)))

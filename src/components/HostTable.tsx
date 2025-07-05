@@ -22,7 +22,7 @@
 import React, { useState, useEffect } from 'react';
 import { Monitor, AlertTriangle, Search, Filter, Download, Trash2, Eye } from 'lucide-react';
 import useHostStore from '../stores/hostStore';
-import type { Host, HostFilter } from '../../types/scanning';
+import type { Host, HostFilter } from '../types/scanning';
 
 interface HostTableProps {
   onHostSelect?: (host: Host) => void;
