@@ -23,32 +23,62 @@
     windows_subsystem = "windows"
 )]
 
-use tauri::Manager;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use sqlx::SqlitePool;
 
+mod database;
+mod scanning;
 mod commands;
+mod shared;
 
-use commands::{start_scan, stop_scan, get_vulnerabilities, is_scanning, ScanState};
-use std::collections::HashMap;
-use std::sync::Mutex;
+use database::DatabaseOperations;
+use scanning::{coordinator::ScanCoordinator, events::EventStreamer};
+use commands::{scan_commands::*, host_commands::*, event_commands::*};
 
-fn main() {
-    let scan_state = Mutex::new(ScanState {
-        active_scans: HashMap::new(),
+#[tokio::main]
+async fn main() {
+    // Initialize database
+    let db_pool = SqlitePool::connect("sqlite:legion2.db").await
+        .expect("Failed to connect to database");
+    
+    // Run migrations
+    sqlx::migrate!("./migrations").run(&db_pool).await
+        .expect("Failed to run migrations");
+    
+    let db_ops = Arc::new(DatabaseOperations::new(db_pool));
+    
+    // Initialize event streamer
+    let event_streamer = Arc::new(EventStreamer::new());
+    
+    // Initialize scanner coordinator
+    let (event_tx, mut event_rx) = mpsc::channel(1000);
+    let coordinator = Arc::new(ScanCoordinator::new(
+        db_ops.clone(),
+        event_tx,
+    ));
+    
+    // Bridge events to streamer
+    let streamer_clone = event_streamer.clone();
+    tokio::spawn(async move {
+        while let Some(event) = event_rx.recv().await {
+            streamer_clone.send_event(event).await;
+        }
     });
-
+    
     tauri::Builder::default()
-        .manage(scan_state)
-        .setup(|app| {
-    let window = app.get_webview_window("main").unwrap();
-    window.maximize()?;
-    window.set_decorations(true)?;
-    Ok(())
-})
+        .manage(db_ops)
+        .manage(coordinator)
+        .manage(event_streamer)
         .invoke_handler(tauri::generate_handler![
-            start_scan,
-            stop_scan,
-            get_vulnerabilities,
-            is_scanning
+            start_network_scan,
+            cancel_network_scan,
+            get_scan_progress,
+            get_all_hosts,
+            get_host_details,
+            delete_host,
+            batch_import_hosts,
+            setup_event_stream
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

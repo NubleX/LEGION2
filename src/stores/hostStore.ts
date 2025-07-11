@@ -11,7 +11,7 @@ export interface Host {
   os_name?: string;
   os_family?: string;
   os_accuracy?: number;
-  status: 'up' | 'down' | 'unknown';
+  status: 'up' | 'down' | 'unknown' | 'scanning';
   last_seen: string;
   created_at: string;
   updated_at: string;
@@ -20,7 +20,7 @@ export interface Host {
 }
 
 export interface HostFilter {
-  status?: 'up' | 'down' | 'unknown';
+  status?: 'up' | 'down' | 'unknown' | 'scanning';
   os_family?: string;
   has_vulnerabilities?: boolean;
   port_range?: { min: number; max: number };
@@ -44,7 +44,7 @@ interface HostStore {
   exportHosts: (format: 'json' | 'csv' | 'xml') => Promise<string>;
   deleteMultipleHosts: (hostIds: string[]) => Promise<void>;
   refreshHost: (hostId: string) => Promise<void>;
-  getHostsByStatus: (status: 'up' | 'down' | 'unknown') => Host[];
+  getHostsByStatus: (status: 'up' | 'down' | 'unknown' | 'scanning') => Host[];
   getHostsBySeverity: (severity: 'critical' | 'high') => Host[];
   updateStatistics: () => void;
 }
@@ -165,7 +165,7 @@ const useHostStore = create<HostStore>((set, get) => ({
     console.log('Loading details for host:', hostId);
   },
 
-  exportHosts: async (format: string) => {
+  exportHosts: async () => {
     return JSON.stringify(get().filteredHosts, null, 2);
   },
 
@@ -178,7 +178,7 @@ const useHostStore = create<HostStore>((set, get) => ({
     console.log('Refreshing host:', hostId);
   },
 
-  getHostsByStatus: (status: 'up' | 'down' | 'unknown') => {
+  getHostsByStatus: (status: 'up' | 'down' | 'unknown' | 'scanning') => {
     return get().hosts.filter(h => h.status === status);
   },
 

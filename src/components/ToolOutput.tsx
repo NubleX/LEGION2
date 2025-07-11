@@ -2,12 +2,12 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Terminal, Copy, Download, Filter, Search, ChevronDown, ChevronUp } from 'lucide-react';
+import { Terminal, Copy, Download, Search, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface ToolOutputProps {
-  className?: string;
   outputs: ToolOutput[];
   isLive?: boolean;
+  className?: string;
 }
 
 interface ToolOutput {

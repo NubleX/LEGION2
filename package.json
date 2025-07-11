@@ -21,7 +21,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.11",
-    "@tauri-apps/api": "^2.6.0",
+    "@tauri-apps/api": "^2.0.1",
     "@tauri-apps/cli": "^2.0.0-rc.18",
     "@types/node": "^24.0.10",
     "@types/react": "^18.3.23",

@@ -4,13 +4,12 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { Network, ZoomIn, ZoomOut, RotateCcw, Eye, EyeOff } from 'lucide-react';
 import type { Host } from '../stores/hostStore';
-import { ScanConfig } from '../types/scan';
 
 interface NetworkMapProps {
-  className?: string;
   hosts: Host[];
   onHostSelect: (host: Host) => void;
   selectedHostId?: string;
+  className?: string;
 }
 
 interface NetworkNode {

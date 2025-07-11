@@ -136,3 +136,10 @@ ghostdriver.log
 huge_nmap.xml
 
 .vscode
+
+# sqlx databse
+src-tauri/.sqlx
+*.db
+*.db-*
+legion2.db
+.sqlx/

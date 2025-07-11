@@ -21,9 +21,12 @@
 import React, { useState, useMemo } from 'react';
 import { Shield, AlertTriangle, Download, Search } from 'lucide-react';
 import useScanStore from '../stores/scanStore';
+import { Host } from '../stores/hostStore'
 
 interface ResultViewerProps {
   selectedScanId?: string;
+  selectedHost?: Host;
+  className?: string;
 }
 
 const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {

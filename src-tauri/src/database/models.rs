@@ -20,6 +20,9 @@
 
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use std::fmt;
+use std::str::FromStr;
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Host {
@@ -31,65 +34,58 @@ pub struct Host {
     pub os_name: Option<String>,
     pub os_family: Option<String>,
     pub os_accuracy: Option<f32>,
-    pub status: String,
+    pub status: HostStatus,
+    pub last_seen: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub port_count: i32,
+    pub vulnerability_count: i32,
+    pub notes: Option<String>,
+    pub tags: Vec<String>,
+    pub scan_progress: Option<f32>,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum HostStatus {
+    Up,
+    Down,
+    Unknown,
+    Scanning,
+}
+
+impl fmt::Display for HostStatus {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            HostStatus::Up => write!(f, "Up"),
+            HostStatus::Down => write!(f, "Down"),
+            HostStatus::Unknown => write!(f, "Unknown"),
+            HostStatus::Scanning => write!(f, "Scanning"),
+        }
+    }
+}
+
+impl FromStr for HostStatus {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Up" => Ok(HostStatus::Up),
+            "Down" => Ok(HostStatus::Down),
+            "Unknown" => Ok(HostStatus::Unknown),
+            "Scanning" => Ok(HostStatus::Scanning),
+            _ => Err(anyhow::anyhow!("Invalid HostStatus: {}", s)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Port {
-    pub id: String,
-    pub host_id: String,
-    pub number: i32,
-    pub protocol: String,
-    pub state: String,
-    pub service: Option<String>,
-    pub version: Option<String>,
-    pub banner: Option<String>,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Scan {
-    pub id: String,
-    pub name: String,
-    pub targets: String, // JSON array of targets
-    pub scan_type: String,
-    pub status: String,
-    pub progress: f32,
-    pub start_time: DateTime<Utc>,
-    pub end_time: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Vulnerability {
-    pub id: String,
-    pub host_id: String,
-    pub port_id: Option<String>,
-    pub name: String,
-    pub severity: String,
-    pub description: String,
-    pub cvss_score: Option<f32>,
-    pub references: Option<String>, // JSON array
-    pub discovered_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Script {
-    pub id: String,
-    pub host_id: String,
-    pub port_id: Option<String>,
-    pub name: String,
-    pub output: String,
-    pub executed_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Project {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+pub struct ScanStatistics {
+    pub total_scans: u32,
+    pub active_scans: u32,
+    pub completed_scans: u32,
+    pub failed_scans: u32,
+    pub total_hosts_discovered: u32,
+    pub total_ports_found: u32,
+    pub total_vulnerabilities: u32,
 }

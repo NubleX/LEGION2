@@ -18,6 +18,7 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
+import { ScanConfig } from './types/scanning';
 import ScanForm from './components/ScanForm';
 import NetworkMap from './components/NetworkMap';
 import ToolOutput from './components/ToolOutput';
@@ -35,10 +36,9 @@ function App() {
     outputs: []
   };
 
-  const selectedHost = null;
   const setSelectedHost = (host: any) => console.log("selected", host);
 
-  const startScan = (config: any) => console.log("starting scan with", config);
+  const startScan = async (config: ScanConfig) => console.log("starting scan with", config);
 
   return (
     <div className="min-h-screen bg-gray-950 text-white p-6">

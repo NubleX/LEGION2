@@ -3,10 +3,10 @@
 
 import React, { useState } from 'react';
 import { Play, Settings, Network, Zap, Shield, Target, AlertCircle } from 'lucide-react';
-import { ScanConfig } from '../types/scan';
+import { ScanConfig } from '../types/scanning';
 
 interface ScanFormProps {
-  onStartScan: (config: ScanConfig) => void;
+  onStartScan: (config: ScanConfig) => Promise<void>;
   isScanning: boolean;
   className?: string;
 }
@@ -29,24 +29,20 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, isScanning }) => {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
 
-  const validateForm = (): boolean => {
-    const newErrors: string[] = [];
-    
-    if (!config.targets.trim()) {
-      newErrors.push('Target is required');
-    }
-    
-    if (!config.useNmap && !config.useMasscan) {
-      newErrors.push('Select at least one scanning tool');
-    }
-
-    if (config.masscanRate < 100 || config.masscanRate > 100000) {
-      newErrors.push('Masscan rate must be between 100-100000');
-    }
-
-    setErrors(newErrors);
-    return newErrors.length === 0;
-  };
+const validateForm = (): boolean => {
+  const newErrors: string[] = [];
+  if (!config.targets.trim()) {
+    newErrors.push('Target is required');
+  }
+  if (!config.useNmap && !config.useMasscan) {
+    newErrors.push('Select at least one scanning tool');
+  }
+  if (config.masscanRate !== undefined && (config.masscanRate < 100 || config.masscanRate > 100000)) {
+    newErrors.push('Masscan rate must be between 100-100000');
+  }
+  setErrors(newErrors);
+  return newErrors.length === 0;
+};
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

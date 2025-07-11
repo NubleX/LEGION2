@@ -19,26 +19,21 @@
 //     If not, see <http://www.gnu.org/licenses/>.
 
 import { create } from 'zustand';
-import { legionService, type ScanProgressEvent, type VulnerabilityResult } from '../services/legionService.ts';
-import type { UnlistenFn } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
-interface ScanInfo {
-  id: string;
+interface ScanOptions {
   targetIp: string;
   scanType: string;
   progress: number;
-  isActive: boolean;
-  unlisten?: UnlistenFn;
 }
 
 interface LegionStore {
-  // State
-  currentScan: ScanInfo | null;
-  vulnerabilities: VulnerabilityResult[];
+  currentScan: ScanOptions | null;
   isScanning: boolean;
   verboseOutput: string[];
+  vulnerabilities: any[];
   
-  // Actions
   startScan: (targetIp: string, scanType: string) => Promise<void>;
   stopScan: () => Promise<void>;
   updateScanProgress: (scanId: string, progress: number) => void;
@@ -47,137 +42,75 @@ interface LegionStore {
   clearVerboseOutput: () => void;
 }
 
-export const useLegionStore = create<LegionStore>((set, get) => ({
-  // Initial state
+const useLegionStore = create<LegionStore>((set, get) => ({
   currentScan: null,
-  vulnerabilities: [],
   isScanning: false,
   verboseOutput: [],
+  vulnerabilities: [],
 
-  // Start scan
   startScan: async (targetIp: string, scanType: string) => {
     try {
-      // Stop any existing scan
-      const currentScan = get().currentScan;
-      if (currentScan?.isActive) {
-        await get().stopScan();
-      }
-
-      // Start new scan with combined options
-      const scanId = await legionService.startScan({ targetIp, scanType });
-      
-      // Set up progress listener
-      const unlisten = await legionService.onScanProgress(scanId, (progress: ScanProgressEvent) => {
-        get().updateScanProgress(scanId, progress.progress);
-        if (progress.message) {
-          get().appendVerboseOutput(progress.message);
-        }
+      await invoke('start_network_scan', { 
+        targets: [targetIp], 
+        scanType 
       });
-
-      // Update state
-      set({
-        currentScan: {
-          id: scanId,
+      
+      set({ 
+        isScanning: true, 
+        currentScan: { 
           targetIp,
           scanType,
-          progress: 0,
-          isActive: true,
-          unlisten
-        },
-        isScanning: true
+          progress: 0 
+        } 
       });
-
+      
+      // Start listening for progress updates
+      await listen('scan-event', (event: any) => {
+        const scanEvent = event.payload;
+        if (scanEvent.event_type === 'ScanProgress') {
+          get().updateScanProgress(scanEvent.scan_id, scanEvent.data.progress);
+        }
+      });
+      
     } catch (error) {
       console.error('Failed to start scan:', error);
-      get().appendVerboseOutput(`Error: ${error}`);
-      throw error;
+      set({ isScanning: false, currentScan: null });
     }
   },
 
-  // Stop scan
   stopScan: async () => {
-    const currentScan = get().currentScan;
-    if (!currentScan) return;
-
     try {
-      // Stop the scan
-      await legionService.stopScan(currentScan.id);
-      
-      // Remove listener
-      await legionService.removeScanListener(currentScan.id);
-      
-      // Clean up unlisten function if exists
-      if (currentScan.unlisten) {
-        currentScan.unlisten();
+      const { currentScan } = get();
+      if (currentScan) {
+        await invoke('cancel_network_scan', { scanId: 'current' });
       }
-
-      // Update state
-      set({
-        currentScan: null,
-        isScanning: false
-      });
-      
-      get().appendVerboseOutput('Scan stopped by user');
+      set({ isScanning: false, currentScan: null });
     } catch (error) {
       console.error('Failed to stop scan:', error);
-      get().appendVerboseOutput(`Error stopping scan: ${error}`);
     }
   },
 
-  // Update scan progress
-  updateScanProgress: (scanId: string, progress: number) => {
-    set((state) => {
-      if (state.currentScan?.id === scanId) {
-        return {
-          currentScan: {
-            ...state.currentScan,
-            progress
-          }
-        };
-      }
-      return state;
-    });
-
-    // Check if scan completed
-    if (progress >= 100) {
-      const currentScan = get().currentScan;
-      if (currentScan?.id === scanId) {
-        // Clean up listener
-        legionService.removeScanListener(scanId);
-        
-        set({
-          currentScan: {
-            ...currentScan,
-            isActive: false
-          },
-          isScanning: false
-        });
-        
-        get().appendVerboseOutput('Scan completed successfully');
-        // Reload vulnerabilities after scan completes
-        get().loadVulnerabilities();
-      }
-    }
+  updateScanProgress: (_scanId: string, progress: number) => {
+    set(state => ({
+      currentScan: state.currentScan ? {
+        ...state.currentScan,
+        progress
+      } : null
+    }));
   },
 
-  // Load vulnerabilities
   loadVulnerabilities: async (severityFilter?: string) => {
     try {
-      const vulnerabilities = await legionService.getVulnerabilities(severityFilter);
-      set({ vulnerabilities });
+      // Implementation would call backend API
+      console.log('Loading vulnerabilities with filter:', severityFilter);
     } catch (error) {
       console.error('Failed to load vulnerabilities:', error);
-      get().appendVerboseOutput(`Error loading vulnerabilities: ${error}`);
     }
   },
 
-  // Verbose output management
   appendVerboseOutput: (message: string) => {
-    const timestamp = new Date().toLocaleTimeString();
-    const formattedMessage = `[${timestamp}] ${message}`;
-    
-    set((state) => ({
-      verboseOutput: [...state.verboseOutput, formattedMessage].slice(-1000) // Keep last 1000 lines
+    set(state => ({
+      verboseOutput: [...state.verboseOutput, message]
     }));
   },
 
@@ -185,3 +118,6 @@ export const useLegionStore = create<LegionStore>((set, get) => ({
     set({ verboseOutput: [] });
   }
 }));
+
+export { useLegionStore };
+export type { LegionStore };

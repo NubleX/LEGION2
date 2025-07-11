@@ -1,13 +1,4 @@
-export interface Host {
-  id: string;              // unique identifier, maybe IP or a UUID
-  ip: string;              // IP address
-  hostname?: string;       // optional hostname
-  mac?: string;            // MAC address
-  ports?: PortInfo[];      // open ports, etc.
-  os?: string;             // OS guess (if scanned)
-  status?: 'up' | 'down';  // ping status
-  lastSeen?: string;       // timestamp
-}
+import { Host } from '../stores/hostStore'
 
 export interface PortInfo {
   port: number;

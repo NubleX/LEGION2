@@ -18,8 +18,11 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use super::*;
-use crate::database::{Database, operations::*};
+use crate::scanning::nmap::NmapScanner;
+use crate::scanning::models::{ScanStatus, ScanTarget, ScanType, ScanProgress};
+use crate::scanning::events::{ScanEvent, EventType};
+use crate::database::DatabaseOperations;
+use crate::shared::{StoredPort, StoredVulnerability};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,9 +43,9 @@ pub struct ScanStatistics {
 }
 
 pub struct ScanCoordinator {
-    database: Arc<Database>,
+    database: Arc<DatabaseOperations>,
     active_scans: Arc<RwLock<HashMap<uuid::Uuid, ScanHandle>>>,
-    results_tx: mpsc::Sender<ScanResult>,
+    results_tx: mpsc::Sender<ScanEvent>,
     nmap_scanner: Arc<NmapScanner>,
 }
 
@@ -52,7 +55,7 @@ struct ScanHandle {
 }
 
 impl ScanCoordinator {
-    pub fn new(database: Arc<Database>, results_tx: mpsc::Sender<ScanResult>) -> Self {
+    pub fn new(database: Arc<DatabaseOperations>, results_tx: mpsc::Sender<ScanEvent>) -> Self {
         Self {
             database,
             active_scans: Arc::new(RwLock::new(HashMap::new())),
@@ -66,11 +69,7 @@ impl ScanCoordinator {
         let (cancel_tx, mut cancel_rx) = mpsc::channel(1);
         
         // Create scan record in database
-        let host = HostOperations::upsert(
-            &self.database, 
-            &target.ip.to_string(), 
-            target.hostname.as_deref()
-        ).await?;
+        let host = self.database.upsert_host(&target.ip.to_string(), target.hostname.as_deref()).await?;
 
         // Store scan handle
         {
@@ -93,81 +92,111 @@ impl ScanCoordinator {
 
         // Spawn scan task
         tokio::spawn(async move {
-            // Run the scan
-            let result = tokio::select! {
-                _ = cancel_rx.recv() => {
-                    log::info!("Scan {} cancelled", scan_id);
-                    Err(anyhow::anyhow!("Scan cancelled"))
-                }
-                scan_result = scanner.scan_target(&target, progress_tx) => {
-                    scan_result
-                }
-            };
-
-            // Process result
-            match result {
-                Ok(mut scan_result) => {
-                    // Store results in database
-                    for port in &scan_result.open_ports {
-                        if let Err(e) = PortOperations::create(
-                            &db,
-                            &host_id,
-                            port.number as i32,
-                            &port.protocol,
-                            &port.state,
-                            port.service.as_deref(),
-                            port.version.as_deref(),
-                        ).await {
-                            log::error!("Failed to store port: {}", e);
-                        }
+            let result: Result<(), anyhow::Error> = async {
+                // Run the scan
+                let result = tokio::select! {
+                    _ = cancel_rx.recv() => {
+                        log::info!("Scan {} cancelled", scan_id);
+                        Err(anyhow::anyhow!("Scan cancelled"))
                     }
-
-                    // Store OS detection if available
-                    if let Some(os) = &scan_result.os_detection {
-                        if let Err(e) = HostOperations::update_os(
-                            &db,
-                            &host_id,
-                            &os.name,
-                            &os.vendor,
-                            os.accuracy,
-                        ).await {
-                            log::error!("Failed to update OS info: {}", e);
-                        }
+                    scan_result = scanner.scan_target(&target, progress_tx) => {
+                        scan_result
                     }
+                };
 
-                    // Update scan status
-                    scan_result.status = ScanStatus::Completed;
-                    
-                    // Send result
-                    let _ = results_tx.send(scan_result).await;
+                // Process result
+                match result {
+                    Ok(mut scan_result) => {
+                        // Store results in database
+                        for scan_port in &scan_result.open_ports {
+                            let stored_port = StoredPort {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                host_id: host_id.clone(),
+                                number: scan_port.number as i32, // Convert u16 to i32
+                                protocol: scan_port.protocol.clone(),
+                                state: scan_port.state.clone(),
+                                service: scan_port.service.clone(),
+                                version: scan_port.version.clone(),
+                                banner: scan_port.banner.clone(),
+                                confidence: scan_port.confidence,
+                                cpe: scan_port.cpe.clone(),
+                                discovered_at: chrono::Utc::now(),
+                                last_seen: chrono::Utc::now(),
+                            };
+                            if let Err(e) = db.add_port(&stored_port).await {
+                                log::error!("Failed to store port: {}", e);
+                            }
+                        }
+
+                        for scan_vulnerability in &scan_result.vulnerabilities {
+                            let stored_vulnerability = StoredVulnerability {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                host_id: host_id.clone(),
+                                port_id: None, // We don't have port_id here, will need to link later if needed
+                                name: scan_vulnerability.name.clone(),
+                                severity: scan_vulnerability.severity.clone(),
+                                description: scan_vulnerability.description.clone(),
+                                cvss_score: scan_vulnerability.cvss_score,
+                                cvss_vector: scan_vulnerability.cvss_vector.clone(),
+                                cve_id: scan_vulnerability.cve_id.clone(),
+                                reference_links: scan_vulnerability.reference_links.clone(),
+                                exploitable: scan_vulnerability.exploitable,
+                                discovered_at: scan_vulnerability.discovered_at,
+                                verified: scan_vulnerability.verified,
+                                false_positive: scan_vulnerability.false_positive,
+                            };
+                            if let Err(e) = db.add_vulnerability(&stored_vulnerability).await {
+                                log::error!("Failed to store vulnerability: {}", e);
+                            }
+                        }
+                        
+                        // Store OS detection if available
+                        if let Some(os) = &scan_result.os_detection {
+                            if let Err(e) = db.update_host_os(&host_id, &os.name, os.vendor.as_deref().unwrap_or_default(), os.accuracy).await {
+                                log::error!("Failed to update OS info: {}", e);
+                            }
+                        }
+
+                        // Update scan status
+                        scan_result.status = ScanStatus::Completed;
+                        
+                        // Send result as ScanEvent
+                        let scan_event = ScanEvent {
+                            scan_id: scan_result.id.clone(),
+                            event_type: EventType::ScanCompleted,
+                            timestamp: chrono::Utc::now(),
+                            data: serde_json::to_value(scan_result)?,
+                        };
+                        let _ = results_tx.send(scan_event).await;
+                    }
+                    Err(e) => {
+                        log::error!("Scan failed: {}", e);
+                        let failed_scan_event = ScanEvent {
+                            scan_id: scan_id.to_string(),
+                            event_type: EventType::ScanError,
+                            timestamp: chrono::Utc::now(),
+                            data: serde_json::json!({ "error": e.to_string() }),
+                        };
+                        let _ = results_tx.send(failed_scan_event).await;
+                    }
                 }
-                Err(e) => {
-                    log::error!("Scan failed: {}", e);
-                    let failed_result = ScanResult {
-                        id: scan_id,
-                        target_id: target.id,
-                        timestamp: chrono::Utc::now(),
-                        status: ScanStatus::Failed { 
-                            error: e.to_string() 
-                        },
-                        open_ports: Vec::new(),
-                        os_detection: None,
-                        vulnerabilities: Vec::new(),
-                    };
-                    let _ = results_tx.send(failed_result).await;
-                }
+
+                // Remove from active scans
+                let mut scans = active_scans.write().await;
+                scans.remove(&scan_id);
+                Ok(())
+            }.await;
+
+            if let Err(e) = result {
+                log::error!("Scan task failed: {}", e);
             }
-
-            // Remove from active scans
-            let mut scans = active_scans.write().await;
-            scans.remove(&scan_id);
         });
 
         // Spawn progress monitor
-        let window_clone = self.results_tx.clone();
+        let _window_clone = self.results_tx.clone();
         tokio::spawn(async move {
             while let Some(progress) = progress_rx.recv().await {
-                // In a real implementation, you'd emit this to the frontend
+                // In a real implementation, emit this to the frontend
                 log::debug!("Scan progress: {}%", progress.progress);
             }
         });
@@ -180,9 +209,7 @@ impl ScanCoordinator {
         if let Some(handle) = scans.get(&scan_id) {
             let _ = handle.cancel_tx.send(()).await;
             let mut status = handle.status.lock().await;
-            *status = ScanStatus::Failed { 
-                error: "Cancelled by user".to_string() 
-            };
+            *status = ScanStatus::Failed("Cancelled by user".to_string());
             Ok(())
         } else {
             Err(anyhow::anyhow!("Scan not found"))
@@ -212,10 +239,10 @@ impl ScanCoordinator {
         
         for (index, ip) in hosts.into_iter().enumerate() {
             let target = ScanTarget {
-                id: uuid::Uuid::new_v4(),
+                id: uuid::Uuid::new_v4().to_string(),
                 ip,
                 hostname: None,
-                ports: Vec::new(),
+                ports: Some(Vec::new()),
                 scan_type: scan_type.clone(),
             };
 
@@ -226,15 +253,16 @@ impl ScanCoordinator {
                     // Send progress update
                     let _ = progress_tx.send(ScanProgress {
                         scan_id: scan_id.to_string(),
-                        target_id: scan_id.to_string(),
                         progress: ((index + 1) as f32 / total_hosts as f32) * 100.0,
-                        current_phase: format!("Scanning {} ({}/{})", ip, index + 1, total_hosts),
-                        discovered_hosts: index as i32 + 1,
-                        total_ports_scanned: 0,
-                        open_ports_found: 0,
-                        estimated_time_remaining: None,
+                        current_target: Some(ip.to_string()),
+                        hosts_discovered: (index + 1) as u32,
+                        ports_found: 0,
+                        vulnerabilities: 0,
+                        elapsed_time: 0,
+                        estimated_remaining: None,
                         message: Some(format!("Started scan for {}", ip)),
                         start_time: chrono::Utc::now(),
+                        current_phase: format!("Scanning {} ({}/{})", ip, index + 1, total_hosts),
                     }).await;
                 }
                 Err(e) => {
@@ -262,7 +290,7 @@ impl ScanCoordinator {
         let scans = self.active_scans.read().await;
         let active_count = scans.len() as u32;
         
-        // You could query the database for more detailed stats
+        // query the database for more detailed stats
         ScanStatistics {
             total_scans: active_count,
             active_scans: active_count,

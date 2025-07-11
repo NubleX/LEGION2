@@ -18,7 +18,8 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use super::*;
+use crate::scanning::models::{ScanResult, ScanTarget, ScanType, ScanProgress, OSDetection, ScanStatus};
+use crate::shared::{ScanPort, Protocol, PortState};
 use anyhow::{Result, Context};
 use std::process::Stdio;
 use tokio::process::Command;
@@ -27,6 +28,7 @@ use tokio::sync::mpsc;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::HashMap;
+use chrono::Utc;
 
 pub struct NmapScanner {
     // Add configuration options if needed
@@ -65,11 +67,13 @@ impl NmapScanner {
             }
             ScanType::Comprehensive => {
                 cmd.args(&["-sS", "-sV", "-O", "-A", "-T4"]);
-                if !target.ports.is_empty() {
-                    let ports: Vec<String> = target.ports.iter()
-                        .map(|p| p.to_string())
-                        .collect();
-                    cmd.arg("-p").arg(ports.join(","));
+                if let Some(ports) = &target.ports {
+                    if !ports.is_empty() {
+                        let ports_str: Vec<String> = ports.iter()
+                            .map(|p| p.to_string())
+                            .collect();
+                        cmd.arg("-p").arg(ports_str.join(","));
+                    }
                 } else {
                     cmd.arg("-p").arg("1-65535");
                 }
@@ -82,6 +86,7 @@ impl NmapScanner {
                     cmd.arg(opt);
                 }
             }
+            _ => { /* Handle other scan types or default */ }
         }
         
         // Add target
@@ -99,10 +104,11 @@ impl NmapScanner {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             let tx = progress_tx.clone();
+            let target_id_clone = target.id.clone();
             
             tokio::spawn(async move {
                 while let Ok(Some(line)) = lines.next_line().await {
-                    if let Ok(progress) = parse_progress_line(&line) {
+                    if let Ok(progress) = parse_progress_line(&line, &target_id_clone) {
                         let _ = tx.send(progress).await;
                     }
                 }
@@ -130,15 +136,16 @@ impl NmapScanner {
         // Send completion progress
         let _ = progress_tx.send(ScanProgress {
             scan_id: target.id.to_string(),
-            target_id: target.id.to_string(),
             progress: 100.0,
-            current_phase: "Scan completed".to_string(),
-            discovered_hosts: 1,
-            total_ports_scanned: result.open_ports.len() as i32,
-            open_ports_found: result.open_ports.len() as i32,
-            estimated_time_remaining: Some(0),
+            current_target: Some(target.ip.to_string()),
+            hosts_discovered: 1,
+            ports_found: result.open_ports.len() as u32,
+            vulnerabilities: result.vulnerabilities.len() as u32,
+            elapsed_time: 0,
+            estimated_remaining: Some(0),
             message: Some("Scan completed successfully".to_string()),
-            start_time: chrono::Utc::now(),
+            start_time: Utc::now(),
+            current_phase: "Completed".to_string(),
         }).await;
 
         Ok(result)
@@ -149,19 +156,25 @@ impl NmapScanner {
         reader.trim_text(true);
         
         let mut result = ScanResult {
-            id: uuid::Uuid::new_v4(),
-            target_id: target.id,
-            timestamp: chrono::Utc::now(),
+            id: uuid::Uuid::new_v4().to_string(),
+            target_id: target.id.clone(),
             status: ScanStatus::Completed,
+            start_time: Utc::now(),
+            end_time: Some(Utc::now()),
+            duration: None,
             open_ports: Vec::new(),
             os_detection: None,
             vulnerabilities: Vec::new(),
+            scan_type: target.scan_type.to_string(),
+            error_message: None,
+            raw_output: Some(xml_content.to_string()),
+            command_used: None,
         };
 
         let mut buf = Vec::new();
         let mut in_port = false;
-        let mut current_port: Option<Port> = None;
-        let mut in_osmatch = false;
+        let mut current_port: Option<ScanPort> = None;
+        let mut _in_osmatch = false;
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -170,7 +183,7 @@ impl NmapScanner {
                         b"port" => {
                             in_port = true;
                             let mut port_num = 0u16;
-                            let mut protocol = "tcp".to_string();
+                            let mut protocol = Protocol::Tcp;
                             
                             for attr in e.attributes() {
                                 let attr = attr?;
@@ -181,20 +194,26 @@ impl NmapScanner {
                                             .unwrap_or(0);
                                     }
                                     b"protocol" => {
-                                        protocol = std::str::from_utf8(&attr.value)?
-                                            .to_string();
+                                        protocol = match std::str::from_utf8(&attr.value)? {
+                                            "tcp" => Protocol::Tcp,
+                                            "udp" => Protocol::Udp,
+                                            _ => Protocol::Tcp,
+                                        };
                                     }
                                     _ => {}
                                 }
                             }
                             
-                            current_port = Some(Port {
+                            current_port = Some(ScanPort {
                                 number: port_num,
                                 protocol,
-                                state: "unknown".to_string(),
+                                state: PortState::Unknown, // Default to unknown, will be updated by <state> tag
                                 service: None,
                                 version: None,
                                 banner: None,
+                                confidence: None,
+                                cpe: Vec::new(),
+                                scripts: None,
                             });
                         }
                         b"state" if in_port => {
@@ -202,8 +221,12 @@ impl NmapScanner {
                                 for attr in e.attributes() {
                                     let attr = attr?;
                                     if attr.key.as_ref() == b"state" {
-                                        port.state = std::str::from_utf8(&attr.value)?
-                                            .to_string();
+                                        port.state = match std::str::from_utf8(&attr.value)? {
+                                            "open" => PortState::Open,
+                                            "closed" => PortState::Closed,
+                                            "filtered" => PortState::Filtered,
+                                            _ => PortState::Unknown,
+                                        };
                                     }
                                 }
                             }
@@ -234,7 +257,7 @@ impl NmapScanner {
                             }
                         }
                         b"osmatch" => {
-                            in_osmatch = true;
+                            _in_osmatch = true;
                             let mut os_name = String::new();
                             let mut accuracy = 0.0;
                             
@@ -256,11 +279,14 @@ impl NmapScanner {
                             
                             if result.os_detection.is_none() || 
                                result.os_detection.as_ref().unwrap().accuracy < accuracy {
-                                result.os_detection = Some(OsDetection {
+                                result.os_detection = Some(OSDetection {
                                     name: os_name.clone(),
                                     accuracy,
                                     family: extract_os_family(&os_name),
-                                    vendor: extract_os_vendor(&os_name),
+                                    vendor: Some(extract_os_vendor(&os_name)),
+                                    generation: None,
+                                    fingerprint: None,
+                                    cpe: Vec::new(),
                                 });
                             }
                         }
@@ -271,15 +297,15 @@ impl NmapScanner {
                     match e.name().as_ref() {
                         b"port" => {
                             if let Some(port) = current_port.take() {
-                                if port.state == "open" {
+                                if port.state == PortState::Open {
                                     result.open_ports.push(port);
                                 }
                             }
                             in_port = false;
                         }
                         b"osmatch" => {
-                            in_osmatch = false;
-                        }
+                            _in_osmatch = false;
+                       }
                         _ => {}
                     }
                 }
@@ -294,7 +320,7 @@ impl NmapScanner {
     }
 }
 
-fn parse_progress_line(line: &str) -> Result<ScanProgress> {
+fn parse_progress_line(line: &str, scan_id: &str) -> Result<ScanProgress> {
     // Parse nmap progress output
     // Example: "Completed SYN Stealth Scan at 14:25, 10.00s elapsed (1000 total ports)"
     let progress = if line.contains("% done") {
@@ -305,16 +331,17 @@ fn parse_progress_line(line: &str) -> Result<ScanProgress> {
                 if i > 0 {
                     if let Ok(percent) = parts[i-1].parse::<f32>() {
                         return Ok(ScanProgress {
-                            scan_id: String::new(),
-                            target_id: String::new(),
+                            scan_id: scan_id.to_string(),
                             progress: percent,
-                            current_phase: "Scanning".to_string(),
-                            discovered_hosts: 0,
-                            total_ports_scanned: 0,
-                            open_ports_found: 0,
-                            estimated_time_remaining: None,
+                            current_target: None,
+                            hosts_discovered: 0,
+                            ports_found: 0,
+                            vulnerabilities: 0,
+                            elapsed_time: 0,
+                            estimated_remaining: None,
                             message: Some(line.to_string()),
-                            start_time: chrono::Utc::now(),
+                            start_time: Utc::now(),
+                            current_phase: "Scanning".to_string(),
                         });
                     }
                 }
@@ -326,16 +353,17 @@ fn parse_progress_line(line: &str) -> Result<ScanProgress> {
     };
 
     Ok(ScanProgress {
-        scan_id: String::new(),
-        target_id: String::new(),
+        scan_id: scan_id.to_string(),
         progress,
-        current_phase: "Scanning".to_string(),
-        discovered_hosts: 0,
-        total_ports_scanned: 0,
-        open_ports_found: 0,
-        estimated_time_remaining: None,
+        current_target: None,
+        hosts_discovered: 0,
+        ports_found: 0,
+        vulnerabilities: 0,
+        elapsed_time: 0,
+        estimated_remaining: None,
         message: Some(line.to_string()),
-        start_time: chrono::Utc::now(),
+        start_time: Utc::now(),
+        current_phase: "Scanning".to_string(),
     })
 }
 

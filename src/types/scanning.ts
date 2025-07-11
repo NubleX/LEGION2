@@ -25,6 +25,30 @@ export type Protocol = 'tcp' | 'udp' | 'sctp';
 export type Severity = 'low' | 'medium' | 'high' | 'critical';
 export type HostStatus = 'up' | 'down' | 'unknown';
 
+export interface ScanConfig {
+  targets: string;
+  scanType: 'discovery' | 'port-scan' | 'service-scan' | 'vulnerability' | 'comprehensive' | 'quick' | 'stealth';
+  timing?: 'paranoid' | 'sneaky' | 'polite' | 'normal' | 'aggressive' | 'insane';
+  ports?: string;
+  portRange?: string;
+  topPorts?: number;
+  excludeHosts?: string;
+  stealthMode?: boolean;
+  osDetection?: boolean;
+  detectOS?: boolean;
+  serviceDetection?: boolean;
+  detectVersions?: boolean;
+  vulnerabilityAssessment?: boolean;
+  skipPing?: boolean;
+  useNmap?: boolean;
+  useMasscan?: boolean;
+  masscanRate?: number;
+  nmapOptions?: string;
+  maxConcurrent?: number;
+  timeout?: number;
+}
+
+
 // Network and targeting
 export interface IPRange {
   start: string;

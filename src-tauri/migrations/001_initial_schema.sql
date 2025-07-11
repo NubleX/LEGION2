@@ -1,4 +1,3 @@
--- Initial schema for LEGION2
 CREATE TABLE IF NOT EXISTS hosts (
     id TEXT PRIMARY KEY,
     ip TEXT NOT NULL,
@@ -9,8 +8,11 @@ CREATE TABLE IF NOT EXISTS hosts (
     os_family TEXT,
     os_accuracy REAL,
     status TEXT NOT NULL DEFAULT 'unknown',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    port_count INTEGER NOT NULL DEFAULT 0,
+    vulnerability_count INTEGER NOT NULL DEFAULT 0,
+    last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS ports (
@@ -23,7 +25,7 @@ CREATE TABLE IF NOT EXISTS ports (
     version TEXT,
     banner TEXT,
     created_at TEXT NOT NULL,
-    FOREIGN KEY (host_id) REFERENCES hosts(id)
+    FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS vulnerabilities (
@@ -34,10 +36,10 @@ CREATE TABLE IF NOT EXISTS vulnerabilities (
     severity TEXT NOT NULL,
     description TEXT NOT NULL,
     cvss_score REAL,
-    references TEXT,
+    reference_links TEXT,
     discovered_at TEXT NOT NULL,
-    FOREIGN KEY (host_id) REFERENCES hosts(id),
-    FOREIGN KEY (port_id) REFERENCES ports(id)
+    FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE CASCADE,
+    FOREIGN KEY (port_id) REFERENCES ports(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS projects (
