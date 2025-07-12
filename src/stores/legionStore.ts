@@ -21,6 +21,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import type { ScanConfig } from '../types/scanning';
 
 interface ScanOptions {
   targetIp: string;
@@ -34,7 +35,7 @@ interface LegionStore {
   verboseOutput: string[];
   vulnerabilities: any[];
   
-  startScan: (targetIp: string, scanType: string) => Promise<void>;
+  startScan: (config: ScanConfig) => Promise<void>;
   stopScan: () => Promise<void>;
   updateScanProgress: (scanId: string, progress: number) => void;
   loadVulnerabilities: (severityFilter?: string) => Promise<void>;
@@ -48,18 +49,53 @@ const useLegionStore = create<LegionStore>((set, get) => ({
   verboseOutput: [],
   vulnerabilities: [],
 
-  startScan: async (targetIp: string, scanType: string) => {
+  startScan: async (config: ScanConfig) => {
     try {
+      console.log('Legion Store: Starting scan with config:', config);
+      
+      // Extract the first target IP from the targets string (comma or newline separated)
+      const targetsList = config.targets.split(/[,\n]/).map(t => t.trim()).filter(t => t.length > 0);
+      if (targetsList.length === 0) {
+        throw new Error('No valid targets specified');
+      }
+      
+      // Map frontend ScanConfig to backend ScanOptions
+      // Convert scan type to match backend enum format
+      const scanTypeMap: Record<string, string> = {
+        'quick': 'Quick',
+        'comprehensive': 'Comprehensive', 
+        'stealth': 'Stealth',
+        'discovery': 'Discovery',
+        'port-scan': 'PortScan',
+        'service-scan': 'ServiceDetection',
+        'vulnerability': 'Vulnerability'
+      };
+      
+      const scanOptions = {
+        target_ip: targetsList[0], // Backend currently supports single target
+        scan_type: scanTypeMap[config.scanType] || config.scanType,
+        port_range: config.ports || config.portRange || null,
+        max_concurrent: config.maxConcurrent || null,
+        timeout: config.timeout || null,
+        stealth_mode: config.stealthMode || null,
+        os_detection: config.osDetection || config.detectOS || null,
+        service_detection: config.serviceDetection || config.detectVersions || null,
+        vulnerability_scan: config.vulnerabilityAssessment || null
+      };
+
+      console.log('Legion Store: Calling Tauri backend with:', { options: scanOptions });
+      
       await invoke('start_network_scan', { 
-        targets: [targetIp], 
-        scanType 
+        options: scanOptions
       });
+      
+      console.log('Legion Store: Backend call successful!');
       
       set({ 
         isScanning: true, 
         currentScan: { 
-          targetIp,
-          scanType,
+          targetIp: scanOptions.target_ip,
+          scanType: scanOptions.scan_type,
           progress: 0 
         } 
       });

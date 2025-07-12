@@ -19,6 +19,7 @@
 //     If not, see <http://www.gnu.org/licenses/>.
 
 import { create } from 'zustand';
+import { invoke } from '@tauri-apps/api/core';
 
 export interface Host {
   id: string;
@@ -66,52 +67,6 @@ interface HostStore {
   updateStatistics: () => void;
 }
 
-// Mock data for testing layout
-const mockHosts: Host[] = [
-  {
-    id: '1',
-    ip: '192.168.1.1',
-    hostname: 'router.local',
-    os_name: 'Linux',
-    os_family: 'Linux',
-    os_accuracy: 95,
-    status: 'up',
-    last_seen: new Date().toISOString(),
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    port_count: 5,
-    vulnerability_count: 2
-  },
-  {
-    id: '2', 
-    ip: '192.168.1.100',
-    hostname: 'workstation',
-    os_name: 'Windows 10',
-    os_family: 'Windows',
-    os_accuracy: 87,
-    status: 'up',
-    last_seen: new Date().toISOString(),
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    port_count: 12,
-    vulnerability_count: 7
-  },
-  {
-    id: '3',
-    ip: '192.168.1.50',
-    hostname: 'server.local',
-    os_name: 'Ubuntu 22.04',
-    os_family: 'Linux',
-    os_accuracy: 99,
-    status: 'up',
-    last_seen: new Date().toISOString(),
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    port_count: 8,
-    vulnerability_count: 0
-  }
-];
-
 const useHostStore = create<HostStore>((set, get) => ({
   hosts: [],
   filteredHosts: [],
@@ -123,17 +78,21 @@ const useHostStore = create<HostStore>((set, get) => ({
     set({ isLoading: true, lastError: null });
     
     try {
-      // Simulate loading delay
-      await new Promise(resolve => setTimeout(resolve, 500));
+      console.log('HostStore: Loading hosts from backend...');
+      const hosts = await invoke('get_all_hosts') as Host[];
+      console.log('HostStore: Loaded hosts:', hosts);
       
-      // Use mock data for now
       set({ 
-        hosts: mockHosts,
-        filteredHosts: mockHosts,
+        hosts: hosts,
+        filteredHosts: hosts,
         isLoading: false 
       });
     } catch (error) {
+      console.error('HostStore: Failed to load hosts:', error);
+      // Fall back to empty array instead of mock data
       set({ 
+        hosts: [],
+        filteredHosts: [],
         lastError: `Failed to load hosts: ${error}`,
         isLoading: false 
       });

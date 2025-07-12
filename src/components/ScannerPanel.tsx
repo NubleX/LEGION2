@@ -103,7 +103,9 @@ const EnhancedScannerPanel = () => {
 
   const handleStartScan = useCallback(async (config: any) => {
     try {
-      await startScan(config.targets, config.scanType);
+      console.log('ScannerPanel handleStartScan called with:', config);
+      await startScan(config);
+      console.log('ScannerPanel startScan completed successfully');
       // Refresh hosts after scan starts
       if (loadHosts) {
         await loadHosts();

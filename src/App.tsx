@@ -18,49 +18,12 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-import { ScanConfig } from './types/scanning';
-import ScanForm from './components/ScanForm';
-import NetworkMap from './components/NetworkMap';
-import ToolOutput from './components/ToolOutput';
+import ScannerPanel from './components/ScannerPanel';
 
 function App() {
-  const fakeScanStore = {
-    activeScans: []
-  };
-
-  const fakeHostStore = {
-    hosts: []
-  };
-
-  const fakeToolStore = {
-    outputs: []
-  };
-
-  const setSelectedHost = (host: any) => console.log("selected", host);
-
-  const startScan = async (config: ScanConfig) => console.log("starting scan with", config);
-
   return (
-    <div className="min-h-screen bg-gray-950 text-white p-6">
-      <div className="flex gap-4 h-screen">
-        <ScanForm
-          className="flex-1 overflow-auto"
-          onStartScan={startScan}
-          isScanning={fakeScanStore.activeScans.length > 0}
-        />
-
-        <NetworkMap
-          className="flex-1 overflow-auto"
-          hosts={fakeHostStore.hosts}
-          onHostSelect={setSelectedHost}
-        />
-
-        <ToolOutput
-          className="flex-1 overflow-auto"
-          outputs={fakeToolStore.outputs}
-          isLive={true}
-        />
-      </div>
+    <div className="min-h-screen bg-gray-950 text-white">
+      <ScannerPanel />
     </div>
   );
 }
