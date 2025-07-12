@@ -2,7 +2,7 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 // Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024 and Kali Linux users were left with a broken program.
+// It was archived in 2024.
 
 // LEGION (https://gotham-security.com)
 // Copyright (c) 2023 Gotham Security
@@ -19,10 +19,12 @@
 //     If not, see <http://www.gnu.org/licenses/>.
 
 use crate::scanning::nmap::NmapScanner;
-use crate::scanning::models::{ScanStatus, ScanTarget, ScanType, ScanProgress};
+use crate::scanning::models::{ScanStatus, ScanTarget, ScanType, ScanProgress, ScanStatistics};
 use crate::scanning::events::{ScanEvent, EventType};
 use crate::database::DatabaseOperations;
-use crate::shared::{StoredPort, StoredVulnerability};
+use crate::database::models::HostStatus;
+#[allow(unused_imports)]
+use crate::shared::{StoredPort, StoredVulnerability}; // These have to be used. IDE is blind.
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,17 +32,6 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use ipnet::IpNet;
 use std::net::IpAddr;
 use std::str::FromStr;
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ScanStatistics {
-    pub total_scans: u32,
-    pub active_scans: u32,
-    pub completed_scans: u32,
-    pub failed_scans: u32,
-    pub total_hosts_discovered: u32,
-    pub total_ports_found: u32,
-    pub total_vulnerabilities: u32,
-}
 
 pub struct ScanCoordinator {
     database: Arc<DatabaseOperations>,
@@ -70,6 +61,7 @@ impl ScanCoordinator {
         
         // Create scan record in database
         let host = self.database.upsert_host(&target.ip.to_string(), target.hostname.as_deref()).await?;
+        let host_id = host.id.clone();
 
         // Store scan handle
         {
@@ -82,10 +74,13 @@ impl ScanCoordinator {
 
         // Clone for async task
         let scanner = self.nmap_scanner.clone();
-        let results_tx = self.results_tx.clone();
         let active_scans = self.active_scans.clone();
-        let db = self.database.clone();
-        let host_id = host.id.clone();
+        let coordinator = Arc::new(Self {
+            database: self.database.clone(),
+            active_scans: self.active_scans.clone(),
+            results_tx: self.results_tx.clone(),
+            nmap_scanner: self.nmap_scanner.clone(),
+        });
 
         // Create progress channel
         let (progress_tx, mut progress_rx) = mpsc::channel(100);
@@ -106,78 +101,23 @@ impl ScanCoordinator {
 
                 // Process result
                 match result {
-                    Ok(mut scan_result) => {
-                        // Store results in database
-                        for scan_port in &scan_result.open_ports {
-                            let stored_port = StoredPort {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                host_id: host_id.clone(),
-                                number: scan_port.number as i32, // Convert u16 to i32
-                                protocol: scan_port.protocol.clone(),
-                                state: scan_port.state.clone(),
-                                service: scan_port.service.clone(),
-                                version: scan_port.version.clone(),
-                                banner: scan_port.banner.clone(),
-                                confidence: scan_port.confidence,
-                                cpe: scan_port.cpe.clone(),
-                                discovered_at: chrono::Utc::now(),
-                                last_seen: chrono::Utc::now(),
-                            };
-                            if let Err(e) = db.add_port(&stored_port).await {
-                                log::error!("Failed to store port: {}", e);
-                            }
+                    Ok(scan_result) => {
+                        if let Err(e) = coordinator.handle_scan_completion(scan_id, scan_result).await {
+                            log::error!("Failed to handle scan completion: {}", e);
                         }
-
-                        for scan_vulnerability in &scan_result.vulnerabilities {
-                            let stored_vulnerability = StoredVulnerability {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                host_id: host_id.clone(),
-                                port_id: None, // We don't have port_id here, will need to link later if needed
-                                name: scan_vulnerability.name.clone(),
-                                severity: scan_vulnerability.severity.clone(),
-                                description: scan_vulnerability.description.clone(),
-                                cvss_score: scan_vulnerability.cvss_score,
-                                cvss_vector: scan_vulnerability.cvss_vector.clone(),
-                                cve_id: scan_vulnerability.cve_id.clone(),
-                                reference_links: scan_vulnerability.reference_links.clone(),
-                                exploitable: scan_vulnerability.exploitable,
-                                discovered_at: scan_vulnerability.discovered_at,
-                                verified: scan_vulnerability.verified,
-                                false_positive: scan_vulnerability.false_positive,
-                            };
-                            if let Err(e) = db.add_vulnerability(&stored_vulnerability).await {
-                                log::error!("Failed to store vulnerability: {}", e);
-                            }
-                        }
-                        
-                        // Store OS detection if available
-                        if let Some(os) = &scan_result.os_detection {
-                            if let Err(e) = db.update_host_os(&host_id, &os.name, os.vendor.as_deref().unwrap_or_default(), os.accuracy).await {
-                                log::error!("Failed to update OS info: {}", e);
-                            }
-                        }
-
-                        // Update scan status
-                        scan_result.status = ScanStatus::Completed;
-                        
-                        // Send result as ScanEvent
-                        let scan_event = ScanEvent {
-                            scan_id: scan_result.id.clone(),
-                            event_type: EventType::ScanCompleted,
-                            timestamp: chrono::Utc::now(),
-                            data: serde_json::to_value(scan_result)?,
-                        };
-                        let _ = results_tx.send(scan_event).await;
                     }
                     Err(e) => {
                         log::error!("Scan failed: {}", e);
+                        if let Err(db_err) = coordinator.database.update_host_status(&host_id, HostStatus::Unknown, Some(0.0)).await {
+                            log::error!("Failed to update host status after scan failure: {}", db_err);
+                        }
                         let failed_scan_event = ScanEvent {
                             scan_id: scan_id.to_string(),
                             event_type: EventType::ScanError,
                             timestamp: chrono::Utc::now(),
                             data: serde_json::json!({ "error": e.to_string() }),
                         };
-                        let _ = results_tx.send(failed_scan_event).await;
+                        let _ = coordinator.results_tx.send(failed_scan_event).await;
                     }
                 }
 
@@ -189,6 +129,10 @@ impl ScanCoordinator {
 
             if let Err(e) = result {
                 log::error!("Scan task failed: {}", e);
+                
+                if let Ok(host) = coordinator.database.get_host_by_ip(&target.ip.to_string()).await {
+                    let _ = coordinator.database.update_host_status(&host.id, HostStatus::Unknown, None).await;
+                }
             }
         });
 
@@ -300,5 +244,97 @@ impl ScanCoordinator {
             total_ports_found: 0,
             total_vulnerabilities: 0,
         }
+    }
+
+    async fn process_scan_result(&self, scan_result: &mut crate::scanning::models::ScanResult) -> Result<crate::database::models::Host> {
+        // Extract IP from target_id (assuming target_id is an IP address)
+        let target_ip = &scan_result.target_id;
+        
+        // Store host information using upsert_host
+        let host = self.database.upsert_host(target_ip, None).await?;
+        
+        // Update OS detection if available
+        if let Some(os_detection) = &scan_result.os_detection {
+            self.database.update_host_os(
+                &host.id,
+                &os_detection.name,
+                &os_detection.family,
+                os_detection.accuracy
+            ).await?;
+        }
+
+        // Store port information
+        for port in &scan_result.open_ports {
+            let stored_port = crate::shared::StoredPort {
+                id: uuid::Uuid::new_v4().to_string(),
+                host_id: host.id.clone(),
+                number: port.number as i32,
+                protocol: port.protocol.clone(),
+                state: port.state.clone(),
+                service: port.service.clone(),
+                version: port.version.clone(),
+                banner: port.banner.clone(),
+                confidence: port.confidence,
+                cpe: port.cpe.clone(),
+                discovered_at: chrono::Utc::now(),
+                last_seen: chrono::Utc::now(),
+            };
+            
+            if let Err(e) = self.database.add_port(&stored_port).await {
+                log::error!("Failed to store port {}: {}", port.number, e);
+            }
+        }
+
+        // Store vulnerability information
+        for vuln in &scan_result.vulnerabilities {
+            let stored_vuln = crate::shared::StoredVulnerability {
+                id: uuid::Uuid::new_v4().to_string(),
+                host_id: host.id.clone(),
+                port_id: None, // Associate with specific port if available
+                name: vuln.name.clone(),
+                severity: vuln.severity.clone(),
+                description: vuln.description.clone(),
+                cvss_score: vuln.cvss_score,
+                cvss_vector: vuln.cvss_vector.clone(),
+                cve_id: vuln.cve_id.clone(),
+                reference_links: vuln.reference_links.clone(),
+                exploitable: vuln.exploitable,
+                discovered_at: vuln.discovered_at,
+                verified: vuln.verified,
+                false_positive: vuln.false_positive,
+            };
+            
+            if let Err(e) = self.database.add_vulnerability(&stored_vuln).await {
+                log::error!("Failed to store vulnerability {}: {}", vuln.name, e);
+            }
+        }
+
+        Ok(host)
+    }
+
+    async fn handle_scan_completion(&self, scan_id: uuid::Uuid, mut scan_result: crate::scanning::models::ScanResult) -> Result<()> {
+        // Process and store results
+        let host = self.process_scan_result(&mut scan_result).await?;
+        self.database.update_host_status(&host.id, HostStatus::Up, Some(100.0)).await?;
+        
+        // Emit completion event
+        let completion_event = crate::scanning::events::ScanEvent {
+            scan_id: scan_id.to_string(),
+            event_type: crate::scanning::events::EventType::ScanCompleted,
+            timestamp: chrono::Utc::now(),
+            data: serde_json::json!({
+                "results": {
+                    "hosts_discovered": 1,
+                    "ports_found": scan_result.open_ports.len(),
+                    "vulnerabilities": scan_result.vulnerabilities.len(),
+                    "os_detected": scan_result.os_detection.is_some(),
+                    "scan_duration": scan_result.duration
+                }
+            }),
+        };
+        
+        let _ = self.results_tx.send(completion_event).await;
+        
+        Ok(())
     }
 }

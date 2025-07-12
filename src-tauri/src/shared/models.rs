@@ -1,6 +1,23 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
+// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
+// It was archived in 2024.
+
+// LEGION (https://gotham-security.com)
+// Copyright (c) 2023 Gotham Security
+
+//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
+//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
+//     version.
+
+//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
+//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+//     details.
+
+//     You should have received a copy of the GNU General Public License along with this program.
+//     If not, see <http://www.gnu.org/licenses/>.
+
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -13,6 +30,7 @@ pub enum Protocol {
 }
 
 impl Protocol {
+    #[allow(dead_code)] // The as_str() method is a utility function I may need later for string conversions.
     pub fn as_str(&self) -> &'static str {
         match self {
             Protocol::Tcp => "tcp",
@@ -42,6 +60,7 @@ pub enum PortState {
 }
 
 impl PortState {
+    #[allow(dead_code)] // The as_str() method is a utility function I may need later for string conversions.
     pub fn as_str(&self) -> &'static str {
         match self {
             PortState::Open => "open",

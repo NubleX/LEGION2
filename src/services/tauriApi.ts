@@ -2,7 +2,7 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 // Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024 and Kali Linux users were left with a broken program.
+// It was archived in 2024.
 
 // LEGION (https://gotham-security.com)
 // Copyright (c) 2023 Gotham Security
@@ -28,6 +28,18 @@ export interface ScanTarget {
   ports: number[];
   scan_type: 'quick' | 'comprehensive' | 'stealth';
   options?: any;
+}
+
+export interface ScanOptions {
+  target_ip: string;
+  scan_type: 'quick' | 'comprehensive' | 'stealth' | 'discovery' | 'port_scan' | 'service_detection' | 'vulnerability';
+  port_range?: string;
+  max_concurrent?: number;
+  timeout?: number;
+  stealth_mode?: boolean;
+  os_detection?: boolean;
+  service_detection?: boolean;
+  vulnerability_scan?: boolean;
 }
 
 export interface ScanProgress {
@@ -110,6 +122,11 @@ export interface NetworkRangeRequest {
 export interface ScanStatistics {
   total_scans: number;
   active_scans: number;
+  completed_scans: number;
+  failed_scans: number;
+  total_hosts_discovered: number;
+  total_ports_found: number;
+  total_vulnerabilities: number;
   hosts_discovered: number;
   vulnerabilities_found: number;
   last_scan_time?: string;
@@ -120,6 +137,167 @@ export interface HostDetails {
   ports: Port[];
   vulnerabilities: Vulnerability[];
 }
+
+export enum ScanEventType {
+  ScanStarted = 'scan_started',
+  ScanProgress = 'scan_progress',
+  ScanCompleted = 'scan_completed',
+  ScanFailed = 'scan_failed',
+  ScanCancelled = 'scan_cancelled',
+  HostDiscovered = 'host_discovered',
+  PortFound = 'port_found',
+  VulnerabilityFound = 'vulnerability_found',
+  OSDetected = 'os_detected'
+}
+
+export interface ScanEvent {
+  scan_id: string;
+  event_type: ScanEventType;
+  timestamp: string;
+  data: any;
+}
+
+// Fixed API functions with proper error handling
+export const scanAPI = {
+  // Start a network scan
+  async startNetworkScan(options: ScanOptions): Promise<string> {
+    try {
+      const scanId = await invoke<string>('start_network_scan', { options });
+      return scanId;
+    } catch (error) {
+      console.error('Failed to start network scan:', error);
+      throw new Error(`Scan start failed: ${error}`);
+    }
+  },
+
+  // Cancel a running scan
+  async cancelNetworkScan(scanId: string): Promise<void> {
+    try {
+      await invoke('cancel_network_scan', { scanId });
+    } catch (error) {
+      console.error('Failed to cancel scan:', error);
+      throw new Error(`Scan cancellation failed: ${error}`);
+    }
+  },
+
+  // Get current scan progress
+  async getScanProgress(): Promise<ScanProgress[]> {
+    try {
+      const progress = await invoke<ScanProgress[]>('get_scan_progress');
+      return progress;
+    } catch (error) {
+      console.error('Failed to get scan progress:', error);
+      return []; // Return empty array on error instead of throwing
+    }
+  },
+
+  // Check if any scans are running
+  async isScanning(): Promise<boolean> {
+    try {
+      const scanning = await invoke<boolean>('is_scanning');
+      return scanning;
+    } catch (error) {
+      console.error('Failed to check scanning status:', error);
+      return false; // Return false on error
+    }
+  },
+
+  // Get scan statistics
+  async getScanStatistics(): Promise<ScanStatistics> {
+    try {
+      const stats = await invoke<ScanStatistics>('get_scan_statistics');
+      return stats;
+    } catch (error) {
+      console.error('Failed to get scan statistics:', error);
+      // Return default statistics on error
+      return {
+        total_scans: 0,
+        active_scans: 0,
+        hosts_discovered: 0,
+        vulnerabilities_found: 0,
+        completed_scans: 0,
+        failed_scans: 0,
+        total_hosts_discovered: 0,
+        total_ports_found: 0,
+        total_vulnerabilities: 0
+      };
+    }
+  },
+
+  // Scan a network range
+  async scanNetworkRange(request: NetworkRangeRequest): Promise<string[]> {
+    try {
+      const scanIds = await invoke<string[]>('scan_network_range', {
+        cidr: request.cidr,
+        exclude: request.exclude,
+        scanType: request.scan_type
+      });
+      return scanIds;
+    } catch (error) {
+      console.error('Failed to start network range scan:', error);
+      throw new Error(`Network range scan failed: ${error}`);
+    }
+  },
+
+  // Listen to scan events
+  async listenToScanEvents(callback: (event: any) => void): Promise<() => void> {
+    try {
+      const unlisten = await listen('scan-event', (event) => {
+        callback(event.payload);
+      });
+      return unlisten;
+    } catch (error) {
+      console.error('Failed to listen to scan events:', error);
+      return () => {}; // Return no-op function on error
+    }
+  }
+};
+
+// Host API functions
+export const hostAPI = {
+  // Get all hosts
+  async getHosts(statusFilter?: string): Promise<Host[]> {
+    try {
+      const hosts = await invoke<Host[]>('get_hosts', { statusFilter });
+      return hosts;
+    } catch (error) {
+      console.error('Failed to get hosts:', error);
+      return [];
+    }
+  },
+
+  // Get host by ID
+  async getHostById(hostId: string): Promise<Host> {
+    try {
+      const host = await invoke<Host>('get_host_by_id', { hostId });
+      return host;
+    } catch (error) {
+      console.error('Failed to get host:', error);
+      throw new Error(`Failed to get host: ${error}`);
+    }
+  },
+
+  // Update host OS detection
+  async updateHostOSDetection(hostId: string, osDetection: OSDetection): Promise<void> {
+    try {
+      await invoke('update_host_os_detection', { hostId, osDetection });
+    } catch (error) {
+      console.error('Failed to update host OS detection:', error);
+      throw new Error(`Failed to update OS detection: ${error}`);
+    }
+  },
+
+  // Get host with OS info
+  async getHostWithOSInfo(hostId: string): Promise<Host> {
+    try {
+      const host = await invoke<Host>('get_host_with_os_info', { hostId });
+      return host;
+    } catch (error) {
+      console.error('Failed to get host with OS info:', error);
+      throw new Error(`Failed to get host with OS info: ${error}`);
+    }
+  }
+};
 
 export class TauriLegionService {
   private progressListeners: Map<string, (progress: ScanProgress) => void> = new Map();

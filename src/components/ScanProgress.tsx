@@ -2,7 +2,7 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 // Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024 and Kali Linux users were left with a broken program.
+// It was archived in 2024.
 
 // LEGION (https://gotham-security.com)
 // Copyright (c) 2023 Gotham Security
@@ -18,26 +18,212 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Activity, Clock, Target, Shield, AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
 import useScanStore from '../stores/scanStore';
-import type { ScanResult } from '../types/scanning';
+import { scanAPI } from '../services/tauriApi';
+import type { ScanResult, ScanStatistics } from '../types/scanning';
 
 interface ScanProgressProps {
   showDetails?: boolean;
+  onScanComplete?: (results: any) => void;
+  onError?: (error: string) => void;
 }
 
-const ScanProgress: React.FC<ScanProgressProps> = ({ showDetails = true }) => {
+// Define backend API types that might differ from your main types
+interface BackendScanProgress {
+  scan_id: string;
+  progress: number;
+  current_phase: string;
+  discovered_hosts: number;
+  total_ports_scanned: number;
+  open_ports_found: number;
+  estimated_time_remaining?: number;
+  message?: string;
+  start_time: string;
+  current_target?: string;
+  hosts_discovered?: number; // Alternative naming
+  ports_found?: number;      // Alternative naming
+  vulnerabilities?: number;
+  estimated_remaining?: number;
+}
+
+interface BackendScanStatistics {
+  total_scans: number;
+  active_scans: number;
+  completed_scans?: number;
+  failed_scans?: number;
+  total_hosts_discovered?: number;
+  total_ports_found?: number;
+  total_vulnerabilities?: number;
+  hosts_discovered?: number;        // Alternative naming
+  vulnerabilities_found?: number;   // Alternative naming
+}
+
+const ScanProgress: React.FC<ScanProgressProps> = ({ 
+  showDetails = true, 
+  onScanComplete, 
+  onError 
+}) => {
+  // Your existing store data (always available)
   const {
-    activeScans,
-    currentProgress,
-    statistics,
-    isScanning,
-    cancelScan,
-    cancelAllScans
+    activeScans: storeActiveScans,
+    currentProgress: storeProgress,
+    statistics: storeStatistics,
+    isScanning: storeIsScanning,
+    cancelScan: storeCancelScan,
+    cancelAllScans: storeCancelAllScans
   } = useScanStore();
 
+  // Backend data (may not be available initially)
+  const [backendProgress, setBackendProgress] = useState<Map<string, BackendScanProgress>>(new Map());
+  const [backendStats, setBackendStats] = useState<BackendScanStatistics | null>(null);
+  const [isBackendScanning, setIsBackendScanning] = useState(false);
+  const [backendError, setBackendError] = useState<string | null>(null);
   const [expandedScans, setExpandedScans] = useState<Set<string>>(new Set());
+
+  // Smart Fallback System Implementation
+  const getEffectiveData = () => {
+    // 1. Try Backend Data First
+    if (backendProgress.size > 0 || backendStats) {
+      console.log('🔄 Using BACKEND data (real-time from Tauri API)');
+      return {
+        activeScans: Array.from(backendProgress.values()).map(progress => ({
+          id: progress.scan_id,
+          target_id: progress.current_target || 'Unknown',
+          status: progress.progress === 100 ? 'completed' : 
+                  progress.current_phase === 'Failed' ? 'failed' :
+                  progress.current_phase === 'Cancelled' ? 'cancelled' : 'running',
+          start_time: progress.start_time,
+          scan_type: 'network',
+          open_ports: [],
+          vulnerabilities: [],
+          error_message: progress.current_phase === 'Failed' ? progress.message : undefined
+        } as ScanResult)),
+        progress: backendProgress,
+        statistics: backendStats || storeStatistics,
+        isScanning: isBackendScanning
+      };
+    }
+    
+    // 2. Fallback to Store Data
+    if (storeActiveScans.size > 0) {
+      console.log('📦 Using STORE data (fallback from useScanStore)');
+      return {
+        activeScans: Array.from(storeActiveScans.values()),
+        progress: storeProgress,
+        statistics: storeStatistics,
+        isScanning: storeIsScanning
+      };
+    }
+    
+    // 3. Safe Defaults
+    console.log('🔧 Using DEFAULT data (safe fallbacks)');
+    return {
+      activeScans: [],
+      progress: new Map(),
+      statistics: {
+        total_scans: 0,
+        active_scans: 0,
+        total_hosts_discovered: 0,
+        total_vulnerabilities: 0
+      } as ScanStatistics,
+      isScanning: false
+    };
+  };
+
+  // Poll backend for real data
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout;
+
+    const fetchBackendData = async () => {
+      try {
+        // Try to get real scan progress
+        if (scanAPI?.getScanProgress) {
+          const progress = await scanAPI.getScanProgress();
+          const progressMap = new Map();
+          progress.forEach((scan: any) => {
+            progressMap.set(scan.scan_id, scan as BackendScanProgress);
+          });
+          setBackendProgress(progressMap);
+        }
+
+        // Try to check if actually scanning
+        if (scanAPI?.isScanning) {
+          const scanning = await scanAPI.isScanning();
+          setIsBackendScanning(scanning);
+        }
+
+        // Try to get real statistics
+        if (scanAPI?.getScanStatistics) {
+          const stats = await scanAPI.getScanStatistics();
+          setBackendStats(stats as BackendScanStatistics);
+        }
+
+        // Clear errors on success
+        setBackendError(null);
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Backend connection failed';
+        setBackendError(errorMessage);
+        console.warn('⚠️ Backend unavailable, using fallback data:', errorMessage);
+        
+        if (onError) {
+          onError(errorMessage);
+        }
+      }
+    };
+
+    // Initial fetch
+    fetchBackendData();
+
+    // Poll every 2 seconds
+    intervalId = setInterval(fetchBackendData, 2000);
+
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, [onError]);
+
+  // Listen to backend events
+  useEffect(() => {
+    let unlistenFunction: (() => void) | null = null;
+
+    const setupEventListener = async () => {
+      try {
+        if (scanAPI?.listenToScanEvents) {
+          const unlisten = await scanAPI.listenToScanEvents((event) => {
+            console.log('📡 Real scan event received:', event);
+            
+            switch (event.event_type) {
+              case 'scan_completed':
+                if (onScanComplete) {
+                  onScanComplete(event.data);
+                }
+                break;
+              case 'scan_failed':
+                if (onError) {
+                  onError(event.data.error || 'Scan failed');
+                }
+                break;
+            }
+          });
+          unlistenFunction = unlisten;
+        }
+      } catch (err) {
+        console.warn('⚠️ Event listener setup failed:', err);
+      }
+    };
+
+    setupEventListener();
+
+    return () => {
+      if (unlistenFunction) {
+        unlistenFunction();
+      }
+    };
+  }, [onScanComplete, onError]);
 
   const toggleScanExpansion = (scanId: string) => {
     setExpandedScans(prev => {
@@ -49,6 +235,53 @@ const ScanProgress: React.FC<ScanProgressProps> = ({ showDetails = true }) => {
       }
       return newSet;
     });
+  };
+
+  // Enhanced cancel functions that try backend first, then store
+  const cancelScan = async (scanId: string) => {
+    try {
+      // Try backend first
+      if (scanAPI?.cancelNetworkScan) {
+        await scanAPI.cancelNetworkScan(scanId);
+      }
+      // Also update store as fallback
+      storeCancelScan(scanId);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to cancel scan';
+      setBackendError(errorMessage);
+      // Try store cancellation as backup
+      storeCancelScan(scanId);
+      
+      if (onError) {
+        onError(errorMessage);
+      }
+    }
+  };
+
+  const cancelAllScans = async () => {
+    try {
+      // Try backend first
+      if (scanAPI?.cancelNetworkScan) {
+        const promises = Array.from(backendProgress.keys()).map(scanId => 
+          scanAPI.cancelNetworkScan(scanId)
+        );
+        await Promise.all(promises);
+      }
+      setBackendProgress(new Map());
+      setIsBackendScanning(false);
+      
+      // Also update store
+      storeCancelAllScans();
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to cancel scans';
+      setBackendError(errorMessage);
+      // Try store cancellation as backup
+      storeCancelAllScans();
+      
+      if (onError) {
+        onError(errorMessage);
+      }
+    }
   };
 
   const getStatusColor = (status: string) => {
@@ -84,7 +317,8 @@ const ScanProgress: React.FC<ScanProgressProps> = ({ showDetails = true }) => {
     return `${seconds}s`;
   };
 
-  const activeScanArray = Array.from(activeScans.values());
+  // Get effective data using smart fallback system
+  const { activeScans, progress, statistics, isScanning } = getEffectiveData();
 
   return (
     <div className="bg-gray-900 p-6 rounded-lg border border-gray-700">
@@ -93,6 +327,10 @@ const ScanProgress: React.FC<ScanProgressProps> = ({ showDetails = true }) => {
         <h2 className="text-xl font-semibold text-white flex items-center gap-2">
           <Activity className="w-5 h-5 text-green-400" />
           Scan Progress
+          {/* Data Source Indicator */}
+          <span className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300">
+            {backendProgress.size > 0 ? '🔄 Live' : '📦 Store'}
+          </span>
         </h2>
         
         {isScanning && (
@@ -105,6 +343,18 @@ const ScanProgress: React.FC<ScanProgressProps> = ({ showDetails = true }) => {
         )}
       </div>
 
+      {/* Error Display */}
+      {backendError && (
+        <div className="mb-4 p-3 bg-yellow-900/50 border border-yellow-700 rounded">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-yellow-400" />
+            <span className="text-yellow-300 text-sm">
+              Backend offline - using cached data: {backendError}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Statistics */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <div className="bg-gray-800 p-3 rounded">
@@ -112,29 +362,40 @@ const ScanProgress: React.FC<ScanProgressProps> = ({ showDetails = true }) => {
           <div className="text-sm text-gray-400">Active</div>
         </div>
         <div className="bg-gray-800 p-3 rounded">
-          <div className="text-2xl font-bold text-green-400">{statistics.completed_scans}</div>
+          <div className="text-2xl font-bold text-green-400">
+            {(statistics as BackendScanStatistics).completed_scans || 0}
+          </div>
           <div className="text-sm text-gray-400">Completed</div>
         </div>
         <div className="bg-gray-800 p-3 rounded">
-          <div className="text-2xl font-bold text-yellow-400">{statistics.total_hosts_discovered}</div>
+          <div className="text-2xl font-bold text-yellow-400">
+            {statistics.total_hosts_discovered || 
+             (statistics as BackendScanStatistics).hosts_discovered || 0}
+          </div>
           <div className="text-sm text-gray-400">Hosts Found</div>
         </div>
         <div className="bg-gray-800 p-3 rounded">
-          <div className="text-2xl font-bold text-red-400">{statistics.total_vulnerabilities}</div>
+          <div className="text-2xl font-bold text-red-400">
+            {statistics.total_vulnerabilities || 
+             (statistics as BackendScanStatistics).vulnerabilities_found || 0}
+          </div>
           <div className="text-sm text-gray-400">Vulnerabilities</div>
         </div>
       </div>
 
       {/* Active Scans */}
-      {activeScanArray.length === 0 ? (
+      {activeScans.length === 0 ? (
         <div className="text-center py-8 text-gray-400">
           <Target className="w-12 h-12 mx-auto mb-2 opacity-50" />
           <p>No active scans. Start a scan to see progress here.</p>
         </div>
       ) : (
         <div className="space-y-4">
-                      {activeScanArray.map((scan: ScanResult) => {
-            const progress = currentProgress.get(scan.id);
+          {activeScans.map((scan: ScanResult) => {
+            // Get progress data - try backend first, then store
+            const backendProgressData = backendProgress.get(scan.id);
+            const storeProgressData = progress.get(scan.id);
+            const effectiveProgress = backendProgressData || storeProgressData;
             const isExpanded = expandedScans.has(scan.id);
             
             return (
@@ -159,13 +420,13 @@ const ScanProgress: React.FC<ScanProgressProps> = ({ showDetails = true }) => {
                   </div>
 
                   <div className="flex items-center gap-3">
-                    {progress && (
+                    {effectiveProgress && (
                       <div className="text-right">
                         <div className="text-sm font-medium text-white">
-                          {progress.progress}%
+                          {Math.round(effectiveProgress.progress)}%
                         </div>
                         <div className="text-xs text-gray-400">
-                          {progress.current_phase}
+                          {effectiveProgress.current_phase || 'Processing...'}
                         </div>
                       </div>
                     )}
@@ -185,7 +446,7 @@ const ScanProgress: React.FC<ScanProgressProps> = ({ showDetails = true }) => {
                 </div>
 
                 {/* Progress Bar */}
-                {progress && (
+                {effectiveProgress && (
                   <div className="mt-3">
                     <div className="w-full bg-gray-700 rounded-full h-2">
                       <div 
@@ -194,38 +455,51 @@ const ScanProgress: React.FC<ScanProgressProps> = ({ showDetails = true }) => {
                           scan.status === 'failed' ? 'bg-red-500' :
                           'bg-blue-500'
                         }`}
-                        style={{ width: `${progress.progress}%` }}
+                        style={{ width: `${effectiveProgress.progress}%` }}
                       />
                     </div>
-                    {progress.estimated_time_remaining && (
+                    {effectiveProgress.estimated_time_remaining && effectiveProgress.estimated_time_remaining > 0 && (
                       <div className="text-xs text-gray-400 mt-1">
-                        Est. {Math.round(progress.estimated_time_remaining / 60)}m remaining
+                        Est. {Math.round(effectiveProgress.estimated_time_remaining / 60)}m remaining
+                      </div>
+                    )}
+                    {effectiveProgress.estimated_remaining && effectiveProgress.estimated_remaining > 0 && (
+                      <div className="text-xs text-gray-400 mt-1">
+                        Est. {Math.round(effectiveProgress.estimated_remaining / 60)}m remaining
                       </div>
                     )}
                   </div>
                 )}
 
                 {/* Detailed Progress */}
-                {showDetails && isExpanded && progress && (
+                {showDetails && isExpanded && effectiveProgress && (
                   <div className="mt-4 pt-4 border-t border-gray-700">
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
                       <div>
                         <span className="text-gray-400">Hosts Discovered:</span>
-                        <span className="ml-2 text-white">{progress.discovered_hosts}</span>
+                        <span className="ml-2 text-white">
+                          {effectiveProgress.discovered_hosts || 
+                           effectiveProgress.hosts_discovered || 0}
+                        </span>
                       </div>
                       <div>
                         <span className="text-gray-400">Ports Scanned:</span>
-                        <span className="ml-2 text-white">{progress.total_ports_scanned}</span>
+                        <span className="ml-2 text-white">
+                          {effectiveProgress.total_ports_scanned || 0}
+                        </span>
                       </div>
                       <div>
                         <span className="text-gray-400">Open Ports:</span>
-                        <span className="ml-2 text-green-400">{progress.open_ports_found}</span>
+                        <span className="ml-2 text-green-400">
+                          {effectiveProgress.open_ports_found || 
+                           effectiveProgress.ports_found || 0}
+                        </span>
                       </div>
                     </div>
                     
-                    {progress.message && (
+                    {effectiveProgress.message && (
                       <div className="mt-3 p-2 bg-gray-700 rounded">
-                        <span className="text-sm text-gray-300">{progress.message}</span>
+                        <span className="text-sm text-gray-300">{effectiveProgress.message}</span>
                       </div>
                     )}
                   </div>

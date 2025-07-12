@@ -2,7 +2,7 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 // Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024 and Kali Linux users were left with a broken program.
+// It was archived in 2024.
 
 // LEGION (https://gotham-security.com)
 // Copyright (c) 2023 Gotham Security
@@ -71,14 +71,19 @@ async fn main() {
         .manage(coordinator)
         .manage(event_streamer)
         .invoke_handler(tauri::generate_handler![
-            start_network_scan,
-            cancel_network_scan,
-            get_scan_progress,
             get_all_hosts,
             get_host_details,
             delete_host,
             batch_import_hosts,
-            setup_event_stream
+            setup_event_stream,
+            commands::scan_commands::start_network_scan,
+            commands::scan_commands::cancel_network_scan,
+            commands::scan_commands::get_scan_progress,
+            commands::scan_commands::is_scanning,
+            commands::scan_commands::get_scan_statistics,
+            commands::scan_commands::scan_network_range,
+            commands::host_commands::update_host_os_detection,
+            commands::host_commands::get_host_by_ip,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

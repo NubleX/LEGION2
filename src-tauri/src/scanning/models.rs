@@ -139,3 +139,14 @@ pub struct OSDetection {
     pub fingerprint: Option<String>,
     pub cpe: Vec<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanStatistics {
+    pub total_scans: u32,
+    pub active_scans: u32,
+    pub completed_scans: u32,
+    pub failed_scans: u32,
+    pub total_hosts_discovered: u32,
+    pub total_ports_found: u32,
+    pub total_vulnerabilities: u32,
+}

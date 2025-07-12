@@ -1,6 +1,6 @@
 [package]
 name = "legion2"
-version = "0.2.2-alpha"
+version = "0.2.3-alpha"
 description = "LEGION2 - Network Penetration Testing Tool"
 authors = ["Igor Dunaev"]
 edition = "2021"

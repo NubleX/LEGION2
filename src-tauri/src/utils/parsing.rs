@@ -2,7 +2,7 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 // Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024 and Kali Linux users were left with a broken program.
+// It was archived in 2024.
 
 // LEGION (https://gotham-security.com)
 // Copyright (c) 2023 Gotham Security
