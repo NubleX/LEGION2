@@ -19,6 +19,7 @@
 //     If not, see <http://www.gnu.org/licenses/>.
 
 use crate::scanning::models::{ScanResult, ScanTarget, ScanType, ScanProgress, OSDetection, ScanStatus};
+use crate::scanning::events::{ScanEvent, EventType};
 use crate::shared::{ScanPort, Protocol, PortState};
 use anyhow::{Result, Context};
 use std::process::Stdio;
@@ -29,6 +30,7 @@ use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::HashMap;
 use chrono::Utc;
+use serde_json::json;
 
 pub struct NmapScanner {
     // Add configuration options if needed
@@ -43,6 +45,7 @@ impl NmapScanner {
         &self,
         target: &ScanTarget,
         progress_tx: mpsc::Sender<ScanProgress>,
+        event_tx: Option<mpsc::Sender<ScanEvent>>,
     ) -> Result<ScanResult> {
         log::info!("Starting nmap scan for target: {:?}", target.ip);
         
@@ -57,8 +60,9 @@ impl NmapScanner {
         // Build nmap command based on scan type
         let mut cmd = Command::new("nmap");
         
-        // Always output XML for parsing
+        // Always output XML for parsing and add verbose flags for real-time output
         cmd.arg("-oX").arg(&output_file);
+        cmd.args(&["-vv", "--stats-every", "2s"]); // Double verbose output with frequent stats
         
         // Configure scan based on type
         match &target.scan_type {
@@ -92,32 +96,127 @@ impl NmapScanner {
         // Add target
         cmd.arg(&target.ip.to_string());
         
+        // Log the full command being executed
+        log::info!("Executing nmap command: {:?}", cmd);
+        
         // Execute with progress monitoring
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         
         let mut child = cmd.spawn()
             .context("Failed to spawn nmap process")?;
+        
+        log::info!("Nmap process spawned with PID: {:?}", child.id());
+        
+        // Send a test output event to verify pipeline
+        if let Some(ref event_tx) = event_tx {
+            let test_event = ScanEvent {
+                scan_id: target.id.clone(),
+                event_type: EventType::ScanOutput,
+                timestamp: Utc::now(),
+                data: json!({
+                    "source": "test",
+                    "content": format!("Nmap command: nmap -vv --stats-every 2s -oX {} -T4 -F {}", output_file, target.ip),
+                    "timestamp": Utc::now().to_rfc3339()
+                }),
+            };
+            log::info!("Sending ONE test event for scan {}", target.id);
+            let _ = event_tx.send(test_event).await;
+        }
 
-        // Monitor stderr for progress
-        if let Some(stderr) = child.stderr.take() {
-            let reader = BufReader::new(stderr);
+        // Monitor both stdout and stderr for progress and real-time output
+        let stdout_handle = if let Some(stdout) = child.stdout.take() {
+            let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
-            let tx = progress_tx.clone();
+            let progress_tx_clone = progress_tx.clone();
+            let event_tx_clone = event_tx.clone();
             let target_id_clone = target.id.clone();
             
-            tokio::spawn(async move {
+            Some(tokio::spawn(async move {
+                log::info!("Starting stdout monitor for scan {}", target_id_clone);
+                let mut line_count = 0;
                 while let Ok(Some(line)) = lines.next_line().await {
+                    line_count += 1;
+                    log::info!("STDOUT Line {}: {}", line_count, line);
+                    
+                    // Send real-time output event
+                    if let Some(ref event_sender) = event_tx_clone {
+                        log::info!("Sending STDOUT event for line {}: {}", line_count, line);
+                        let output_event = ScanEvent {
+                            scan_id: target_id_clone.clone(),
+                            event_type: EventType::ScanOutput,
+                            timestamp: Utc::now(),
+                            data: json!({
+                                "source": "stdout",
+                                "content": line,
+                                "timestamp": Utc::now().to_rfc3339()
+                            }),
+                        };
+                        let _ = event_sender.send(output_event).await;
+                    }
+                    
+                    // Try to parse progress information
                     if let Ok(progress) = parse_progress_line(&line, &target_id_clone) {
-                        let _ = tx.send(progress).await;
+                        let _ = progress_tx_clone.send(progress).await;
                     }
                 }
-            });
-        }
+                log::info!("Stdout monitor ended for scan {}, total lines: {}", target_id_clone, line_count);
+            }))
+        } else {
+            None
+        };
+
+        let stderr_handle = if let Some(stderr) = child.stderr.take() {
+            let reader = BufReader::new(stderr);
+            let mut lines = reader.lines();
+            let progress_tx_clone = progress_tx.clone();
+            let event_tx_clone = event_tx.clone();
+            let target_id_clone = target.id.clone();
+            
+            Some(tokio::spawn(async move {
+                log::info!("Starting stderr monitor for scan {}", target_id_clone);
+                let mut line_count = 0;
+                while let Ok(Some(line)) = lines.next_line().await {
+                    line_count += 1;
+                    log::info!("STDERR Line {}: {}", line_count, line);
+                    
+                    // Send real-time output event
+                    if let Some(ref event_sender) = event_tx_clone {
+                        let output_event = ScanEvent {
+                            scan_id: target_id_clone.clone(),
+                            event_type: EventType::ScanOutput,
+                            timestamp: Utc::now(),
+                            data: json!({
+                                "source": "stderr",
+                                "content": line,
+                                "timestamp": Utc::now().to_rfc3339()
+                            }),
+                        };
+                        let _ = event_sender.send(output_event).await;
+                    }
+                    
+                    // Try to parse progress information
+                    if let Ok(progress) = parse_progress_line(&line, &target_id_clone) {
+                        let _ = progress_tx_clone.send(progress).await;
+                    }
+                }
+                log::info!("Stderr monitor ended for scan {}, total lines: {}", target_id_clone, line_count);
+            }))
+        } else {
+            None
+        };
 
         // Wait for completion
         let status = child.wait().await
             .context("Failed to wait for nmap process")?;
+
+        // Wait for output handlers to complete
+        if let Some(handle) = stdout_handle {
+            let _ = handle.await;
+        }
+        if let Some(handle) = stderr_handle {
+            let _ = handle.await;
+        }
 
         if !status.success() {
             return Err(anyhow::anyhow!("Nmap scan failed with status: {}", status));
@@ -157,7 +256,7 @@ impl NmapScanner {
         
         let mut result = ScanResult {
             id: uuid::Uuid::new_v4().to_string(),
-            target_id: target.id.clone(),
+            target_id: target.ip.to_string(),
             status: ScanStatus::Completed,
             start_time: Utc::now(),
             end_time: Some(Utc::now()),

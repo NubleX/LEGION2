@@ -39,6 +39,7 @@ pub enum EventType {
     ScanProgress,
     ScanCompleted,
     ScanError,
+    ScanOutput,
 }
 
 pub struct EventStreamer {

@@ -38,6 +38,10 @@ use commands::{scan_commands::*, host_commands::*, event_commands::*};
 
 #[tokio::main]
 async fn main() {
+    // Initialize logging
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    println!("LEGION2 starting up...");
+    
     // Initialize database
     let db_pool = SqlitePool::connect("sqlite:legion2.db").await
         .expect("Failed to connect to database");
@@ -61,9 +65,12 @@ async fn main() {
     // Bridge events to streamer
     let streamer_clone = event_streamer.clone();
     tokio::spawn(async move {
+        log::info!("Event bridge task started");
         while let Some(event) = event_rx.recv().await {
+            log::info!("Bridging event: {:?}", event.event_type);
             streamer_clone.send_event(event).await;
         }
+        log::error!("Event bridge task ended - this should not happen");
     });
     
     tauri::Builder::default()

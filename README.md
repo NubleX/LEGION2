@@ -1,173 +1,210 @@
 <div align="center">
   <img src="images/legion2/logo.png" alt="LEGION2 Logo" width="300"/>
 
-# LEGION2 - Advanced Penetration Testing Framework
+# LEGION2 - Advanced Network Security Scanner
 
 ![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)
 ![Version](https://img.shields.io/badge/version-0.2.3--alpha-red.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)
-![Language](https://img.shields.io/badge/language-Rust-orange.svg)
+![Language](https://img.shields.io/badge/language-Rust%20%2B%20TypeScript-orange.svg)
 ![Status](https://img.shields.io/badge/status-alpha--development-orange.svg)
 
 ## ⚠️ ALPHA VERSION WARNING ⚠️
 
 ### Version: 0.2.3-alpha
 
+**A modern, high-performance network penetration testing platform built with Tauri, React, and Rust**
+
 </div>
 
-**LEGION2 is currently in early alpha development and is not yet functional for production use.** The GUI experiences freezing issues, data flow is broken, and multiple components require significant refactoring. This repository represents our active effort to restore and modernize the LEGION penetration testing framework.
+## Project Status
 
-## About LEGION2
+LEGION2 v0.2.3-alpha represents a major milestone in the complete architectural modernization of the LEGION penetration testing framework. After addressing the critical GUI freezing and stability issues that led to the original LEGION being archived, we have successfully migrated to a modern Tauri-based architecture with significant improvements in performance, stability, and user experience.
 
-LEGION2 is a comprehensive modernization of the LEGION penetration testing framework, originally forked from SECFORCE's Sparta. Our mission is to create a stable, high-performance, open-source network penetration testing platform that aids security professionals in discovery, reconnaissance, and exploitation of information systems.
+**Recent Achievements:**
 
-This project addresses the critical issues that led to LEGION being archived in 2024, leaving Kali Linux users with a non-functional tool. LEGION2 represents a complete architectural overhaul designed to eliminate GUI freezes, optimize data flow, and introduce modern development practices for enhanced reliability and performance.
-
-## Current Development Status
-
-**Known Issues in Alpha Version:**
-
-- GUI freezing during scan operations due to qasync coordination problems
-- Data flow interruptions between scanning components and interface
-- Process management instability with concurrent operations
-- Memory leaks during extended scanning sessions
-- Database transaction conflicts causing data corruption
-
-**Active Development Goals:**
-
-- Complete architectural refactoring to eliminate GUI thread blocking
-- Implementation of proper async patterns for external tool integration
-- Migration from PyQt6 to modern framework alternatives (Tauri or FastAPI+React)
+- Complete migration from Python/PyQt to Tauri/React/Rust architecture
+- Elimination of GUI freezing issues through async-first design
+- Real-time scan output and progress tracking
+- Modern responsive user interface with live updates
+- Stable multi-threaded scanning operations
 - Enhanced error handling and recovery mechanisms
-- Comprehensive logging and monitoring capabilities
 
-## Features (Planned/In Development)
+## Architecture Overview
 
-LEGION2 will restore and extend the original LEGION feature set with significant improvements:
+LEGION2 is built on a modern technology stack that ensures optimal performance and reliability:
+
+- **Frontend**: React 18 with TypeScript for a responsive, modern user interface
+- **Backend**: Rust with Tauri for high-performance, memory-safe operations
+- **Database**: SQLite with async operations for reliable data persistence
+- **Scanning Engine**: Enhanced nmap integration with real-time output streaming
+- **Communication**: Event-driven architecture with WebSocket-style real-time updates
+
+## Features
 
 <div align="center">
-  <img src="images/legion2/LEGION2alpha.jpg" alt="LEGION2 Screenshot" width="1300"/>
+  <img src="images/legion2/Legion2-v0.2.3-dashboard.png" alt="LEGION2 Dashboard" width="1300"/>
+  <p><em>Scanner Dashboard with Real-time Output</em></p>
 </div>
 
 **Core Scanning Capabilities:**
 
-- Automatic reconnaissance and scanning with NMAP, Whataweb, Nikto, Vulners, Hydra, SMBenum, Dirbuster, SSLyzer, and WebSlayer
-- Nearly 100 auto-scheduled security scripts with intelligent scheduling
-- Multiple custom scan configurations optimized for different environment types
-- Advanced stage scanning with IPS evasion capabilities
+- Advanced nmap integration with multiple scan types (Quick, Comprehensive, Stealth)
+- Real-time scan output with terminal-like live display
+- Automatic host discovery and service enumeration
+- Port scanning with service version detection
+- Network topology visualization
+- Concurrent scanning operations without GUI blocking
 
 **Enhanced User Experience:**
 
-- Responsive graphical interface with rich context menus and intuitive panels
-- Real-time progress tracking with completion estimates
-- One-click scanning of IP ranges, hostnames, and CIDR subnets
-- Granular NMAP scanning options with advanced configuration
-- Automatic detection of CPEs (Common Platform Enumeration) and CVEs (Common Vulnerabilities and Exposures)
+- Dual-pane interface: Scanner Dashboard and Hosts & Results
+- Real-time progress tracking with detailed statistics
+- Live output terminal showing scan progress
+- Interactive network map with host selection
+- Responsive design optimized for security workflows
+- One-click scanning of IP addresses and ranges
 
-**Modern Architecture Benefits:**
+<div align="center">
+  <img src="images/legion2/Legion2-v0.2.3-hosts.png" alt="LEGION2 Hosts View" width="1300"/>
+  <p><em>Hosts & Results Analysis Interface</em></p>
+</div>
 
-- Non-blocking async operations preventing GUI freezes
+**Technical Improvements:**
+
+- Non-blocking async operations preventing application freezes
+- Memory-safe Rust backend eliminating crashes and memory leaks
+- Event-driven real-time updates for immediate feedback
 - Structured error handling with automatic recovery
-- Real-time auto-saving to prevent data loss
-- WebSocket-based real-time updates for collaborative workflows
-- Comprehensive audit logging with sensitive data filtering
+- Comprehensive logging and debugging capabilities
 
 ## Installation
 
-**Note: Installation instructions are provided for development purposes only. The current alpha version is not recommended for production use.**
-
 ### Prerequisites
 
-- Python 3.9 or higher
-- Modern Linux distribution (Ubuntu 20.04+, Kali 2022+, ParrotOS)
-- Docker (recommended for development environment isolation)
+- **Node.js** 18 or higher
+- **Rust** 1.70 or higher with Cargo
+- **Modern Linux distribution** (Ubuntu 20.04+, Kali 2022+, ParrotOS)
+- **nmap** and other security tools for scanning functionality
 
-### Development Installation
+### Development Setup
 
 ```bash
+# Clone the repository
 git clone https://github.com/NubleX/legion2.git
 cd legion2
-chmod +x install_dev.sh
-./install_dev.sh
+
+# Install frontend dependencies
+npm install
+
+# Run in development mode
+npm run tauri dev
 ```
 
-### Docker Development Environment
-
-For development work, we recommend using the Docker environment to avoid dependency conflicts:
+### Building for Production
 
 ```bash
-git clone https://github.com/NubleX/legion2.git
-cd legion2/docker
-chmod +x runIt.sh
-./runIt.sh
+# Build the application
+npm run tauri build
+
+# The compiled binary will be available in src-tauri/target/release/
 ```
 
-## Architecture Modernization
+## Usage
 
-LEGION2 represents a fundamental architectural transformation from the original LEGION codebase. Our development approach focuses on several key modernization areas:
+1. **Start the Application**: Launch LEGION2 from the compiled binary or development environment
+2. **Configure Scan**: Enter target IP address and select scan type (Quick, Comprehensive, or Stealth)
+3. **Monitor Progress**: Watch real-time output in the Live Output panel
+4. **View Results**: Switch to Hosts & Results tab to analyze discovered hosts and services
+5. **Network Visualization**: Use the interactive network map to explore discovered topology
 
-**Async-First Design:** Complete migration from blocking operations to modern async patterns prevents GUI freezes and enables concurrent scanning operations.
+## Architecture Benefits
 
-**Modular Framework Architecture:** Clean separation between scanning engines, data processing, and user interface components allows for independent development and testing.
+The migration to Tauri/React/Rust provides significant advantages over the original Python/PyQt implementation:
 
-**Modern Technology Stack:** Evaluation of Tauri-based architecture for optimal performance and security, with FastAPI+React as an alternative for web-first deployment scenarios.
-
-**Enhanced Error Handling:** Comprehensive error recovery strategies with circuit breaker patterns and exponential backoff for robust operation in challenging network environments.
+**Performance**: Rust backend ensures memory safety and high performance for scanning operations
+**Stability**: Async-first design eliminates GUI freezing and improves user experience
+**Security**: Memory-safe operations reduce attack surface and improve tool reliability
+**Maintainability**: Modern development practices with TypeScript and structured architecture
+**Cross-platform**: Tauri enables potential future support for multiple operating systems
 
 ## Contributing
 
-LEGION2 is an open-source project that welcomes contributions from the cybersecurity community. Given the current alpha state, we particularly need assistance with:
+LEGION2 welcomes contributions from the cybersecurity and development communities. Areas where contributions are particularly valuable:
 
-- GUI framework migration and interface design
-- Async operation implementation and optimization
-- Security tool integration and testing
-- Documentation and user experience improvements
-- Performance optimization and memory management
+- Additional scanning tool integrations (Masscan, Nikto, etc.)
+- Enhanced reporting and export capabilities
+- Performance optimizations and memory improvements
+- User interface enhancements and accessibility
+- Documentation and testing improvements
 
-Please review our contribution guidelines and coding standards before submitting pull requests. All contributions must maintain the security focus and professional standards expected of penetration testing tools.
+Please review our contribution guidelines before submitting pull requests. All contributions must maintain the security focus and professional standards expected of penetration testing tools.
+
+## Security Notice
+
+LEGION2 is designed exclusively for authorized penetration testing and security assessment activities. Users must ensure compliance with all applicable laws and regulations in their jurisdiction. Unauthorized use of this tool against systems you do not own or have explicit permission to test is illegal and unethical.
 
 ## License
 
-LEGION2 is licensed under the GNU General Public License v3.0. This ensures the tool remains free and open-source for the cybersecurity community while requiring derivative works to maintain the same open-source commitment.
+LEGION2 is licensed under the GNU General Public License v3.0, ensuring it remains free and open-source for the cybersecurity community while requiring derivative works to maintain the same open-source commitment.
 
 ## Attribution and Credits
 
-**LEGION2 Development (2025):**
+**LEGION2 Development Team (2025-..):**
 
-- Igor Dunaev / NubleX - Lead Developer and Project Maintainer
-- Architectural modernization and alpha development coordination
+- **Igor Dunaev / NubleX** - Lead Developer, Architecture Design, and Project Maintainer
+- **Community Contributors** - Bug reports, feature requests, and code contributions
 
-**Original LEGION Development:**
+**Technology Stack Acknowledgments:**
 
-- GoVanguard - Python 3.6+ refactoring, feature additions, and ongoing development leadership
-- Dmitriy Dubson - Significant continued contributions to the original project
+- **Tauri Team** - For the excellent Rust-based application framework enabling modern desktop applications
+- **React Team** - For the powerful frontend framework driving the user interface
+- **Rust Language Team** - For the memory-safe systems programming language powering the backend
+- **nmap Project** - For the foundational network scanning capabilities
+- **TypeScript Team** - For enhanced developer experience and code reliability
 
-**Historical Foundation:**
+**Original LEGION Development Heritage:**
 
-- SECFORCE - Original Sparta Python 2.7 codebase and foundational application design
-- batmancrew - Additional PortActions, PortTerminalActions, and SchedulerSettings
-- yunshu, ketchup, and SECFORCE - XML output parsing engine development
-- Bernardo Damele A.G. - ms08-067_check script used by smbenum.sh
+- **GoVanguard** - Python modernization and significant feature development of original LEGION
+- **SECFORCE** - Original Sparta framework and foundational application design
+- **Community Contributors** - Numerous developers who contributed to the original LEGION ecosystem
 
-**Technology Acknowledgments:**
-LEGION2 builds upon the work of numerous open-source projects including NMAP, Hydra, Python, PyQt, SQLAlchemy, and many other essential security tools. We extend our gratitude to all developers and maintainers of these foundational technologies.
+**Open Source Foundation:**
+LEGION2 builds upon decades of open-source security tool development. We acknowledge the contributions of the entire cybersecurity open-source community, including the developers of nmap, Python ecosystem, Qt framework, and countless other projects that made the original LEGION possible.
 
-**Special Recognition:**
-We acknowledge the original vision of SECFORCE in creating Sparta and GoVanguard's substantial efforts in modernizing the codebase to create LEGION. LEGION2 continues this tradition of community-driven security tool development while addressing the architectural challenges that led to the original project's archive status.
+## Roadmap
 
-## Roadmap and Future Development
+**Current Focus (v0.2.x):**
 
-**Phase 1 (Current):** Stabilization of core functionality and resolution of critical GUI issues
-**Phase 2:** Migration to modern framework architecture with enhanced performance
-**Phase 3:** Implementation of advanced scanning capabilities and collaborative features
-**Phase 4:** Integration of machine learning for intelligent vulnerability assessment
+- Integration of additional scanning tools (Masscan, Nikto, SSLyzer)
+- Enhanced reporting and export capabilities
+- Performance optimizations and memory improvements
+- Comprehensive testing and stability improvements
+
+**Future Development (v0.3.x):**
+
+- Multi-target scanning with range support
+- Advanced vulnerability correlation and reporting
+- Plugin architecture for custom scanning modules
+- Collaborative scanning for team environments
+
+**Long-term Vision (v1.0+):**
+
+- Machine learning integration for intelligent vulnerability assessment
+- Advanced automation and workflow capabilities
+- Cloud-native deployment options
+- Integration with popular security frameworks
 
 ## Support and Community
 
-For development discussions, bug reports, and feature requests, please utilize our GitHub Issues system. As this is an alpha project under active development, we recommend joining our development community for real-time collaboration and support.
+For bug reports, feature requests, and development discussions, please use our GitHub Issues system. As an active open-source project, we encourage community participation and welcome feedback from security professionals and developers.
 
-**Important Note:** LEGION2 is designed for authorized penetration testing and security assessment activities only. Users are responsible for ensuring compliance with all applicable laws and regulations in their jurisdiction.
+**Development Resources:**
+
+- GitHub Repository: https://github.com/NubleX/LEGION2
+- Issue Tracker: https://github.com/NubleX/LEGION2/issues
+- Documentation: Available in the project repository
 
 ---
 
-*LEGION2 - Modernizing penetration testing for the next generation of cybersecurity professionals.*
+*LEGION2 - Modern network security scanning for the next generation of cybersecurity professionals.*

@@ -32,6 +32,8 @@ pub async fn start_network_scan(
     options: ScanOptions,
     coordinator: State<'_, Arc<ScanCoordinator>>,
 ) -> Result<String, String> {
+    log::info!("start_network_scan called with options: {:?}", options);
+    
     let target_ip: std::net::IpAddr = options.target_ip.parse()
         .map_err(|e| format!("Invalid IP address: {}", e))?;
 
@@ -43,8 +45,14 @@ pub async fn start_network_scan(
         scan_type: options.scan_type,
     };
 
+    log::info!("Starting scan for target: {:?}", scan_target);
     let scan_id = coordinator.start_scan(scan_target).await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            log::error!("Failed to start scan: {}", e);
+            e.to_string()
+        })?;
+    
+    log::info!("Scan started with ID: {}", scan_id);
     Ok(scan_id.to_string())
 }
 

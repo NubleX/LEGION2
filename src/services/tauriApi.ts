@@ -158,6 +158,14 @@ export interface ScanEvent {
 }
 
 // Fixed API functions with proper error handling
+// Global state to ensure only one event stream is ever created
+let globalEventStreamSetup = false;
+let globalEventStreamPromise: Promise<void> | null = null;
+
+// Global event listener management
+let globalEventListeners: ((event: any) => void)[] = [];
+let globalUnlisten: (() => void) | null = null;
+
 export const scanAPI = {
   // Start a network scan
   async startNetworkScan(options: ScanOptions): Promise<string> {
@@ -239,13 +247,78 @@ export const scanAPI = {
     }
   },
 
-  // Listen to scan events
+  // Setup event stream from backend (singleton with promise caching)
+  async setupEventStream(): Promise<void> {
+    if (globalEventStreamSetup) {
+      console.log('Event stream already setup, skipping');
+      return;
+    }
+    
+    if (globalEventStreamPromise) {
+      console.log('Event stream setup in progress, waiting...');
+      return globalEventStreamPromise;
+    }
+    
+    globalEventStreamPromise = (async () => {
+      try {
+        await invoke('setup_event_stream');
+        globalEventStreamSetup = true;
+        console.log('Event stream setup completed');
+      } catch (error) {
+        console.error('Failed to setup event stream:', error);
+        globalEventStreamPromise = null; // Reset on error
+        throw error;
+      }
+    })();
+    
+    return globalEventStreamPromise;
+  },
+
+  // Listen to scan events with proper deduplication
   async listenToScanEvents(callback: (event: any) => void): Promise<() => void> {
+    console.log('listenToScanEvents called, current listeners:', globalEventListeners.length);
+    
     try {
-      const unlisten = await listen('scan-event', (event) => {
-        callback(event.payload);
-      });
-      return unlisten;
+      // Setup the event stream first (only if not already done)
+      await this.setupEventStream();
+      
+      // Add this callback to the list
+      globalEventListeners.push(callback);
+      console.log('Added callback, total listeners:', globalEventListeners.length);
+      
+      // Set up the global listener only once
+      if (!globalUnlisten) {
+        console.log('Setting up single global event listener');
+        globalUnlisten = await listen('scan-event', (event) => {
+          console.log('Global listener received event, broadcasting to', globalEventListeners.length, 'callbacks');
+          globalEventListeners.forEach((listener, index) => {
+            try {
+              console.log(`Calling callback ${index + 1}/${globalEventListeners.length}`);
+              listener(event.payload);
+            } catch (error) {
+              console.error('Error in event callback:', error);
+            }
+          });
+        });
+      } else {
+        console.log('Using existing global event listener');
+      }
+      
+      // Return unsubscribe function
+      return () => {
+        const index = globalEventListeners.indexOf(callback);
+        if (index > -1) {
+          globalEventListeners.splice(index, 1);
+          console.log('Removed listener, remaining:', globalEventListeners.length);
+        }
+        
+        // If no more listeners, clean up the global listener
+        if (globalEventListeners.length === 0 && globalUnlisten) {
+          console.log('No more listeners, cleaning up global listener');
+          globalUnlisten();
+          globalUnlisten = null;
+        }
+      };
     } catch (error) {
       console.error('Failed to listen to scan events:', error);
       return () => {}; // Return no-op function on error

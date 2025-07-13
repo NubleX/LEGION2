@@ -22,20 +22,29 @@ use crate::scanning::events::EventStreamer;
 use std::sync::Arc;
 use tauri::{State, Window, Emitter};
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static STREAM_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
 #[tauri::command]
 pub async fn setup_event_stream(
     window: Window,
     streamer: State<'_, Arc<EventStreamer>>,
 ) -> Result<(), String> {
+    let stream_id = STREAM_COUNTER.fetch_add(1, Ordering::SeqCst);
+    log::info!("Setting up event stream #{} for frontend", stream_id);
     let mut rx = streamer.subscribe();
     
     tokio::spawn(async move {
+        log::info!("Event stream task #{} started", stream_id);
         while let Ok(event) = rx.recv().await {
+            log::info!("Stream #{}: Emitting event to frontend: {:?}", stream_id, event.event_type);
             if let Err(e) = window.emit("scan-event", &event) {
-                eprintln!("Failed to emit event: {}", e);
+                log::error!("Stream #{}: Failed to emit event: {}", stream_id, e);
                 break;
             }
         }
+        log::error!("Event stream task #{} ended", stream_id);
     });
     
     Ok(())

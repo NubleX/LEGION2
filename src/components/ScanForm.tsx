@@ -47,43 +47,38 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, isScanning }) => {
   const [errors, setErrors] = useState<string[]>([]);
 
 const validateForm = (): boolean => {
-  console.log('ScanForm: validateForm called');
   const newErrors: string[] = [];
   
-  console.log('ScanForm: Checking targets:', config.targets.trim());
   if (!config.targets.trim()) {
     newErrors.push('Target is required');
-    console.log('ScanForm: Target validation failed - target is empty');
   }
   
-  console.log('ScanForm: Checking tools - useNmap:', config.useNmap, 'useMasscan:', config.useMasscan);
   if (!config.useNmap && !config.useMasscan) {
     newErrors.push('Select at least one scanning tool');
-    console.log('ScanForm: Tool validation failed - no tools selected');
   }
   
-  console.log('ScanForm: Checking masscan rate:', config.masscanRate);
   if (config.masscanRate !== undefined && (config.masscanRate < 100 || config.masscanRate > 100000)) {
     newErrors.push('Masscan rate must be between 100-100000');
-    console.log('ScanForm: Masscan rate validation failed');
   }
   
-  console.log('ScanForm: Validation errors:', newErrors);
   setErrors(newErrors);
   return newErrors.length === 0;
 };
 
   const handleSubmit = (e: React.FormEvent) => {
-    console.log('ScanForm: handleSubmit called');
+    console.log('ScanForm handleSubmit called');
     e.preventDefault();
-    console.log('ScanForm: Form submission prevented, starting validation');
-    console.log('ScanForm: Current config:', config);
     
-    if (validateForm()) {
-      console.log('ScanForm: Validation passed, calling onStartScan');
+    console.log('Form config:', config);
+    const isValid = validateForm();
+    console.log('Form validation result:', isValid);
+    console.log('Validation errors:', errors);
+    
+    if (isValid) {
+      console.log('Calling onStartScan with config:', config);
       onStartScan(config);
     } else {
-      console.log('ScanForm: Validation failed, errors:', errors);
+      console.log('Form validation failed, not calling onStartScan');
     }
   };
 

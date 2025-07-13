@@ -57,6 +57,7 @@ impl ScanCoordinator {
 
     pub async fn start_scan(&self, target: ScanTarget) -> Result<uuid::Uuid> {
         let scan_id = uuid::Uuid::new_v4();
+        log::info!("ScanCoordinator::start_scan called for target: {:?} with scan_id: {}", target, scan_id);
         let (cancel_tx, mut cancel_rx) = mpsc::channel(1);
         
         // Create scan record in database
@@ -94,7 +95,7 @@ impl ScanCoordinator {
                         log::info!("Scan {} cancelled", scan_id);
                         Err(anyhow::anyhow!("Scan cancelled"))
                     }
-                    scan_result = scanner.scan_target(&target, progress_tx) => {
+                    scan_result = scanner.scan_target(&target, progress_tx, Some(coordinator.results_tx.clone())) => {
                         scan_result
                     }
                 };

@@ -44,6 +44,7 @@ const EnhancedScannerPanel = () => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'hosts-results'>('dashboard');
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
   const [scanDuration, setScanDuration] = useState(0);
+  const [liveOutput, setLiveOutput] = useState<string[]>([]);
   const [scanStats, setScanStats] = useState({
     hostsDiscovered: 0,
     portsFound: 0,
@@ -53,7 +54,6 @@ const EnhancedScannerPanel = () => {
   const {
     currentScan,
     isScanning,
-    verboseOutput,
     startScan
   } = useLegionStore();
 
@@ -86,26 +86,52 @@ const EnhancedScannerPanel = () => {
     });
   }, [hosts]);
 
-  // Convert verboseOutput to ToolOutput format for enhanced terminal display
-  const toolOutputs = verboseOutput.map((line, index) => ({
-    id: index.toString(),
-    tool: line.includes('nmap') ? 'nmap' : 
-          line.includes('masscan') ? 'masscan' : 
-          line.includes('nikto') ? 'nikto' : 'system',
-    command: line.includes('nmap') || line.includes('masscan') ? line : 'Processing...',
-    timestamp: new Date().toISOString(),
-    stdout: line,
-    stderr: '',
-    exitCode: 0,
-    duration: 0,
-    isRunning: isScanning && index === verboseOutput.length - 1
-  }));
+  // Set up direct scan output listener
+  useEffect(() => {
+    console.log('ScannerPanel useEffect: Setting up scan output listener');
+    let unlisten: (() => void) | null = null;
+
+    const setupListener = async () => {
+      try {
+        const { scanAPI } = await import('../services/tauriApi');
+        console.log('ScannerPanel: About to call listenToScanEvents');
+        unlisten = await scanAPI.listenToScanEvents((event) => {
+          if (event.event_type === 'ScanOutput' && event.data?.content) {
+            console.log('ScannerPanel: Received scan output event:', event.data.content);
+            setLiveOutput(prev => [...prev, event.data.content]);
+          }
+        });
+        console.log('ScannerPanel: Event listener setup complete');
+      } catch (error) {
+        console.error('Failed to setup scan output listener:', error);
+      }
+    };
+
+    setupListener();
+
+    return () => {
+      console.log('ScannerPanel useEffect cleanup: Removing listener');
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
+
+  // Clear live output when starting new scan
+  useEffect(() => {
+    if (isScanning && currentScan) {
+      setLiveOutput([`Starting scan for ${currentScan.targetIp}...`]);
+    }
+  }, [isScanning, currentScan]);
+
+  // For Live Output, we'll use a simple terminal-like display instead of ToolOutput
 
   const handleStartScan = useCallback(async (config: any) => {
+    console.log('handleStartScan called with config:', config);
     try {
-      console.log('ScannerPanel handleStartScan called with:', config);
+      console.log('Calling startScan from store...');
       await startScan(config);
-      console.log('ScannerPanel startScan completed successfully');
+      console.log('startScan completed successfully');
       // Refresh hosts after scan starts
       if (loadHosts) {
         await loadHosts();
@@ -292,11 +318,27 @@ const EnhancedScannerPanel = () => {
                 </p>
               </div>
               <div className="flex-1 overflow-hidden">
-                <ToolOutput 
-                  outputs={toolOutputs}
-                  isLive={isScanning}
-                  className="h-full"
-                />
+                {/* Terminal-like Live Output */}
+                <div className="h-full bg-black p-4 font-mono text-sm overflow-y-auto">
+                  {liveOutput.length === 0 ? (
+                    <div className="text-gray-500 text-center mt-8">
+                      No scan output yet. Start a scan to see live results.
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      {liveOutput.map((line, index) => (
+                        <div key={index} className="text-green-400 whitespace-pre-wrap">
+                          {line}
+                        </div>
+                      ))}
+                      {isScanning && (
+                        <div className="text-yellow-400 animate-pulse">
+                          <span className="inline-block w-2 h-4 bg-yellow-400 ml-1"></span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>

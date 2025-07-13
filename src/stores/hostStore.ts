@@ -78,9 +78,7 @@ const useHostStore = create<HostStore>((set, get) => ({
     set({ isLoading: true, lastError: null });
     
     try {
-      console.log('HostStore: Loading hosts from backend...');
       const hosts = await invoke('get_all_hosts') as Host[];
-      console.log('HostStore: Loaded hosts:', hosts);
       
       set({ 
         hosts: hosts,
@@ -88,7 +86,7 @@ const useHostStore = create<HostStore>((set, get) => ({
         isLoading: false 
       });
     } catch (error) {
-      console.error('HostStore: Failed to load hosts:', error);
+      console.error('Failed to load hosts:', error);
       // Fall back to empty array instead of mock data
       set({ 
         hosts: [],

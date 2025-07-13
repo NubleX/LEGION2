@@ -20,7 +20,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Activity, Clock, Target, Shield, AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
-import useScanStore from '../stores/scanStore';
+import { useLegionStore } from '../stores/legionStore';
 import { scanAPI } from '../services/tauriApi';
 import type { ScanResult, ScanStatistics } from '../types/scanning';
 
@@ -67,13 +67,13 @@ const ScanProgress: React.FC<ScanProgressProps> = ({
 }) => {
   // Your existing store data (always available)
   const {
+    isScanning: storeIsScanning,
     activeScans: storeActiveScans,
     currentProgress: storeProgress,
     statistics: storeStatistics,
-    isScanning: storeIsScanning,
     cancelScan: storeCancelScan,
     cancelAllScans: storeCancelAllScans
-  } = useScanStore();
+  } = useLegionStore();
 
   // Backend data (may not be available initially)
   const [backendProgress, setBackendProgress] = useState<Map<string, BackendScanProgress>>(new Map());
@@ -186,44 +186,8 @@ const ScanProgress: React.FC<ScanProgressProps> = ({
     };
   }, [onError]);
 
-  // Listen to backend events
-  useEffect(() => {
-    let unlistenFunction: (() => void) | null = null;
-
-    const setupEventListener = async () => {
-      try {
-        if (scanAPI?.listenToScanEvents) {
-          const unlisten = await scanAPI.listenToScanEvents((event) => {
-            console.log('📡 Real scan event received:', event);
-            
-            switch (event.event_type) {
-              case 'scan_completed':
-                if (onScanComplete) {
-                  onScanComplete(event.data);
-                }
-                break;
-              case 'scan_failed':
-                if (onError) {
-                  onError(event.data.error || 'Scan failed');
-                }
-                break;
-            }
-          });
-          unlistenFunction = unlisten;
-        }
-      } catch (err) {
-        console.warn('⚠️ Event listener setup failed:', err);
-      }
-    };
-
-    setupEventListener();
-
-    return () => {
-      if (unlistenFunction) {
-        unlistenFunction();
-      }
-    };
-  }, [onScanComplete, onError]);
+  // Note: Event listening is now handled by ScannerPanel to avoid duplication
+  // This component focuses on progress display only
 
   const toggleScanExpansion = (scanId: string) => {
     setExpandedScans(prev => {
