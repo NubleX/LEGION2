@@ -20,20 +20,53 @@
 
 use std::net::IpAddr;
 use anyhow::Result;
-use cidr::IpCidr;
+use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 
 pub fn parse_cidr_range(cidr: &str) -> Result<Vec<IpAddr>> {
-    let cidr_parsed: IpCidr = cidr.parse()?;
     let mut ips = Vec::new();
     
-    // For IPv4 networks
-    if let IpCidr::V4(v4_cidr) = cidr_parsed {
-        for ip in v4_cidr.iter() {
-            ips.push(IpAddr::V4(ip.address()));
+    // Check if it's a single IP or CIDR range
+    if !cidr.contains('/') {
+        // Single IP address
+        let ip: IpAddr = cidr.parse()?;
+        ips.push(ip);
+        return Ok(ips);
+    }
+    
+    // Parse as CIDR range using ipnet for better compatibility
+    let network: IpNet = cidr.parse()?;
+    
+    match network {
+        IpNet::V4(v4_net) => {
+            // For IPv4, expand all IPs in the range
+            for ip in v4_net.hosts() {
+                ips.push(IpAddr::V4(ip));
+            }
+            // Include network and broadcast addresses if empty
+            if ips.is_empty() {
+                ips.push(IpAddr::V4(v4_net.network()));
+                if let Some(broadcast) = v4_net.broadcast() {
+                    if v4_net.network() != broadcast {
+                        ips.push(IpAddr::V4(broadcast));
+                    }
+                }
+            }
         }
-    } else {
-        // For IPv6, just add the network address for now
-        ips.push(cidr_parsed.first_address());
+        IpNet::V6(v6_net) => {
+            // For IPv6, limit to first 256 addresses for performance
+            let mut count = 0;
+            for ip in v6_net.hosts() {
+                ips.push(IpAddr::V6(ip));
+                count += 1;
+                if count >= 256 {
+                    break;
+                }
+            }
+            // Include network address if no hosts
+            if ips.is_empty() {
+                ips.push(IpAddr::V6(v6_net.network()));
+            }
+        }
     }
     
     Ok(ips)
@@ -45,7 +78,7 @@ pub fn is_private_ip(ip: &IpAddr) -> bool {
             ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local()
         }
         IpAddr::V6(ipv6) => {
-            ipv6.is_loopback() || ipv6.is_multicast()
+            ipv6.is_loopback() || ipv6.is_multicast() || ipv6.is_unspecified()
         }
     }
 }
@@ -56,47 +89,76 @@ pub fn validate_target_ip(ip: &str) -> Result<IpAddr> {
 }
 
 pub fn parse_target_specification(target: &str) -> Result<Vec<IpAddr>> {
-    // Try parsing as CIDR first
-    if target.contains('/') {
-        return parse_cidr_range(target);
-    }
+    let mut all_ips = Vec::new();
     
-    // Try parsing as single IP
-    if let Ok(ip) = target.parse::<IpAddr>() {
-        return Ok(vec![ip]);
-    }
-    
-    // Try parsing as IP range (e.g., "192.168.1.1-192.168.1.10")
-    if target.contains('-') {
-        let parts: Vec<&str> = target.split('-').collect();
-        if parts.len() == 2 {
-            if let (Ok(start), Ok(end)) = (parts[0].parse::<IpAddr>(), parts[1].parse::<IpAddr>()) {
-                return parse_ip_range(start, end);
-            }
+    // Split by commas for multiple targets
+    for part in target.split(',') {
+        let trimmed = part.trim();
+        
+        if trimmed.contains('-') {
+            // IP range like 192.168.1.1-10
+            all_ips.extend(parse_ip_range(trimmed)?);
+        } else if trimmed.contains('/') {
+            // CIDR notation
+            all_ips.extend(parse_cidr_range(trimmed)?);
+        } else {
+            // Single IP
+            let ip: IpAddr = trimmed.parse()?;
+            all_ips.push(ip);
         }
     }
     
-    Err(anyhow::anyhow!("Invalid target specification: {}", target))
+    // Remove duplicates
+    all_ips.sort();
+    all_ips.dedup();
+    
+    Ok(all_ips)
 }
 
-fn parse_ip_range(start: IpAddr, end: IpAddr) -> Result<Vec<IpAddr>> {
+fn parse_ip_range(range: &str) -> Result<Vec<IpAddr>> {
     let mut ips = Vec::new();
     
-    match (start, end) {
-        (IpAddr::V4(start_v4), IpAddr::V4(end_v4)) => {
-            let start_num = u32::from(start_v4);
-            let end_num = u32::from(end_v4);
-            
-            if start_num > end_num {
-                return Err(anyhow::anyhow!("Invalid IP range: start IP is greater than end IP"));
+    // Handle ranges like 192.168.1.1-10 or 192.168.1.1-192.168.1.10
+    if let Some(dash_pos) = range.rfind('-') {
+        let start_str = &range[..dash_pos];
+        let end_str = &range[dash_pos + 1..];
+        
+        let start_ip: IpAddr = start_str.parse()?;
+        
+        // Check if end is full IP or just last octet
+        let end_ip: IpAddr = if end_str.contains('.') || end_str.contains(':') {
+            end_str.parse()?
+        } else {
+            // Assume it's just the last part
+            match start_ip {
+                IpAddr::V4(v4) => {
+                    let octets = v4.octets();
+                    let end_octet: u8 = end_str.parse()?;
+                    IpAddr::V4(std::net::Ipv4Addr::new(
+                        octets[0], octets[1], octets[2], end_octet
+                    ))
+                }
+                IpAddr::V6(_) => {
+                    return Err(anyhow::anyhow!("IPv6 short range notation not supported"));
+                }
             }
-            
-            for num in start_num..=end_num {
-                ips.push(IpAddr::V4(num.into()));
+        };
+        
+        // Generate IPs in range
+        match (start_ip, end_ip) {
+            (IpAddr::V4(start), IpAddr::V4(end)) => {
+                let start_int = u32::from(start);
+                let end_int = u32::from(end);
+                
+                for i in start_int..=end_int {
+                    ips.push(IpAddr::V4(std::net::Ipv4Addr::from(i)));
+                    // Limit to prevent memory issues
+                    if ips.len() > 65536 {
+                        return Err(anyhow::anyhow!("Range too large (max 65536 IPs)"));
+                    }
+                }
             }
-        }
-        _ => {
-            return Err(anyhow::anyhow!("IP range only supported for IPv4 addresses"));
+            _ => return Err(anyhow::anyhow!("Invalid IP range")),
         }
     }
     
