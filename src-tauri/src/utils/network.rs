@@ -54,3 +54,51 @@ pub fn validate_target_ip(ip: &str) -> Result<IpAddr> {
     let parsed: IpAddr = ip.parse()?;
     Ok(parsed)
 }
+
+pub fn parse_target_specification(target: &str) -> Result<Vec<IpAddr>> {
+    // Try parsing as CIDR first
+    if target.contains('/') {
+        return parse_cidr_range(target);
+    }
+    
+    // Try parsing as single IP
+    if let Ok(ip) = target.parse::<IpAddr>() {
+        return Ok(vec![ip]);
+    }
+    
+    // Try parsing as IP range (e.g., "192.168.1.1-192.168.1.10")
+    if target.contains('-') {
+        let parts: Vec<&str> = target.split('-').collect();
+        if parts.len() == 2 {
+            if let (Ok(start), Ok(end)) = (parts[0].parse::<IpAddr>(), parts[1].parse::<IpAddr>()) {
+                return parse_ip_range(start, end);
+            }
+        }
+    }
+    
+    Err(anyhow::anyhow!("Invalid target specification: {}", target))
+}
+
+fn parse_ip_range(start: IpAddr, end: IpAddr) -> Result<Vec<IpAddr>> {
+    let mut ips = Vec::new();
+    
+    match (start, end) {
+        (IpAddr::V4(start_v4), IpAddr::V4(end_v4)) => {
+            let start_num = u32::from(start_v4);
+            let end_num = u32::from(end_v4);
+            
+            if start_num > end_num {
+                return Err(anyhow::anyhow!("Invalid IP range: start IP is greater than end IP"));
+            }
+            
+            for num in start_num..=end_num {
+                ips.push(IpAddr::V4(num.into()));
+            }
+        }
+        _ => {
+            return Err(anyhow::anyhow!("IP range only supported for IPv4 addresses"));
+        }
+    }
+    
+    Ok(ips)
+}

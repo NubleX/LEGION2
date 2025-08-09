@@ -28,15 +28,16 @@
   }
   
   .custom-scrollbar::-webkit-scrollbar-track {
-    @apply bg-gray-800;
+    background-color: #1f2937;
   }
   
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    @apply bg-gray-600 rounded;
+    background-color: #4b5563;
+    border-radius: 0.25rem;
   }
   
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    @apply bg-gray-500;
+    background-color: #6b7280;
   }
 }
 

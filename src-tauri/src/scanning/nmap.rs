@@ -21,6 +21,7 @@
 use crate::scanning::models::{ScanResult, ScanTarget, ScanType, ScanProgress, OSDetection, ScanStatus};
 use crate::scanning::events::{ScanEvent, EventType};
 use crate::shared::{ScanPort, Protocol, PortState};
+use crate::utils::os::{get_nmap_binary_path, is_nmap_available};
 use anyhow::{Result, Context};
 use std::process::Stdio;
 use tokio::process::Command;
@@ -41,6 +42,11 @@ impl NmapScanner {
         Self {}
     }
 
+    /// Check if nmap is available on the system
+    pub async fn is_available() -> bool {
+        is_nmap_available().await
+    }
+
     pub async fn scan_target(
         &self,
         target: &ScanTarget,
@@ -57,8 +63,14 @@ impl NmapScanner {
             timestamp
         );
 
-        // Build nmap command based on scan type
-        let mut cmd = Command::new("nmap");
+        // Check if nmap is available
+        if !Self::is_available().await {
+            return Err(anyhow::anyhow!("Nmap is not available on this system"));
+        }
+
+        // Build nmap command based on scan type using OS-appropriate binary (local /bin first)
+        let nmap_path = get_nmap_binary_path();
+        let mut cmd = Command::new(&nmap_path);
         
         // Always output XML for parsing and add verbose flags for real-time output
         cmd.arg("-oX").arg(&output_file);

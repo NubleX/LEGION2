@@ -373,6 +373,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cidr"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bdf600c45bd958cf2945c445264471cca8b6c8e67bc87b71affd6d7e5682621"
+
+[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1866,8 +1872,10 @@ version = "0.2.3-alpha"
 dependencies = [
  "anyhow",
  "chrono",
+ "cidr",
  "env_logger",
  "ipnet",
+ "libc",
  "log",
  "quick-xml 0.29.0",
  "regex",
@@ -1879,6 +1887,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tokio",
  "uuid",
+ "winapi",
 ]
 
 [[package]]

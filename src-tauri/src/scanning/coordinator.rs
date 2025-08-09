@@ -32,6 +32,8 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use ipnet::IpNet;
 use std::net::IpAddr;
 use std::str::FromStr;
+use super::*;
+use crate::utils::network::parse_target_specification;
 
 pub struct ScanCoordinator {
     database: Arc<DatabaseOperations>,

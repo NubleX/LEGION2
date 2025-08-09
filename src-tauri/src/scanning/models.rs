@@ -42,7 +42,7 @@ pub struct ScanConfig {
     pub vulnerability_scan: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ScanType {
     Discovery,
     PortScan,
@@ -149,4 +149,12 @@ pub struct ScanStatistics {
     pub total_hosts_discovered: u32,
     pub total_ports_found: u32,
     pub total_vulnerabilities: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScanRequest {
+    pub scan_id: uuid::Uuid,
+    pub target: String,
+    pub scan_type: ScanType,
+    pub options: std::collections::HashMap<String, String>,
 }

@@ -62,7 +62,7 @@ interface BackendScanStatistics {
 
 const ScanProgress: React.FC<ScanProgressProps> = ({ 
   showDetails = true, 
-  onScanComplete, 
+  onScanComplete: _onScanComplete, 
   onError 
 }) => {
   // Your existing store data (always available)

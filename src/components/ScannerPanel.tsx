@@ -22,7 +22,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useLegionStore } from '../stores/legionStore';
 import useHostStore, { Host } from '../stores/hostStore';
 import ScanForm from './ScanForm';
-import ToolOutput from './ToolOutput';
+// import ToolOutput from './ToolOutput';
 import NetworkMap from './NetworkMap';
 import HostTable from './HostTable';
 import ResultViewer from './ResultViewer';

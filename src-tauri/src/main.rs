@@ -31,10 +31,11 @@ mod database;
 mod scanning;
 mod commands;
 mod shared;
+mod utils;
 
 use database::DatabaseOperations;
 use scanning::{coordinator::ScanCoordinator, events::EventStreamer};
-use commands::{scan_commands::*, host_commands::*, event_commands::*};
+use commands::{scan_commands::*, host_commands::*, event_commands::*, scanner_commands::*};
 
 #[tokio::main]
 async fn main() {
@@ -91,6 +92,12 @@ async fn main() {
             commands::scan_commands::scan_network_range,
             commands::host_commands::update_host_os_detection,
             commands::host_commands::get_host_by_ip,
+            scan_with_masscan,
+            scan_with_nmap,
+            get_scanner_status,
+            get_bin_directory_path,
+            is_scanner_available,
+            quick_network_scan,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

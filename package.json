@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "setup-binaries": "node scripts/setup-binaries.cjs",
+    "prebuild": "npm run setup-binaries",
+    "pretauri:build": "npm run setup-binaries"
   },
   "dependencies": {
     "@tauri-apps/plugin-shell": "^2.3.0",
