@@ -143,3 +143,7 @@ src-tauri/.sqlx
 *.db-*
 legion2.db
 .sqlx/
+
+target/*
+src-tauri/target/*
+# Cargo
