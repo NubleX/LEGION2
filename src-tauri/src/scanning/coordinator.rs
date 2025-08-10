@@ -1,50 +1,56 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-
 // Forked from an earlier version of LEGION, which was originally created by Gotham Security.
 // It was archived in 2024.
-
 // LEGION (https://gotham-security.com)
 // Copyright (c) 2023 Gotham Security
-
 //     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
 //     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
 //     version.
-
 //     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
 //     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
 //     details.
-
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use crate::scanning::nmap::NmapScanner;
-use crate::scanning::models::{ScanStatus, ScanTarget, ScanType, ScanProgress, ScanStatistics};
-use crate::scanning::events::{ScanEvent, EventType};
-use crate::database::DatabaseOperations;
-use crate::database::models::HostStatus;
-#[allow(unused_imports)]
-use crate::shared::{StoredPort, StoredVulnerability}; // These have to be used. IDE is blind.
 use anyhow::Result;
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::mpsc;
+use parking_lot::RwLock;
+use std::collections::HashMap;
+use uuid::Uuid;
 use ipnet::IpNet;
 use std::net::IpAddr;
 use std::str::FromStr;
-use super::*;
-use crate::utils::network::parse_target_specification;
+use chrono::Utc;
+
+use crate::scanning::{
+    masscan::MasscanScanner,
+    nmap::NmapScanner,
+    models::{ScanTarget, ScanType, ScanProgress, ScanResult},
+    events::{ScanEvent, EventType},
+};
+use crate::database::DatabaseOperations;
+use crate::shared::{models::Host, StoredPort, StoredVulnerability, HostStatus};
+
+#[derive(Debug, Clone)]
+pub struct ScanHandle {
+    pub cancel_tx: mpsc::Sender<()>,
+    pub status: Arc<tokio::sync::Mutex<ScanStatus>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ScanStatus {
+    Running,
+    Failed(String),
+}
 
 pub struct ScanCoordinator {
     database: Arc<DatabaseOperations>,
-    active_scans: Arc<RwLock<HashMap<uuid::Uuid, ScanHandle>>>,
+    active_scans: Arc<RwLock<HashMap<Uuid, ScanHandle>>>,
     results_tx: mpsc::Sender<ScanEvent>,
     nmap_scanner: Arc<NmapScanner>,
-}
-
-struct ScanHandle {
-    cancel_tx: mpsc::Sender<()>,
-    status: Arc<Mutex<ScanStatus>>,
+    masscan_scanner: Arc<MasscanScanner>,
 }
 
 impl ScanCoordinator {
@@ -54,101 +60,82 @@ impl ScanCoordinator {
             active_scans: Arc::new(RwLock::new(HashMap::new())),
             results_tx,
             nmap_scanner: Arc::new(NmapScanner::new()),
+            masscan_scanner: Arc::new(MasscanScanner::new()),
         }
     }
 
-    pub async fn start_scan(&self, target: ScanTarget) -> Result<uuid::Uuid> {
-        let scan_id = uuid::Uuid::new_v4();
-        log::info!("ScanCoordinator::start_scan called for target: {:?} with scan_id: {}", target, scan_id);
-        let (cancel_tx, mut cancel_rx) = mpsc::channel(1);
-        
-        // Create scan record in database
-        let host = self.database.upsert_host(&target.ip.to_string(), target.hostname.as_deref()).await?;
-        let host_id = host.id.clone();
+    pub async fn start_scan(&self, target: ScanTarget) -> Result<Uuid> {
+        let scan_id = Uuid::new_v4();
+        log::info!("Starting scan for target: {:?} with ID: {}", target, scan_id);
 
-        // Store scan handle
-        {
-            let mut scans = self.active_scans.write().await;
-            scans.insert(scan_id, ScanHandle {
-                cancel_tx,
-                status: Arc::new(Mutex::new(ScanStatus::Running)),
-            });
-        }
+        let (cancel_tx, cancel_rx) = mpsc::channel(1);
+        let (progress_tx, progress_rx) = mpsc::channel(100);
 
-        // Clone for async task
-        let scanner = self.nmap_scanner.clone();
-        let active_scans = self.active_scans.clone();
-        let coordinator = Arc::new(Self {
-            database: self.database.clone(),
-            active_scans: self.active_scans.clone(),
-            results_tx: self.results_tx.clone(),
-            nmap_scanner: self.nmap_scanner.clone(),
-        });
-
-        // Create progress channel
-        let (progress_tx, mut progress_rx) = mpsc::channel(100);
+        // Initialize scan
+        self.initialize_scan(scan_id, &target, cancel_tx).await?;
 
         // Spawn scan task
-        tokio::spawn(async move {
-            let result: Result<(), anyhow::Error> = async {
-                // Run the scan
-                let result = tokio::select! {
-                    _ = cancel_rx.recv() => {
-                        log::info!("Scan {} cancelled", scan_id);
-                        Err(anyhow::anyhow!("Scan cancelled"))
-                    }
-                    scan_result = scanner.scan_target(&target, progress_tx, Some(coordinator.results_tx.clone())) => {
-                        scan_result
-                    }
-                };
+        self.spawn_scan_task(scan_id, target.clone(), cancel_rx, progress_tx).await;
 
-                // Process result
-                match result {
-                    Ok(scan_result) => {
-                        if let Err(e) = coordinator.handle_scan_completion(scan_id, scan_result).await {
-                            log::error!("Failed to handle scan completion: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("Scan failed: {}", e);
-                        if let Err(db_err) = coordinator.database.update_host_status(&host_id, HostStatus::Unknown, Some(0.0)).await {
-                            log::error!("Failed to update host status after scan failure: {}", db_err);
-                        }
-                        let failed_scan_event = ScanEvent {
-                            scan_id: scan_id.to_string(),
-                            event_type: EventType::ScanError,
-                            timestamp: chrono::Utc::now(),
-                            data: serde_json::json!({ "error": e.to_string() }),
-                        };
-                        let _ = coordinator.results_tx.send(failed_scan_event).await;
-                    }
-                }
-
-                // Remove from active scans
-                let mut scans = active_scans.write().await;
-                scans.remove(&scan_id);
-                Ok(())
-            }.await;
-
-            if let Err(e) = result {
-                log::error!("Scan task failed: {}", e);
-                
-                if let Ok(host) = coordinator.database.get_host_by_ip(&target.ip.to_string()).await {
-                    let _ = coordinator.database.update_host_status(&host.id, HostStatus::Unknown, None).await;
-                }
-            }
-        });
-
-        // Spawn progress monitor
-        let _window_clone = self.results_tx.clone();
-        tokio::spawn(async move {
-            while let Some(progress) = progress_rx.recv().await {
-                // In a real implementation, emit this to the frontend
-                log::debug!("Scan progress: {}%", progress.progress);
-            }
-        });
+        // Monitor progress
+        self.monitor_progress(scan_id, progress_rx);
 
         Ok(scan_id)
+    }
+
+    async fn initialize_scan(&self, scan_id: Uuid, target: &ScanTarget, cancel_tx: mpsc::Sender<()>) -> Result<()> {
+        let host = self.database.upsert_host(&target.ip.to_string(), target.hostname.as_deref()).await?;
+        
+        self.active_scans.write().insert(scan_id, ScanHandle {
+            cancel_tx,
+            status: Arc::new(tokio::sync::Mutex::new(ScanStatus::Running)),
+        });
+
+        Ok(())
+    }
+
+    async fn spawn_scan_task(
+        &self,
+        scan_id: Uuid,
+        target: ScanTarget,
+        mut cancel_rx: mpsc::Receiver<()>,
+        progress_tx: mpsc::Sender<ScanProgress>,
+    ) {
+        let scanner = self.nmap_scanner.clone();
+        let active_scans = self.active_scans.clone();
+        let results_tx = self.results_tx.clone();
+        let database = self.database.clone();
+
+        tokio::spawn(async move {
+            let result = tokio::select! {
+                _ = cancel_rx.recv() => {
+                    log::info!("Scan {} cancelled", scan_id);
+                    Err(anyhow::anyhow!("Scan cancelled"))
+                }
+                scan_result = scanner.scan_target(&target, progress_tx, Some(results_tx.clone())) => {
+                    scan_result
+                }
+            };
+
+            Self::handle_scan_result(scan_id, result, database, results_tx).await;
+            active_scans.write().remove(&scan_id);
+        });
+    }
+
+    fn monitor_progress(&self, scan_id: Uuid, mut progress_rx: mpsc::Receiver<ScanProgress>) {
+        let results_tx = self.results_tx.clone();
+        
+        tokio::spawn(async move {
+            while let Some(progress) = progress_rx.recv().await {
+                log::debug!("Scan {} progress: {}%", scan_id, progress.progress);
+                let _ = results_tx.send(ScanEvent {
+                    scan_id: scan_id.to_string(),
+                    event_type: EventType::ScanProgress,
+                    timestamp: Utc::now(),
+                    data: serde_json::json!(progress),
+                }).await;
+            }
+        });
     }
 
     pub async fn cancel_scan(&self, scan_id: uuid::Uuid) -> Result<()> {
@@ -249,7 +236,7 @@ impl ScanCoordinator {
         }
     }
 
-    async fn process_scan_result(&self, scan_result: &mut crate::scanning::models::ScanResult) -> Result<crate::database::models::Host> {
+    async fn process_scan_result(&self, scan_result: &mut crate::scanning::models::ScanResult) -> Result<crate::shared::models::Host> {
         // Extract IP from target_id (assuming target_id is an IP address)
         let target_ip = &scan_result.target_id;
         

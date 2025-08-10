@@ -16,6 +16,6 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "tauri.ts"],
+  "include": ["src", "tauri.ts", "pyscript-analyzer/legacy_bindings.ts"],
   "references": [{ "path": "./src-tauri/tsconfig.node.json" }]
 }

@@ -204,28 +204,6 @@ pub async fn run_masscan(ip_range: &str, ports: &str, rate: Option<u32>) -> Resu
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
-
-/// Run nmap with OS-appropriate binary (checks local /bin first)
-pub async fn run_nmap(target: &str, args: &[&str]) -> Result<String> {
-    let nmap_path = get_nmap_binary_path();
-
-    let mut command_args = vec![target];
-    command_args.extend_from_slice(args);
-
-    let output = tokio::process::Command::new(&nmap_path)
-        .args(&command_args)
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to execute {:?}: {}", nmap_path, e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!("Nmap failed: {}", stderr));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
 /// Check if masscan is available (checks local /bin first, then system PATH)
 pub async fn is_masscan_available() -> bool {
     let masscan_path = get_masscan_binary_path();

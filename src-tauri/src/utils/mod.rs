@@ -1,8 +1,9 @@
+pub mod masscan_stream;
+pub mod nmap_stream;
+pub mod network;
+pub mod validation;
+pub mod os_test;
+pub mod os;
+pub mod parsing;
 pub mod process;
 pub mod validation;
-pub mod network;
-pub mod parsing;
-pub mod os;
-
-#[cfg(test)]
-mod os_test;

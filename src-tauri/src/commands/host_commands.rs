@@ -18,7 +18,8 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use crate::database::{DatabaseOperations, Host};
+use crate::shared::models::Host;
+use crate::db::Db;
 use crate::shared::{StoredPort, StoredVulnerability};
 use tauri::State;
 use std::sync::Arc;
@@ -82,10 +83,7 @@ pub async fn update_host_os_detection(
 }
 
 #[tauri::command]
-pub async fn get_host_by_ip(
-    ip: String,
-    database: State<'_, Arc<DatabaseOperations>>,
-) -> Result<crate::database::Host, String> {
+pub async fn get_host_by_ip(db: tauri::State<'_, std::sync::Arc<Db>>, ip: String) -> Result<Host, String> {
     let host = database.get_host_by_ip(&ip).await
         .map_err(|e| format!("Failed to get host: {}", e))?;
     
