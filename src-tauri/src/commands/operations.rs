@@ -47,7 +47,7 @@ impl DatabaseOperations {
             
             let last_seen_str = now.to_rfc3339();
             let updated_at_str = now.to_rfc3339();
-            sqlx::query!(
+            rusqlite::query!(
                 r#"
                 UPDATE hosts 
                 SET hostname = ?, last_seen = ?, updated_at = ?
@@ -89,7 +89,7 @@ impl DatabaseOperations {
         let last_seen_str = host.last_seen.to_rfc3339();
         let created_at_str = host.created_at.to_rfc3339();
         let updated_at_str = host.updated_at.to_rfc3339();
-        sqlx::query!(
+        rusqlite::query!(
             r#"
             INSERT INTO hosts (
                 id, ip, hostname, mac_address, vendor, os_name, os_family, 
@@ -117,7 +117,7 @@ impl DatabaseOperations {
 
     /// Get host by IP address
     pub async fn get_host_by_ip(&self, ip: &str) -> Result<Host> {
-        let row = sqlx::query!(
+        let row = rusqlite::query!(
             "SELECT id, ip, hostname, mac_address, vendor, os_name, os_family, os_accuracy, status, port_count, vulnerability_count, last_seen, created_at, updated_at, notes, tags, scan_progress FROM hosts WHERE ip = ?",
             ip
         )
@@ -151,7 +151,7 @@ impl DatabaseOperations {
 
     /// Get all hosts with optional filtering
     pub async fn get_hosts(&self, status_filter: Option<HostStatus>) -> Result<Vec<Host>> {
-        #[derive(sqlx::FromRow)]
+        #[derive(rusqlite::FromRow)]
         struct HostRow {
             id: Option<String>,
             ip: String,
@@ -174,7 +174,7 @@ impl DatabaseOperations {
 
         let rows = if let Some(status) = status_filter {
             let status_str = status.to_string();
-            sqlx::query_as!(
+            rusqlite::query_as!(
                 HostRow,
                 "SELECT id, ip, hostname, mac_address, vendor, os_name, os_family, os_accuracy, status, port_count, vulnerability_count, last_seen, created_at, updated_at, notes, tags, scan_progress FROM hosts WHERE status = ? ORDER BY last_seen DESC",
                 status_str
@@ -182,7 +182,7 @@ impl DatabaseOperations {
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as!(HostRow, "SELECT id, ip, hostname, mac_address, vendor, os_name, os_family, os_accuracy, status, port_count, vulnerability_count, last_seen, created_at, updated_at, notes, tags, scan_progress FROM hosts ORDER BY last_seen DESC")
+            rusqlite::query_as!(HostRow, "SELECT id, ip, hostname, mac_address, vendor, os_name, os_family, os_accuracy, status, port_count, vulnerability_count, last_seen, created_at, updated_at, notes, tags, scan_progress FROM hosts ORDER BY last_seen DESC")
                 .fetch_all(&self.pool)
                 .await?
         };
@@ -223,7 +223,7 @@ impl DatabaseOperations {
         let updated_at_str = now.to_rfc3339();
         let last_seen_str = now.to_rfc3339();
         
-        sqlx::query!(
+        rusqlite::query!(
             r#"
             UPDATE hosts 
             SET status = ?, updated_at = ?, last_seen = ?
@@ -243,7 +243,7 @@ impl DatabaseOperations {
     /// Update host OS information
     pub async fn update_host_os(&self, host_id: &str, os_name: &str, os_family: &str, accuracy: f32) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        sqlx::query!(
+        rusqlite::query!(
             r#"
             UPDATE hosts 
             SET os_name = ?, os_family = ?, os_accuracy = ?, updated_at = ?
@@ -266,17 +266,17 @@ impl DatabaseOperations {
         let mut tx = self.pool.begin().await?;
         
         // Delete vulnerabilities first (foreign key constraint)
-        sqlx::query!("DELETE FROM vulnerabilities WHERE host_id = ?", host_id)
+        rusqlite::query!("DELETE FROM vulnerabilities WHERE host_id = ?", host_id)
             .execute(&mut *tx)
             .await?;
             
         // Delete ports
-        sqlx::query!("DELETE FROM ports WHERE host_id = ?", host_id)
+        rusqlite::query!("DELETE FROM ports WHERE host_id = ?", host_id)
             .execute(&mut *tx)
             .await?;
             
         // Delete host
-        sqlx::query!("DELETE FROM hosts WHERE id = ?", host_id)
+        rusqlite::query!("DELETE FROM hosts WHERE id = ?", host_id)
             .execute(&mut *tx)
             .await?;
             
@@ -299,7 +299,7 @@ impl DatabaseOperations {
         let discovered_at_str = port.discovered_at.to_rfc3339();
         let last_seen_str = port.last_seen.to_rfc3339();
 
-        sqlx::query!(
+        rusqlite::query!(
             r#"            INSERT INTO ports (
                 id, host_id, number, protocol, state, service, version, 
                 banner, confidence, cpe, discovered_at, last_seen
@@ -329,7 +329,7 @@ impl DatabaseOperations {
 
     /// Get ports for host
     pub async fn get_host_ports(&self, host_id: &str) -> Result<Vec<StoredPort>> {
-        let rows = sqlx::query!(
+        let rows = rusqlite::query!(
             "SELECT id, host_id, number, protocol, state, service, version, banner, confidence, cpe, discovered_at, last_seen FROM ports WHERE host_id = ? ORDER BY number",
             host_id
         )
@@ -372,7 +372,7 @@ impl DatabaseOperations {
         let reference_links_json = serde_json::to_string(&vulnerability.reference_links)?;
         let discovered_at_str = vulnerability.discovered_at.to_rfc3339();
 
-        sqlx::query!(
+        rusqlite::query!(
             r#"            INSERT INTO vulnerabilities (
                 id, host_id, port_id, name, severity, description, 
                 cvss_score, cvss_vector, cve_id, reference_links, exploitable, 
@@ -405,7 +405,7 @@ impl DatabaseOperations {
 
     /// Get vulnerabilities for host
     pub async fn get_host_vulnerabilities(&self, host_id: &str) -> Result<Vec<StoredVulnerability>> {
-        let rows = sqlx::query!(
+        let rows = rusqlite::query!(
             "SELECT id, host_id, port_id, name, severity, description, cvss_score, cvss_vector, cve_id, reference_links, exploitable, discovered_at, verified, false_positive FROM vulnerabilities WHERE host_id = ? ORDER BY severity, name",
             host_id
         )
@@ -441,12 +441,12 @@ impl DatabaseOperations {
     
 
     async fn update_host_port_count(&self, host_id: &str) -> Result<()> {
-        let count: i32 = sqlx::query_scalar("SELECT COUNT(*) FROM ports WHERE host_id = ?")
+        let count: i32 = rusqlite::query_scalar("SELECT COUNT(*) FROM ports WHERE host_id = ?")
             .bind(host_id)
             .fetch_one(&self.pool)
             .await?;
         
-        sqlx::query("UPDATE hosts SET port_count = ? WHERE id = ?")
+        rusqlite::query("UPDATE hosts SET port_count = ? WHERE id = ?")
             .bind(count)
             .bind(host_id)
             .execute(&self.pool)
@@ -456,12 +456,12 @@ impl DatabaseOperations {
     }
 
     async fn update_host_vulnerability_count(&self, host_id: &str) -> Result<()> {
-        let count: i32 = sqlx::query_scalar("SELECT COUNT(*) FROM vulnerabilities WHERE host_id = ?")
+        let count: i32 = rusqlite::query_scalar("SELECT COUNT(*) FROM vulnerabilities WHERE host_id = ?")
             .bind(host_id)
             .fetch_one(&self.pool)
             .await?;
 
-        sqlx::query("UPDATE hosts SET vulnerability_count = ? WHERE id = ?")
+        rusqlite::query("UPDATE hosts SET vulnerability_count = ? WHERE id = ?")
             .bind(count)
             .bind(host_id)
             .execute(&self.pool)
