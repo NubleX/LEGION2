@@ -19,8 +19,12 @@
 )]
 
 use crate::database::Db;
+use crate::scanning::coordinator::ScanCoordinator;
+use crate::shared::EventStreamer;
 use anyhow::Result;
+use rusqlite;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 mod analysis;
 mod commands;
@@ -53,6 +57,7 @@ async fn main() {
     println!("LEGION2 starting up...");
 
     // Initialize database
+
     let db = Arc::new(open_db().expect("Failed to open database"));
 
     tauri::Builder::default()
