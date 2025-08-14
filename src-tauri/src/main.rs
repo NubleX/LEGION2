@@ -18,6 +18,7 @@
     windows_subsystem = "windows"
 )]
 
+use crate::analysis::AnalysisEngine;
 use crate::database::{DatabaseOperations, Db};
 use anyhow::Result;
 use std::sync::Arc;
@@ -64,9 +65,16 @@ async fn main() {
             .expect("Failed to open database operations"),
     );
 
+    let analysis_db = db.clone();
+
     tauri::Builder::default()
         .manage(db.clone())
         .manage(database_ops.clone())
+        .setup(move |app| {
+            let engine = AnalysisEngine::with_ui(analysis_db.clone(), app.handle());
+            app.manage(Arc::new(engine));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::engine_commands::engine_execute,
             commands::host_commands::get_all_hosts,
@@ -77,6 +85,9 @@ async fn main() {
             commands::host_commands::get_host_by_ip,
             commands::scanner_commands::start_scan,
             commands::scanner_commands::get_scanner_status,
+            commands::analysis_commands::analyze_host,
+            commands::analysis_commands::analyze_network,
+            commands::analysis_commands::get_active_analyses,
             commands::operations::db_batch_upsert_hosts,
             commands::operations::db_search_hosts,
             commands::operations::db_update_host_tags,

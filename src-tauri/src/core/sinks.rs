@@ -1,17 +1,20 @@
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
+
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::{Serialize, Deserialize};
-use tauri::{AppHandle, Emitter};
-use futures::StreamExt;
 use chrono::Utc;
-use tokio::time::{Duration, interval};
+use futures::StreamExt;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
+use tokio::time::{interval, Duration};
 
+use crate::analysis::AnalysisEngine;
 use crate::core::traits::Sink;
-use crate::shared::{ObservationKind, ObsStream};
 use crate::database::Db;
+use crate::shared::{ObsStream, ObservationKind};
 
 // Event structures for frontend communication
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,7 +98,7 @@ impl SinkMetrics {
         let host_count = *self.hosts_discovered.lock().await;
         let service_count = *self.services_discovered.lock().await;
         let error_count = *self.errors_encountered.lock().await;
-        
+
         let elapsed = Utc::now().signed_duration_since(self.start_time);
         let rate = if elapsed.num_seconds() > 0 {
             obs_count as f64 / elapsed.num_seconds() as f64
@@ -124,7 +127,7 @@ pub struct UiSink {
 
 impl UiSink {
     pub fn new(app: AppHandle) -> Self {
-        Self { 
+        Self {
             app,
             host_cache: Arc::new(Mutex::new(HashMap::new())),
             metrics: SinkMetrics::new(),
@@ -140,7 +143,7 @@ impl UiSink {
                 hostname,
                 timestamp: Utc::now().to_rfc3339(),
             };
-            
+
             if let Err(e) = self.app.emit("obs:host", &host_event) {
                 log::error!("Failed to emit obs:host event: {}", e);
                 self.metrics.increment_errors().await;
@@ -161,7 +164,7 @@ impl UiSink {
             reason: reason.to_string(),
             timestamp: Utc::now().to_rfc3339(),
         };
-        
+
         if let Err(e) = self.app.emit("obs:service", &service_event) {
             log::error!("Failed to emit obs:service event: {}", e);
             self.metrics.increment_errors().await;
@@ -178,7 +181,7 @@ impl UiSink {
             percentage,
             timestamp: Utc::now().to_rfc3339(),
         };
-        
+
         if let Err(e) = self.app.emit("obs:progress", &progress_event) {
             log::error!("Failed to emit obs:progress event: {}", e);
             self.metrics.increment_errors().await;
@@ -192,7 +195,7 @@ impl UiSink {
             message: message.to_string(),
             timestamp: Utc::now().to_rfc3339(),
         };
-        
+
         if let Err(e) = self.app.emit("obs:error", &error_event) {
             log::error!("Failed to emit obs:error event: {}", e);
         }
@@ -207,7 +210,7 @@ impl UiSink {
         if let Err(e) = self.app.emit("obs:metrics", &final_metrics) {
             log::error!("Failed to emit obs:metrics event: {}", e);
         }
-        
+
         if let Err(e) = self.app.emit("obs:done", ()) {
             log::error!("Failed to emit obs:done event: {}", e);
         }
@@ -226,10 +229,10 @@ impl UiSink {
 
 #[async_trait]
 impl Sink for UiSink {
-    fn name(&self) -> &'static str { 
-        "ui" 
+    fn name(&self) -> &'static str {
+        "ui"
     }
-    
+
     async fn run(&self, mut input: ObsStream) -> Result<()> {
         // Set up periodic metrics emission (every 5 seconds)
         let metrics_sink = self.clone();
@@ -242,39 +245,71 @@ impl Sink for UiSink {
                 }
             }
         });
-        
+
         // Process observations
         while let Some(obs) = input.next().await {
             self.metrics.increment_observations().await;
-            
+
             match obs.kind {
                 ObservationKind::Service => {
-                    let ip = obs.fields.get("ip").and_then(|v| v.as_str()).unwrap_or_default();
+                    let ip = obs
+                        .fields
+                        .get("ip")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
                     let port = obs.fields.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
-                    let protocol = obs.fields.get("protocol").and_then(|v| v.as_str()).unwrap_or("tcp");
-                    let reason = obs.fields.get("reason").and_then(|v| v.as_str()).unwrap_or("open");
-                    
+                    let protocol = obs
+                        .fields
+                        .get("protocol")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("tcp");
+                    let reason = obs
+                        .fields
+                        .get("reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("open");
+
                     // Emit host first if new
                     self.emit_host_if_new(ip, None).await?;
-                    
+
                     // Emit service
                     self.emit_service(ip, port, protocol, reason).await?;
                 }
                 ObservationKind::Host => {
-                    let ip = obs.fields.get("ip").and_then(|v| v.as_str()).unwrap_or_default();
-                    let hostname = obs.fields.get("hostname").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    
+                    let ip = obs
+                        .fields
+                        .get("ip")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    let hostname = obs
+                        .fields
+                        .get("hostname")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+
                     self.emit_host_if_new(ip, hostname).await?;
                 }
                 ObservationKind::Metric => {
                     // Handle progress/metrics
-                    let message = obs.fields.get("message").and_then(|v| v.as_str()).unwrap_or("Progress update");
-                    let percentage = obs.fields.get("percentage").and_then(|v| v.as_f64()).map(|p| p as f32);
-                    
+                    let message = obs
+                        .fields
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Progress update");
+                    let percentage = obs
+                        .fields
+                        .get("percentage")
+                        .and_then(|v| v.as_f64())
+                        .map(|p| p as f32);
+
                     self.emit_progress(message, percentage).await?;
                 }
                 ObservationKind::Error => {
-                    let message = obs.fields.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown error");
+                    let message = obs
+                        .fields
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown error");
                     self.emit_error(message).await?;
                 }
                 _ => {
@@ -284,7 +319,7 @@ impl Sink for UiSink {
                         ObservationKind::TopologyEdge => "obs:edge",
                         _ => "obs:generic",
                     };
-                    
+
                     if let Err(e) = self.app.emit(evt, &obs) {
                         log::error!("Failed to emit {} event: {}", evt, e);
                         self.metrics.increment_errors().await;
@@ -292,7 +327,7 @@ impl Sink for UiSink {
                 }
             }
         }
-        
+
         // Cancel metrics task and emit final completion
         metrics_task.abort();
         self.emit_completion().await?;
@@ -303,7 +338,7 @@ impl Sink for UiSink {
 /// Batch of observations for efficient database operations
 #[derive(Debug)]
 struct ObsBatch {
-    hosts: Vec<(String, Option<String>)>,     // (ip, hostname)
+    hosts: Vec<(String, Option<String>)>,         // (ip, hostname)
     services: Vec<(String, u16, String, String)>, // (ip, port, protocol, reason)
 }
 
@@ -332,15 +367,17 @@ impl ObsBatch {
 /// DbSink stores observations in the database with batching for performance
 pub struct DbSink {
     pub db: Arc<Db>,
+    analysis_engine: Arc<AnalysisEngine>,
     batch_size: usize,
     flush_interval: Duration,
     metrics: SinkMetrics,
 }
 
 impl DbSink {
-    pub fn new(db: Arc<Db>) -> Self {
-        Self { 
+    pub fn new(db: Arc<Db>, analysis_engine: Arc<AnalysisEngine>) -> Self {
+        Self {
             db,
+            analysis_engine,
             batch_size: 100, // Process 100 observations at a time
             flush_interval: Duration::from_secs(5), // Flush every 5 seconds
             metrics: SinkMetrics::new(),
@@ -348,9 +385,15 @@ impl DbSink {
     }
 
     /// Create a new DbSink with custom batch configuration
-    pub fn with_config(db: Arc<Db>, batch_size: usize, flush_interval: Duration) -> Self {
+    pub fn with_config(
+        db: Arc<Db>,
+        analysis_engine: Arc<AnalysisEngine>,
+        batch_size: usize,
+        flush_interval: Duration,
+    ) -> Self {
         Self {
             db,
+            analysis_engine,
             batch_size,
             flush_interval,
             metrics: SinkMetrics::new(),
@@ -363,8 +406,11 @@ impl DbSink {
             return Ok(());
         }
 
-        log::info!("Flushing batch with {} hosts and {} services", 
-                   batch.hosts.len(), batch.services.len());
+        log::info!(
+            "Flushing batch with {} hosts and {} services",
+            batch.hosts.len(),
+            batch.services.len()
+        );
 
         // Process hosts first to ensure they exist before services
         for (ip, hostname) in &batch.hosts {
@@ -382,29 +428,81 @@ impl DbSink {
 
     /// Helper to extract host information from observation
     async fn process_host(&self, ip: &str, hostname: Option<&str>) -> Result<()> {
-        log::debug!("Processing host: {} ({})", ip, hostname.unwrap_or("no hostname"));
-        
+        log::debug!(
+            "Processing host: {} ({})",
+            ip,
+            hostname.unwrap_or("no hostname")
+        );
+
         // Use the existing Db.upsert_host method
         if let Err(e) = self.db.upsert_host(ip, Utc::now()) {
             log::error!("Failed to upsert host {}: {}", ip, e);
             self.metrics.increment_errors().await;
         } else {
             self.metrics.increment_hosts().await;
+            if let Err(e) = self
+                .analysis_engine
+                .trigger_incremental_analysis("host", ip, &json!({"hostname": hostname}))
+                .await
+            {
+                log::error!("Failed to trigger analysis for host {}: {}", ip, e);
+            }
         }
         Ok(())
     }
 
     /// Helper to extract service information from observation
-    async fn process_service(&self, ip: &str, port: u16, protocol: &str, reason: &str) -> Result<()> {
-        log::debug!("Processing service: {}:{}/{} ({})", ip, port, protocol, reason);
-        
+    async fn process_service(
+        &self,
+        ip: &str,
+        port: u16,
+        protocol: &str,
+        reason: &str,
+    ) -> Result<()> {
+        log::debug!(
+            "Processing service: {}:{}/{} ({})",
+            ip,
+            port,
+            protocol,
+            reason
+        );
+
         // Use the existing Db.upsert_service method
-        let reason_opt = if reason.is_empty() { None } else { Some(reason) };
-        if let Err(e) = self.db.upsert_service(ip, port, protocol, reason_opt, Utc::now()) {
-            log::error!("Failed to upsert service {}:{}/{}: {}", ip, port, protocol, e);
+        let reason_opt = if reason.is_empty() {
+            None
+        } else {
+            Some(reason)
+        };
+        if let Err(e) = self
+            .db
+            .upsert_service(ip, port, protocol, reason_opt, Utc::now())
+        {
+            log::error!(
+                "Failed to upsert service {}:{}/{}: {}",
+                ip,
+                port,
+                protocol,
+                e
+            );
             self.metrics.increment_errors().await;
         } else {
             self.metrics.increment_services().await;
+            if let Err(e) = self
+                .analysis_engine
+                .trigger_incremental_analysis(
+                    "service",
+                    ip,
+                    &json!({"port": port, "service": protocol}),
+                )
+                .await
+            {
+                log::error!(
+                    "Failed to trigger analysis for service {}:{}: {}",
+                    ip,
+                    port,
+                    e
+                );
+            }
         }
         Ok(())
     }
@@ -412,17 +510,17 @@ impl DbSink {
 
 #[async_trait]
 impl Sink for DbSink {
-    fn name(&self) -> &'static str { 
-        "db" 
+    fn name(&self) -> &'static str {
+        "db"
     }
 
     async fn run(&self, mut input: ObsStream) -> Result<()> {
         let mut batch = ObsBatch::new();
         let mut last_flush = tokio::time::Instant::now();
-        
+
         // Set up periodic flush timer
         let mut flush_timer = interval(self.flush_interval);
-        
+
         loop {
             tokio::select! {
                 // Process incoming observations
@@ -430,19 +528,19 @@ impl Sink for DbSink {
                     match obs_result {
                         Some(obs) => {
                             self.metrics.increment_observations().await;
-                            
+
                             match obs.kind {
                                 ObservationKind::Service => {
                                     let ip = obs.fields.get("ip").and_then(|v| v.as_str()).unwrap_or_default();
                                     let port = obs.fields.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
                                     let protocol = obs.fields.get("protocol").and_then(|v| v.as_str()).unwrap_or("tcp");
                                     let reason = obs.fields.get("reason").and_then(|v| v.as_str()).unwrap_or("open");
-                                    
+
                                     // Add host to batch if not already present
                                     if !batch.hosts.iter().any(|(existing_ip, _)| existing_ip == ip) {
                                         batch.hosts.push((ip.to_string(), None));
                                     }
-                                    
+
                                     // Add service to batch
                                     batch.services.push((
                                         ip.to_string(),
@@ -454,7 +552,7 @@ impl Sink for DbSink {
                                 ObservationKind::Host => {
                                     let ip = obs.fields.get("ip").and_then(|v| v.as_str()).unwrap_or_default();
                                     let hostname = obs.fields.get("hostname").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                    
+
                                     // Add or update host in batch
                                     if let Some(existing) = batch.hosts.iter_mut().find(|(existing_ip, _)| existing_ip == ip) {
                                         if hostname.is_some() {
@@ -469,7 +567,7 @@ impl Sink for DbSink {
                                     log::trace!("Ignoring observation type {:?} for database storage", obs.kind);
                                 }
                             }
-                            
+
                             // Flush if batch is full
                             if batch.len() >= self.batch_size {
                                 if let Err(e) = self.flush_batch(&mut batch).await {
@@ -490,7 +588,7 @@ impl Sink for DbSink {
                         }
                     }
                 }
-                
+
                 // Periodic flush
                 _ = flush_timer.tick() => {
                     if !batch.is_empty() && last_flush.elapsed() >= self.flush_interval {
@@ -504,7 +602,7 @@ impl Sink for DbSink {
                 }
             }
         }
-        
+
         log::info!("DbSink completed processing");
         Ok(())
     }

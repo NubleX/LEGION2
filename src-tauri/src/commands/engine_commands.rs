@@ -13,6 +13,7 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
+use crate::analysis::AnalysisEngine;
 use crate::core::{engine::Engine, registry::Registry};
 use crate::database::Db;
 use crate::plan::Plan;
@@ -24,6 +25,7 @@ use tauri::{AppHandle, State};
 pub async fn engine_execute(
     plan: Plan,
     state_db: State<'_, Arc<Db>>,
+    analysis_engine: State<'_, Arc<AnalysisEngine>>,
     app: AppHandle,
 ) -> Result<(), String> {
     log::info!("Engine execute called with plan: {:?}", plan);
@@ -32,7 +34,7 @@ pub async fn engine_execute(
     let db = state_db.inner().clone();
 
     // Create registry
-    let registry = Registry::new(db, app);
+    let registry = Registry::new(db, app, analysis_engine.inner().clone());
 
     // Build engine from plan
     let engine = Engine { registry };
@@ -52,4 +54,3 @@ pub async fn engine_execute(
     });
     Ok(())
 }
-

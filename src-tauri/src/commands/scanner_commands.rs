@@ -13,6 +13,7 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
+use crate::analysis::AnalysisEngine;
 use crate::core::{engine::Engine, registry::Registry};
 use crate::database::Db;
 use crate::plan::{Plan, ScanType};
@@ -41,6 +42,7 @@ pub struct ScanOptions {
 pub async fn start_scan(
     app: AppHandle,
     db: State<'_, Arc<Db>>,
+    analysis_engine: State<'_, Arc<AnalysisEngine>>,
     request: ScanRequest,
 ) -> Result<String, String> {
     let scan_id = Uuid::new_v4();
@@ -70,7 +72,7 @@ pub async fn start_scan(
         Plan::nmap(scan_id, request.target.clone(), ports.clone(), extra)
     };
 
-    let registry = Registry::new(db.inner().clone(), app);
+    let registry = Registry::new(db.inner().clone(), app, analysis_engine.inner().clone());
     let engine = Engine { registry };
 
     // Execute in background so command returns immediately
