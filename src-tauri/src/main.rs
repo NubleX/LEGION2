@@ -57,52 +57,19 @@ async fn main() {
     println!("LEGION2 starting up...");
 
     // Initialize database
+
     let db = Arc::new(open_db().expect("Failed to open database"));
-
-    // Initialize event handling
-    let (event_tx, mut event_rx) = mpsc::channel::<crate::shared::ScanEvent>(1000);
-    let event_streamer = Arc::new(EventStreamer::new());
-
-    // Initialize scanner coordinator
-    let coordinator = Arc::new(ScanCoordinator::borrow(
-        db.clone(),
-        event_tx.clone(),
-    ));
-
-    // Bridge events to streamer
-    let streamer_clone = event_streamer.clone();
-    tokio::spawn(async move {
-        log::info!("Event bridge task started");
-        while let Some(event) = event_rx.recv().await {
-            log::info!("Bridging event: {:?}", event.event_type);
-            streamer_clone.send_event(event).await;
-        }
-        log::error!("Event bridge task ended - this should not happen");
-    });
 
     tauri::Builder::default()
         .manage(db.clone())
-        .manage(coordinator)
-        .manage(event_streamer)
         .invoke_handler(tauri::generate_handler![
             commands::engine_commands::engine_execute,
-            commands::engine_commands::start_scan_with_config,
-            commands::engine_commands::start_advanced_scan,
-            commands::engine_commands::start_os_detection_scan,
             commands::host_commands::get_all_hosts,
             commands::host_commands::get_host_details,
             commands::host_commands::delete_host,
             commands::host_commands::batch_import_hosts,
             commands::host_commands::update_host_os_detection,
             commands::host_commands::get_host_by_ip,
-            commands::scanner_commands::start_scan,
-            commands::scanner_commands::cancel_scan,
-            commands::scanner_commands::get_active_scans,
-            commands::scanner_commands::get_scan_status,
-            commands::scanner_commands::get_scan_results,
-            commands::scanner_commands::get_scan_statistics,
-            commands::scanner_commands::get_scan_progress,
-            commands::scanner_commands::get_scanner_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
