@@ -122,7 +122,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
         modules: [], // Could be populated from frontend later
       };
 
-      set(state => ({
+      set(() => ({
         scanInProgress: true,
         liveOutput: [`Starting ${backendConfig.use_masscan ? 'masscan' : 'nmap'} scan for ${backendConfig.targets}...`]
       }));

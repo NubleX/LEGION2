@@ -21,7 +21,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import useAppStore from '../stores/appStore';
-import { Host } from '../types/scanning';
+import type { Host } from '../stores/hostStore';
 import ScanForm from './ScanForm';
 import NetworkMap from './NetworkMap';
 import HostTable from './HostTable';
