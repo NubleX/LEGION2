@@ -131,7 +131,7 @@ pub async fn get_scan_status(
 
 #[tauri::command]
 pub async fn get_scan_results(
-    db: State<'_, Arc<crate::database::DatabaseOperations>>,
+    _db: State<'_, Arc<crate::database::Db>>,
     scan_id: String,
 ) -> Result<String, String> {
     // For now, return empty results since scan results are stored in database
