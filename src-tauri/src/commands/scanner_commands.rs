@@ -13,74 +13,54 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use crate::core::{engine::Engine, registry::Registry};
-use crate::database::Db;
-use crate::plan::{Plan, ScanType};
-use serde::Deserialize;
 use std::sync::Arc;
+
 use tauri::{AppHandle, State};
-use uuid::Uuid;
 
-#[derive(Deserialize)]
-pub struct ScanRequest {
-    pub target: String,
-    pub scan_type: ScanType,
-    pub options: Option<ScanOptions>,
-}
+use crate::scanning::coordinator::{ScanCoordinator, ScanRequest};
 
-#[derive(Deserialize)]
-pub struct ScanOptions {
-    pub ports: Option<String>,
-    pub rate: Option<u32>,
-    pub extra_args: Option<Vec<String>>,
-    pub use_masscan: Option<bool>,
-}
-
-/// Start a scan using the new engine/registry system
+/// Start a scan using the ScanCoordinator
 #[tauri::command]
 pub async fn start_scan(
     app: AppHandle,
-    db: State<'_, Arc<Db>>,
+    coordinator: State<'_, Arc<ScanCoordinator>>,
     request: ScanRequest,
 ) -> Result<String, String> {
-    let scan_id = Uuid::new_v4();
+    coordinator.start_scan(app, request).await
+}
 
-    let ports = request
-        .options
-        .as_ref()
-        .and_then(|o| o.ports.clone())
-        .unwrap_or_else(|| "1-1000".to_string());
+/// Cancel a running scan
+#[tauri::command]
+pub async fn cancel_scan(
+    coordinator: State<'_, Arc<ScanCoordinator>>,
+    scan_id: String,
+) -> Result<(), String> {
+    coordinator.cancel_scan(scan_id).await
+}
 
-    let extra = request
-        .options
-        .as_ref()
-        .and_then(|o| o.extra_args.clone())
-        .unwrap_or_default();
+/// Get list of active scans
+#[tauri::command]
+pub async fn get_active_scans(
+    coordinator: State<'_, Arc<ScanCoordinator>>,
+) -> Result<Vec<String>, String> {
+    coordinator.get_active_scans().await
+}
 
-    let rate = request
-        .options
-        .as_ref()
-        .and_then(|o| o.rate)
-        .map(|r| r as u64);
+/// Retrieve progress information for a scan
+#[tauri::command]
+pub async fn get_scan_progress(
+    coordinator: State<'_, Arc<ScanCoordinator>>,
+    scan_id: String,
+) -> Result<String, String> {
+    coordinator.get_scan_progress(scan_id).await
+}
 
-    let plan = if let Some(rate) = rate {
-        Plan::masscan(scan_id, request.target.clone(), ports.clone(), Some(rate))
-            .with_extra_args(extra)
-    } else {
-        Plan::nmap(scan_id, request.target.clone(), ports.clone(), extra)
-    };
-
-    let registry = Registry::new(db.inner().clone(), app);
-    let engine = Engine { registry };
-
-    // Execute in background so command returns immediately
-    tokio::spawn(async move {
-        if let Err(e) = engine.execute(plan).await {
-            log::error!("Engine execution failed: {}", e);
-        }
-    });
-
-    Ok(scan_id.to_string())
+/// Retrieve aggregated scan statistics
+#[tauri::command]
+pub async fn get_scan_statistics(
+    coordinator: State<'_, Arc<ScanCoordinator>>,
+) -> Result<String, String> {
+    coordinator.get_scan_statistics().await
 }
 
 /// Report availability of scanning tools
@@ -97,3 +77,4 @@ pub async fn get_scanner_status() -> Result<String, String> {
 
     Ok(status.to_string())
 }
+

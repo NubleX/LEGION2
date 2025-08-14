@@ -19,6 +19,7 @@
 )]
 
 use crate::database::{DatabaseOperations, Db};
+use crate::scanning::coordinator::ScanCoordinator;
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -64,9 +65,13 @@ async fn main() {
             .expect("Failed to open database operations"),
     );
 
+    // Initialize scan coordinator
+    let scan_coordinator = Arc::new(ScanCoordinator::new(db.clone()));
+
     tauri::Builder::default()
         .manage(db.clone())
         .manage(database_ops.clone())
+        .manage(scan_coordinator.clone())
         .invoke_handler(tauri::generate_handler![
             commands::engine_commands::engine_execute,
             commands::host_commands::get_all_hosts,
@@ -76,12 +81,11 @@ async fn main() {
             commands::host_commands::update_host_os_detection,
             commands::host_commands::get_host_by_ip,
             commands::scanner_commands::start_scan,
+            commands::scanner_commands::cancel_scan,
+            commands::scanner_commands::get_active_scans,
+            commands::scanner_commands::get_scan_progress,
+            commands::scanner_commands::get_scan_statistics,
             commands::scanner_commands::get_scanner_status,
-            commands::operations::db_batch_upsert_hosts,
-            commands::operations::db_search_hosts,
-            commands::operations::db_update_host_tags,
-            commands::operations::db_update_host_notes,
-            commands::operations::db_get_host_by_ip,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -19,18 +19,21 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
 /**
- * Execute a scan plan via the backend engine.
+ * Execute a scan via the backend ScanCoordinator.
+ * Returns the created scan ID.
  */
 async function startScan(targets: string, ports: string, rate = 5000) {
-  const plan = {
-    scan_id: crypto.randomUUID(),
-    targets,
-    ports,
-    rate,
-    extra: [] as string[],
-    modules: [] as string[],
+  const request = {
+    target: targets,
+    scanType: 'PortScan',
+    options: {
+      ports,
+      rate,
+      extraArgs: [] as string[],
+    },
   };
-  await invoke('engine_execute', { plan });
+  const scanId = await invoke<string>('start_scan', { request });
+  return scanId;
 }
 
 /**
