@@ -25,7 +25,7 @@ import type { Host } from '../stores/hostStore';
 interface NetworkMapProps {
   hosts: Host[];
   onHostSelect: (host: Host) => void;
-  selectedHostId?: string;
+  selectedHostIp?: string;
   className?: string;
 }
 
@@ -37,7 +37,7 @@ interface NetworkNode {
   connections: string[];
 }
 
-const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHostId }) => {
+const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHostIp }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [nodes, setNodes] = useState<NetworkNode[]>([]);
   const [scale, setScale] = useState(1);
@@ -62,7 +62,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     const newNodes: NetworkNode[] = hosts.map((host: Host, index: number) => {
       const angle = (index / hosts.length) * 2 * Math.PI;
       return {
-        id: host.id,
+        id: host.ip,
         x: centerX + Math.cos(angle) * radius,
         y: centerY + Math.sin(angle) * radius,
         host,
@@ -122,7 +122,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
 
     // Draw nodes
     nodes.forEach(node => {
-      const isSelected = node.host.id === selectedHostId;
+      const isSelected = node.host.ip === selectedHostIp;
       const color = getNodeColor(node.host);
       
       // Node circle
@@ -149,12 +149,12 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
         
         ctx.fillText(shortLabel, node.x, node.y - 15);
         
-        // Service count
-        if (showServices && node.host.port_count > 0) {
-          ctx.font = '8px monospace';
-          ctx.fillStyle = '#9ca3af';
-          ctx.fillText(`${node.host.port_count} ports`, node.x, node.y + 20);
-        }
+          // Service count
+          if (showServices && (node.host.port_count || 0) > 0) {
+            ctx.font = '8px monospace';
+            ctx.fillStyle = '#9ca3af';
+            ctx.fillText(`${node.host.port_count || 0} ports`, node.x, node.y + 20);
+          }
       }
     });
 
@@ -224,7 +224,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
   // Draw on every update
   useEffect(() => {
     drawNetwork();
-  }, [nodes, scale, offset, selectedHostId, showLabels, showServices]);
+  }, [nodes, scale, offset, selectedHostIp, showLabels, showServices]);
 
   const getStatsColor = (count: number, type: 'vulnerabilities' | 'hosts') => {
     if (type === 'vulnerabilities') {
