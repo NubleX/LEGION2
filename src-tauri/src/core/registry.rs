@@ -2,31 +2,35 @@
 //      mk_transform: Box<dyn Fn(&str) -> Result<Box<dyn Transform>> + Send + Sync>, 
 //      mk_sink: Box<dyn Fn(&str) -> Result<Box<dyn Sink>> + Send + Sync>,
 
-use anyhow::{Result, anyhow};
-use tauri::AppHandle;
-use std::sync::Arc;
+use anyhow::{anyhow, Result};
 use std::collections::HashMap;
+use std::sync::Arc;
+use tauri::AppHandle;
 
-use super::traits::{Sink, Source};
-use crate::plan::Plan;
-use super::sinks::{UiSink, DbSink};
+use crate::analysis::AnalysisEngine;
 use crate::database::Db;
+use crate::plan::Plan;
 use crate::scanning::masscan::MasscanScanner;
 use crate::scanning::nmap::NmapScanner;
+use super::sinks::{DbSink, UiSink};
+use super::traits::{Sink, Source};
 
 /// Registry for managing scanning components and their lifecycle
 pub struct Registry {
     db: Arc<Db>,
     app_handle: AppHandle,
+    analysis_engine: Arc<AnalysisEngine>,
     sources: HashMap<String, Box<dyn Source>>,
     sinks: HashMap<String, Box<dyn Sink>>,
 }
 
 impl Registry {
     pub fn new(db: Arc<Db>, app_handle: AppHandle) -> Self {
-        Self { 
+        let analysis_engine = Arc::new(AnalysisEngine::with_ui(db.clone(), app_handle.clone()));
+        Self {
             db,
             app_handle,
+            analysis_engine,
             sources: HashMap::new(),
             sinks: HashMap::new(),
         }
@@ -54,7 +58,7 @@ impl Registry {
         for sink_type in &plan.sink_types {
             match sink_type.as_str() {
                 "ui" => sinks.push(Box::new(UiSink::new(self.app_handle.clone())) as Box<dyn Sink>),
-                "db" => sinks.push(Box::new(DbSink::new(self.db.clone())) as Box<dyn Sink>),
+                "db" => sinks.push(Box::new(DbSink::new(self.db.clone(), self.analysis_engine.clone())) as Box<dyn Sink>),
                 _ => log::warn!("Unknown sink type: {}, skipping", sink_type),
             }
         }

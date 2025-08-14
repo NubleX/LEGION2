@@ -1,17 +1,20 @@
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
+
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::{Serialize, Deserialize};
-use tauri::{AppHandle, Emitter};
-use futures::StreamExt;
 use chrono::Utc;
-use tokio::time::{Duration, interval};
+use futures::StreamExt;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
+use tokio::time::{interval, Duration};
 
+use crate::analysis::AnalysisEngine;
 use crate::core::traits::Sink;
-use crate::shared::{ObservationKind, ObsStream};
 use crate::database::Db;
+use crate::shared::{ObservationKind, ObsStream};
 
 // Event structures for frontend communication
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -332,15 +335,17 @@ impl ObsBatch {
 /// DbSink stores observations in the database with batching for performance
 pub struct DbSink {
     pub db: Arc<Db>,
+    analysis_engine: Arc<AnalysisEngine>,
     batch_size: usize,
     flush_interval: Duration,
     metrics: SinkMetrics,
 }
 
 impl DbSink {
-    pub fn new(db: Arc<Db>) -> Self {
-        Self { 
+    pub fn new(db: Arc<Db>, analysis_engine: Arc<AnalysisEngine>) -> Self {
+        Self {
             db,
+            analysis_engine,
             batch_size: 100, // Process 100 observations at a time
             flush_interval: Duration::from_secs(5), // Flush every 5 seconds
             metrics: SinkMetrics::new(),
@@ -348,9 +353,15 @@ impl DbSink {
     }
 
     /// Create a new DbSink with custom batch configuration
-    pub fn with_config(db: Arc<Db>, batch_size: usize, flush_interval: Duration) -> Self {
+    pub fn with_config(
+        db: Arc<Db>,
+        analysis_engine: Arc<AnalysisEngine>,
+        batch_size: usize,
+        flush_interval: Duration,
+    ) -> Self {
         Self {
             db,
+            analysis_engine,
             batch_size,
             flush_interval,
             metrics: SinkMetrics::new(),
@@ -390,6 +401,19 @@ impl DbSink {
             self.metrics.increment_errors().await;
         } else {
             self.metrics.increment_hosts().await;
+
+            let data = json!({ "hostname": hostname });
+            if let Err(e) = self
+                .analysis_engine
+                .trigger_incremental_analysis("host", ip, &data)
+                .await
+            {
+                log::error!(
+                    "Failed to trigger incremental analysis for host {}: {}",
+                    ip, e
+                );
+                self.metrics.increment_errors().await;
+            }
         }
         Ok(())
     }
@@ -400,11 +424,34 @@ impl DbSink {
         
         // Use the existing Db.upsert_service method
         let reason_opt = if reason.is_empty() { None } else { Some(reason) };
-        if let Err(e) = self.db.upsert_service(ip, port, protocol, reason_opt, Utc::now()) {
-            log::error!("Failed to upsert service {}:{}/{}: {}", ip, port, protocol, e);
+        if let Err(e) = self
+            .db
+            .upsert_service(ip, port, protocol, reason_opt, Utc::now())
+        {
+            log::error!(
+                "Failed to upsert service {}:{}/{}: {}",
+                ip, port, protocol, e
+            );
             self.metrics.increment_errors().await;
         } else {
             self.metrics.increment_services().await;
+
+            let data = json!({
+                "port": port,
+                "protocol": protocol,
+                "reason": reason,
+            });
+            if let Err(e) = self
+                .analysis_engine
+                .trigger_incremental_analysis("service", ip, &data)
+                .await
+            {
+                log::error!(
+                    "Failed to trigger incremental analysis for service {}:{}/{}: {}",
+                    ip, port, protocol, e
+                );
+                self.metrics.increment_errors().await;
+            }
         }
         Ok(())
     }
