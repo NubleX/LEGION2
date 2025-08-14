@@ -7,15 +7,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::AppHandle;
 
+use super::sinks::{DbSink, UiSink};
+use super::traits::{Sink, Source};
 use crate::analysis::AnalysisEngine;
 use crate::database::Db;
 use crate::plan::Plan;
 use crate::scanning::masscan::MasscanScanner;
 use crate::scanning::nmap::NmapScanner;
-use super::sinks::{DbSink, UiSink};
-use super::traits::{Sink, Source};
+
 
 /// Registry for managing scanning components and their lifecycle
+
 pub struct Registry {
     db: Arc<Db>,
     app_handle: AppHandle,
@@ -25,8 +27,7 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn new(db: Arc<Db>, app_handle: AppHandle) -> Self {
-        let analysis_engine = Arc::new(AnalysisEngine::with_ui(db.clone(), app_handle.clone()));
+    pub fn new(db: Arc<Db>, app_handle: AppHandle, analysis_engine: Arc<AnalysisEngine>) -> Self {
         Self {
             db,
             app_handle,
@@ -47,7 +48,7 @@ impl Registry {
                 let scanner = NmapScanner::new();
                 Ok(Box::new(scanner))
             }
-            _ => Err(anyhow!("Unknown source type: {}", plan.source_type))
+            _ => Err(anyhow!("Unknown source type: {}", plan.source_type)),
         }
     }
 
@@ -58,7 +59,10 @@ impl Registry {
         for sink_type in &plan.sink_types {
             match sink_type.as_str() {
                 "ui" => sinks.push(Box::new(UiSink::new(self.app_handle.clone())) as Box<dyn Sink>),
-                "db" => sinks.push(Box::new(DbSink::new(self.db.clone(), self.analysis_engine.clone())) as Box<dyn Sink>),
+                "db" => sinks.push(Box::new(DbSink::new(
+                    self.db.clone(),
+                    self.analysis_engine.clone(),
+                )) as Box<dyn Sink>),
                 _ => log::warn!("Unknown sink type: {}, skipping", sink_type),
             }
         }
