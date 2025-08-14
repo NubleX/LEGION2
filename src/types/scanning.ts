@@ -24,8 +24,8 @@ export interface ScanConfig {
   excludeHosts?: string;
   useNmap?: boolean;
   useMasscan?: boolean;
-  nmapOptions?: string;
-  masscanRate?: number;
+  extra?: string;
+  rate?: number;
   detectOS?: boolean;
   detectVersions?: boolean;
   skipPing?: boolean;

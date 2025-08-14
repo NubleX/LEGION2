@@ -117,7 +117,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
           scan_id: crypto.randomUUID(),
           targets,
           ports,
-          rate: config.masscanRate || 1000,
+          rate: config.rate || 1000,
           extra: [],
           modules: [],
           source_type: 'masscan',
@@ -144,8 +144,8 @@ const useAppStore = create<AppState & AppActions>((set) => {
         if (config.detectOS) nmapArgs.push('-O');
         if (config.detectVersions) nmapArgs.push('-sV');
         if (config.skipPing) nmapArgs.push('-Pn');
-        if (config.nmapOptions) {
-          nmapArgs.push(...config.nmapOptions.split(' '));
+        if (config.extra) {
+          nmapArgs.push(...config.extra.split(' '));
         }
 
         plans.push({
