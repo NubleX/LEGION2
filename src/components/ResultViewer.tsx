@@ -18,9 +18,11 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
+
 import React, { useState, useMemo } from 'react';
 import { Shield, AlertTriangle, Download, Search } from 'lucide-react';
 import type { Host } from '../stores/hostStore';
+
 
 interface ResultViewerProps {
   selectedScanId?: string;

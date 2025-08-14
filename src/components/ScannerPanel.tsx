@@ -18,6 +18,7 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
+
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import useAppStore from '../stores/appStore';
@@ -42,13 +43,12 @@ const EnhancedScannerPanel = () => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'hosts-results'>('dashboard');
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
   const [scanDuration, setScanDuration] = useState(0);
-  const [hosts, setHosts] = useState<Host[]>([]);
+  const hosts = useHostStore(state => state.hosts);
   
   const {
     scanInProgress,
     liveOutput,
     metrics,
-    recentHosts,
     startScan
   } = useAppStore();
   // Simple scan duration tracking
@@ -69,20 +69,7 @@ const EnhancedScannerPanel = () => {
     };
   }, [scanInProgress]);
 
-  // Load hosts from database when needed
-  useEffect(() => {
-    const loadHosts = async () => {
-      try {
-        const hostData = await invoke('get_all_hosts') as Host[];
-        setHosts(hostData);
-      } catch (error) {
-        console.error('Failed to load hosts:', error);
-      }
-    };
-    
-    // Load initially and when new hosts are discovered
-    loadHosts();
-  }, [recentHosts]); // Reload when new hosts discovered
+  // Hosts are provided by the host store via obs:host events
 
   // For Live Output, we'll use a simple terminal-like display instead of ToolOutput
 
@@ -260,10 +247,10 @@ const EnhancedScannerPanel = () => {
                 </p>
               </div>
               <div className="flex-1 p-4 overflow-hidden">
-                <NetworkMap 
-                  hosts={hosts || []}
+                <NetworkMap
+                  hosts={hosts}
                   onHostSelect={handleHostSelect}
-                  selectedHostId={selectedHost?.id}
+                  selectedHostIp={selectedHost?.ip}
                   className="h-full w-full"
                 />
               </div>
@@ -318,7 +305,7 @@ const EnhancedScannerPanel = () => {
                   </h2>
                   <div className="flex items-center space-x-4">
                     <span className="text-sm text-gray-400">
-                      {hosts?.length || 0} hosts
+                      {hosts.length} hosts
                     </span>
                     {selectedHost && (
                       <span className="text-xs bg-blue-600 px-2 py-1 rounded text-white">
@@ -329,11 +316,7 @@ const EnhancedScannerPanel = () => {
                 </div>
               </div>
               <div className="flex-1 overflow-y-auto">
-                <HostTable 
-                  onHostSelect={handleHostSelect}
-                  showActions={true}
-                  selectedHostId={selectedHost?.id}
-                />
+                <HostTable onHostSelect={handleHostSelect} />
               </div>
             </div>
 
@@ -359,10 +342,7 @@ const EnhancedScannerPanel = () => {
               </div>
               <div className="flex-1 overflow-y-auto">
                 {selectedHost ? (
-                  <ResultViewer 
-                    selectedScanId={selectedHost.id}
-                    selectedHost={selectedHost}
-                  />
+                  <ResultViewer selectedScanId={selectedHost.id} />
                 ) : (
                   <div className="flex items-center justify-center h-full text-gray-400">
                     <div className="text-center">
