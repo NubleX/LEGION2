@@ -40,7 +40,7 @@ export async function subscribeObs(
   const unsubs: Array<() => void> = [];
   unsubs.push(await listen('obs:service', (e) => onService(e.payload)));
   unsubs.push(await listen('obs:host', (e) => onHost(e.payload)));
-  unsubs.push(await listen('obs:metric', (e) => onMetric(e.payload)));
+  unsubs.push(await listen('obs:metrics', (e) => onMetric(e.payload)));
   return () => unsubs.forEach((u) => u());
 }
 

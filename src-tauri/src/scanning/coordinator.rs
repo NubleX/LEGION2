@@ -24,8 +24,8 @@ use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::database::Db;
 use crate::commands::scanner_commands::ScanTarget;
+use crate::database::Db;
 use crate::scanning::{
     events::{EventType, ScanEvent},
     masscan::MasscanScanner,
@@ -293,13 +293,8 @@ impl ScanCoordinator {
         database.upsert_host(&host_ip, now)?;
 
         for port in &scan_result.open_ports {
-            if let Err(e) = database.upsert_service(
-                &host_ip,
-                port.number,
-                "tcp",
-                Some("open"),
-                now,
-            ) {
+            if let Err(e) = database.upsert_service(&host_ip, port.number, "tcp", Some("open"), now)
+            {
                 log::error!("Failed to store port {}: {}", port.number, e);
             }
         }
@@ -354,5 +349,4 @@ impl ScanCoordinator {
             }
         }
     }
-
 }
