@@ -13,12 +13,11 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use crate::commands::scanner_commands::ScanTarget;
 use crate::core::traits::Source;
-use crate::shared::{ObsStream, Observation};
 use crate::plan::Plan;
 use crate::scanning::events::{EventType, ScanEvent};
-use crate::scanning::models::{OSDetection, ScanProgress, ScanType};
+use crate::scanning::models::{OSDetection, ScanProgress, ScanTarget, ScanType};
+use crate::shared::{ObsStream, Observation};
 use crate::shared::{PortState, Protocol, ScanPort, ScanVulnerability};
 use crate::utils::os::{get_nmap_binary_path, is_nmap_available};
 use serde::{Deserialize, Serialize};

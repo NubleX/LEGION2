@@ -19,12 +19,8 @@
 )]
 
 use crate::database::Db;
-use crate::scanning::coordinator::ScanCoordinator;
-use crate::shared::EventStreamer;
 use anyhow::Result;
-use rusqlite;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 mod analysis;
 mod commands;
