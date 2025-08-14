@@ -23,9 +23,6 @@ import type { ScanConfig } from '../types/scanning';
 
 // Simple state reflecting backend events
 interface AppState {
-  // Current active scans (from engine_execute calls)
-  activeScans: Set<string>;
-
   // Live data from UiSink events
   recentHosts: Array<{ ip: string; hostname?: string; timestamp: string }>;
   recentServices: Array<{ ip: string; port: number; protocol: string; timestamp: string }>;
@@ -46,7 +43,6 @@ interface AppState {
 interface AppActions {
   // Simple actions
   startScan: (config: ScanConfig) => Promise<void>;
-  cancelScan: (scanId: string) => Promise<void>;
   clearOutput: () => void;
 }
 
@@ -97,7 +93,6 @@ const useAppStore = create<AppState & AppActions>((set) => {
 
   return {
     // Initial state
-    activeScans: new Set(),
     recentHosts: [],
     recentServices: [],
     liveOutput: [],
@@ -111,8 +106,9 @@ const useAppStore = create<AppState & AppActions>((set) => {
 
     // Actions
     startScan: async (config: ScanConfig) => {
-      // Convert frontend ScanConfig to backend ScanConfig format
-      const backendConfig = {
+      // Build execution plan from frontend ScanConfig
+      const plan = {
+        scan_id: crypto.randomUUID(),
         targets: config.targets,
         scan_type: config.scanType || 'comprehensive',
         ports: config.ports || undefined,
@@ -124,27 +120,11 @@ const useAppStore = create<AppState & AppActions>((set) => {
 
       set(() => ({
         scanInProgress: true,
-        liveOutput: [`Starting ${backendConfig.use_masscan ? 'masscan' : 'nmap'} scan for ${backendConfig.targets}...`]
+        liveOutput: [`Starting ${plan.use_masscan ? 'masscan' : 'nmap'} scan for ${plan.targets}...`]
       }));
 
-      // Use the new command that leverages Plan builders
-      const scanId = await invoke('start_scan_with_config', { config: backendConfig }) as string;
-      
-      set(state => ({
-        activeScans: new Set([...state.activeScans, scanId])
-      }));
-    },
-
-    cancelScan: async (scanId: string) => {
-      await invoke('cancel_scan', { scan_id: scanId });
-      set(state => {
-        const newScans = new Set(state.activeScans);
-        newScans.delete(scanId);
-        return {
-          activeScans: newScans,
-          scanInProgress: newScans.size > 0
-        };
-      });
+      // Execute plan via engine
+      await invoke('engine_execute', { plan });
     },
 
     clearOutput: () => {

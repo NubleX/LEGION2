@@ -19,10 +19,9 @@
 //     If not, see <http://www.gnu.org/licenses/>.
 
 
-import React, { useState, useMemo } from 'react';
-import { Shield, AlertTriangle, Download, Search } from 'lucide-react';
-import type { Host } from '../stores/hostStore';
-
+import { AlertTriangle, Download, Search, Shield } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Host } from '../types/scanning';
 
 interface ResultViewerProps {
   selectedScanId?: string;
@@ -31,11 +30,10 @@ interface ResultViewerProps {
 }
 
 const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
-  
   // Mock scan data for now since we're using a simplified store
   const scanHistory: any[] = [];
   const getScanById = (_id: string) => null;
-  
+
   const [selectedTab, setSelectedTab] = useState<'ports' | 'vulnerabilities' | 'details'>('ports');
   const [severityFilter, setSeverityFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
@@ -57,8 +55,8 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
     return ports.filter((port: any) => {
       if (searchTerm) {
         const searchLower = searchTerm.toLowerCase();
-        return port.service?.toLowerCase().includes(searchLower) || 
-               port.number.toString().includes(searchTerm);
+        return port.service?.toLowerCase().includes(searchLower) ||
+          port.number.toString().includes(searchTerm);
       }
       return true;
     });
@@ -90,7 +88,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
       ports: allPorts,
       export_time: new Date().toISOString()
     };
-    
+
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -135,11 +133,10 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
             <button
               key={tab}
               onClick={() => setSelectedTab(tab)}
-              className={`px-4 py-2 rounded transition-colors capitalize ${
-                selectedTab === tab
+              className={`px-4 py-2 rounded transition-colors capitalize ${selectedTab === tab
                   ? 'bg-blue-600 text-white'
                   : 'text-gray-400 hover:text-white hover:bg-gray-700'
-              }`}
+                }`}
             >
               {tab}
             </button>
@@ -292,7 +289,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
                   <div className="bg-gray-900 p-3 rounded">
                     <div className="text-sm text-gray-400">Duration</div>
                     <div className="text-white">
-                      {scan.end_time ? 
+                      {scan.end_time ?
                         `${Math.round((new Date(scan.end_time).getTime() - new Date(scan.start_time).getTime()) / 1000)}s` :
                         'In progress'
                       }
