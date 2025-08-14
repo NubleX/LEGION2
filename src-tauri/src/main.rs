@@ -18,7 +18,7 @@
     windows_subsystem = "windows"
 )]
 
-use crate::database::Db;
+use crate::database::{DatabaseOperations, Db};
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -56,8 +56,17 @@ async fn main() {
 
     let db = Arc::new(open_db().expect("Failed to open database"));
 
+    // Initialize database operations for scanning
+    let db_path = app_data_dir().join("LEGION2").join("network.db");
+    let database_ops = Arc::new(
+        DatabaseOperations::open(db_path.to_str().unwrap())
+            .await
+            .expect("Failed to open database operations"),
+    );
+
     tauri::Builder::default()
         .manage(db.clone())
+        .manage(database_ops.clone())
         .invoke_handler(tauri::generate_handler![
             commands::engine_commands::engine_execute,
             commands::host_commands::get_all_hosts,
@@ -66,6 +75,13 @@ async fn main() {
             commands::host_commands::batch_import_hosts,
             commands::host_commands::update_host_os_detection,
             commands::host_commands::get_host_by_ip,
+            commands::scanner_commands::start_scan,
+            commands::scanner_commands::get_scanner_status,
+            commands::operations::db_batch_upsert_hosts,
+            commands::operations::db_search_hosts,
+            commands::operations::db_update_host_tags,
+            commands::operations::db_update_host_notes,
+            commands::operations::db_get_host_by_ip,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

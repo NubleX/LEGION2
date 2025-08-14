@@ -13,37 +13,13 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use crate::scanning::coordinator::ScanCoordinator;
-use crate::scanning::models::ScanType;
-use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
+use crate::core::{engine::Engine, registry::Registry};
+use crate::database::Db;
+use crate::plan::{Plan, ScanType};
+use serde::Deserialize;
 use std::sync::Arc;
-use tauri::{AppHandle, Runtime, State};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanTarget {
-    pub id: String,
-    pub ip: IpAddr,
-    pub hostname: Option<String>,
-    pub ports: Option<Vec<u16>>,
-    pub scan_type: ScanType,
-}
-
-impl ScanTarget {
-    pub fn from_string(target: &str) -> anyhow::Result<Self> {
-        let ip: IpAddr = target
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid IP address: {}", target))?;
-
-        Ok(Self {
-            id: uuid::Uuid::new_v4().to_string(),
-            ip,
-            hostname: None,
-            ports: None,
-            scan_type: ScanType::Discovery, // Default scan type
-        })
-    }
-}
+use tauri::{AppHandle, State};
+use uuid::Uuid;
 
 #[derive(Deserialize)]
 pub struct ScanRequest {
@@ -60,164 +36,56 @@ pub struct ScanOptions {
     pub use_masscan: Option<bool>,
 }
 
+/// Start a scan using the new engine/registry system
 #[tauri::command]
-pub async fn start_scan<R: Runtime>(
-    app: AppHandle<R>,
-    coordinator: State<'_, Arc<ScanCoordinator>>,
+pub async fn start_scan(
+    app: AppHandle,
+    db: State<'_, Arc<Db>>,
     request: ScanRequest,
 ) -> Result<String, String> {
-    // Convert the request into a ScanTarget
-    let target = ScanTarget::from_string(&request.target).map_err(|e| e.to_string())?;
+    let scan_id = Uuid::new_v4();
 
-    let use_masscan = request
+    let ports = request
         .options
         .as_ref()
-        .and_then(|o| o.use_masscan)
-        .unwrap_or(false);
+        .and_then(|o| o.ports.clone())
+        .unwrap_or_else(|| "1-1000".to_string());
 
-    // Start the scan using the coordinator
-    let scan_id = coordinator
-        .start_scan(target, use_masscan)
-        .await
-        .map_err(|e| e.to_string())?;
+    let extra = request
+        .options
+        .as_ref()
+        .and_then(|o| o.extra_args.clone())
+        .unwrap_or_default();
+
+    let rate = request
+        .options
+        .as_ref()
+        .and_then(|o| o.rate)
+        .map(|r| r as u64);
+
+    let plan = if let Some(rate) = rate {
+        Plan::masscan(scan_id, request.target.clone(), ports.clone(), Some(rate))
+            .with_extra_args(extra)
+    } else {
+        Plan::nmap(scan_id, request.target.clone(), ports.clone(), extra)
+    };
+
+    let registry = Registry::new(db.inner().clone(), app);
+    let engine = Engine { registry };
+
+    // Execute in background so command returns immediately
+    tokio::spawn(async move {
+        if let Err(e) = engine.execute(plan).await {
+            log::error!("Engine execution failed: {}", e);
+        }
+    });
 
     Ok(scan_id.to_string())
 }
 
-#[tauri::command]
-pub async fn cancel_scan(
-    coordinator: State<'_, Arc<ScanCoordinator>>,
-    scan_id: String,
-) -> Result<(), String> {
-    let uuid = uuid::Uuid::parse_str(&scan_id).map_err(|e| e.to_string())?;
-
-    coordinator
-        .cancel_scan(uuid)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn get_active_scans(
-    coordinator: State<'_, Arc<ScanCoordinator>>,
-) -> Result<Vec<String>, String> {
-    let scans = coordinator
-        .get_active_scans()
-        .await
-        .into_iter()
-        .map(|(id, _)| id.to_string())
-        .collect();
-
-    Ok(scans)
-}
-
-#[tauri::command]
-pub async fn get_scan_status(
-    coordinator: State<'_, Arc<ScanCoordinator>>,
-    scan_id: String,
-) -> Result<String, String> {
-    let uuid = uuid::Uuid::parse_str(&scan_id).map_err(|e| e.to_string())?;
-
-    let active_scans = coordinator.get_active_scans().await;
-
-    // Look for the scan in active scans
-    for (id, status) in active_scans {
-        if id == uuid {
-            let status_str = match status {
-                crate::scanning::coordinator::CoordinatorScanStatus::Running => "running",
-                crate::scanning::coordinator::CoordinatorScanStatus::Completed => "completed",
-                crate::scanning::coordinator::CoordinatorScanStatus::Failed(_) => "failed",
-            };
-            return Ok(status_str.to_string());
-        }
-    }
-
-    // If not found in active scans, assume completed
-    Ok("completed".to_string())
-}
-
-#[tauri::command]
-pub async fn get_scan_results(
-    _db: State<'_, Arc<crate::database::Db>>,
-    scan_id: String,
-) -> Result<String, String> {
-    // For now, return empty results since scan results are stored in database
-    // In the future, we could look up results by scan_id
-    let results = serde_json::json!({
-        "scan_id": scan_id,
-        "hosts": [],
-        "ports": [],
-        "vulnerabilities": []
-    });
-
-    Ok(results.to_string())
-}
-
-#[tauri::command]
-pub async fn get_scan_statistics(
-    coordinator: State<'_, Arc<ScanCoordinator>>,
-) -> Result<String, String> {
-    let stats = coordinator.get_scan_statistics().await;
-    Ok(serde_json::to_string(&stats).map_err(|e| e.to_string())?)
-}
-
-#[tauri::command]
-pub async fn get_scan_progress(
-    coordinator: State<'_, Arc<ScanCoordinator>>,
-    scan_id: String,
-) -> Result<String, String> {
-    let uuid = uuid::Uuid::parse_str(&scan_id).map_err(|e| e.to_string())?;
-
-    let active_scans = coordinator.get_active_scans().await;
-
-    // Look for the scan in active scans to get progress
-    for (id, status) in active_scans {
-        if id == uuid {
-            let progress = match status {
-                crate::scanning::coordinator::CoordinatorScanStatus::Running => {
-                    serde_json::json!({
-                        "scan_id": scan_id,
-                        "status": "running",
-                        "percentage": 50.0,
-                        "stage": "scanning"
-                    })
-                }
-                crate::scanning::coordinator::CoordinatorScanStatus::Completed => {
-                    serde_json::json!({
-                        "scan_id": scan_id,
-                        "status": "completed",
-                        "percentage": 100.0,
-                        "stage": "completed"
-                    })
-                }
-                crate::scanning::coordinator::CoordinatorScanStatus::Failed(ref msg) => {
-                    serde_json::json!({
-                        "scan_id": scan_id,
-                        "status": "failed",
-                        "percentage": 0.0,
-                        "stage": "failed",
-                        "error": msg
-                    })
-                }
-            };
-            return Ok(progress.to_string());
-        }
-    }
-
-    // If not found in active scans, return completed progress
-    let completed_progress = serde_json::json!({
-        "scan_id": scan_id,
-        "status": "completed",
-        "percentage": 100.0,
-        "stage": "completed"
-    });
-
-    Ok(completed_progress.to_string())
-}
-
+/// Report availability of scanning tools
 #[tauri::command]
 pub async fn get_scanner_status() -> Result<String, String> {
-    // Check if nmap and masscan are available
     let nmap_available = crate::utils::os::is_nmap_available().await;
     let masscan_available = crate::utils::os::is_masscan_available().await;
 
