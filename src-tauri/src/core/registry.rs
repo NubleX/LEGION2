@@ -1,5 +1,5 @@
 //      mk_source: Box<dyn Fn(&str) -> Result<Box<dyn Source>> + Send + Sync>,
-//      mk_transform: Box<dyn Fn(&str) -> Result<Box<dyn Transform>> + Send + Sync>,
+//      mk_transform: Box<dyn Fn(&str) -> Result<Box<dyn Transform>> + Send + Sync>, 
 //      mk_sink: Box<dyn Fn(&str) -> Result<Box<dyn Sink>> + Send + Sync>,
 
 use anyhow::{anyhow, Result};
@@ -15,7 +15,9 @@ use crate::plan::Plan;
 use crate::scanning::masscan::MasscanScanner;
 use crate::scanning::nmap::NmapScanner;
 
+
 /// Registry for managing scanning components and their lifecycle
+
 pub struct Registry {
     db: Arc<Db>,
     app_handle: AppHandle,
