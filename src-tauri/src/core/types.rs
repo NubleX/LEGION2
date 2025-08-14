@@ -25,4 +25,6 @@ pub struct Plan {
   pub rate: Option<u64>,
   pub extra: Vec<String>,
   pub modules: Vec<String>,
+  pub source_type: String,
+  pub sink_types: Vec<String>,
 }

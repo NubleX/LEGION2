@@ -70,27 +70,9 @@ impl MasscanScanner {
     }
 }
 
-// Minimal version of get_masscan_binary_path for now
+// Use the proper OS utilities to find masscan (checks local /bin first)
 fn get_masscan_binary_path() -> Result<PathBuf> {
-    // Try to find masscan in common locations
-    let candidates = vec![
-        "masscan",
-        "masscan.exe",
-        "/usr/bin/masscan",
-        "/usr/local/bin/masscan",
-        "./bin/masscan",
-        "./bin/masscan.exe",
-    ];
-    
-    for candidate in candidates {
-        let path = PathBuf::from(candidate);
-        if path.exists() || candidate == "masscan" || candidate == "masscan.exe" {
-            return Ok(path);
-        }
-    }
-    
-    // Default to just "masscan" and let the system find it
-    Ok(PathBuf::from("masscan"))
+    Ok(crate::utils::os::get_masscan_binary_path())
 }
 
 #[async_trait::async_trait]

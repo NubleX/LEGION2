@@ -14,10 +14,35 @@
 //     If not, see <http://www.gnu.org/licenses/>.
 
 use crate::scanning::coordinator::ScanCoordinator;
-use crate::scanning::models::{ScanTarget, ScanType};
+use crate::scanning::models::ScanType;
 use tauri::{State, AppHandle, Runtime};
 use std::sync::Arc;
 use serde::{Serialize, Deserialize};
+use std::net::IpAddr;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanTarget {
+    pub id: String,
+    pub ip: IpAddr,
+    pub hostname: Option<String>,
+    pub ports: Option<Vec<u16>>,
+    pub scan_type: ScanType,
+}
+
+impl ScanTarget {
+    pub fn from_string(target: &str) -> anyhow::Result<Self> {
+        let ip: IpAddr = target.parse()
+            .map_err(|_| anyhow::anyhow!("Invalid IP address: {}", target))?;
+        
+        Ok(Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            ip,
+            hostname: None,
+            ports: None,
+            scan_type: ScanType::Discovery, // Default scan type
+        })
+    }
+}
 
 #[derive(Deserialize)]
 pub struct ScanRequest {
@@ -75,4 +100,45 @@ pub async fn get_active_scans(
         .collect();
     
     Ok(scans)
+}
+
+#[tauri::command]
+pub async fn get_scan_status(scan_id: String) -> Result<String, String> {
+    // Placeholder implementation
+    Ok("running".to_string())
+}
+
+#[tauri::command]
+pub async fn get_scan_results(scan_id: String) -> Result<String, String> {
+    // Placeholder implementation
+    Ok("{}".to_string())
+}
+
+#[tauri::command]
+pub async fn get_scan_statistics(
+    coordinator: State<'_, Arc<ScanCoordinator>>,
+) -> Result<String, String> {
+    let stats = coordinator.get_scan_statistics().await;
+    Ok(serde_json::to_string(&stats).map_err(|e| e.to_string())?)
+}
+
+#[tauri::command]
+pub async fn get_scan_progress(scan_id: String) -> Result<String, String> {
+    // Placeholder implementation
+    Ok("{}".to_string())
+}
+
+#[tauri::command]
+pub async fn get_scanner_status() -> Result<String, String> {
+    // Check if nmap and masscan are available
+    let nmap_available = crate::utils::os::is_nmap_available().await;
+    let masscan_available = crate::utils::os::is_masscan_available().await;
+    
+    let status = serde_json::json!({
+        "nmap_available": nmap_available,
+        "masscan_available": masscan_available,
+        "ready": nmap_available || masscan_available
+    });
+    
+    Ok(status.to_string())
 }

@@ -1,44 +1,58 @@
 use anyhow::Result;
 use futures::{stream, StreamExt};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 use crate::core::registry::Registry;
 use super::types::{Observation, ObsStream, Plan};
+// Traits are used indirectly through the registry
 
-pub struct Engine { pub registry: Registry }
-
-impl Engine {
-  pub async fn execute(&self, plan: Plan) -> Result<()> {
-    // Source: first module in plan.modules should be "masscan" now
-    let mut stream = self.registry.source("masscan").start(&plan).await?;
-    for m in &plan.modules {
-      if let Ok(tf) = self.registry.transform(m) {
-        stream = tf.apply(stream).await?;
-      }
-    }
-
-    let (tx, mut rx) = mpsc::channel::<Observation>(1024);
-    tokio::spawn(async move {
-      let mut s = stream;
-      while let Some(obs) = s.next().await { let _ = tx.send(obs).await; }
-    });
-
-    let (brtx, brrx) = broadcast::channel::<Observation>(1024);
-    tokio::spawn(async move {
-      while let Some(obs) = rx.recv().await { let _ = brtx.send(obs); }
-    });
-
-    let ui = self.registry.sink("ui");
-    let db = self.registry.sink("db");
-
-    let ui_task = ui.run(broadcast_to_stream(brrx.subscribe()));
-    let db_task = db.run(broadcast_to_stream(brrx.subscribe()));
-    tokio::try_join!(ui_task, db_task)?;
-    Ok(())
-  }
+pub struct Engine { 
+    pub registry: Registry 
 }
 
-fn broadcast_to_stream(mut sub: broadcast::Receiver<Observation>) -> ObsStream {
-  stream::unfold((), move |_| async {
-    match sub.recv().await { Ok(o) => Some((o, ())), Err(_) => None }
-  }).boxed()
+impl Engine {
+    pub async fn execute(&self, plan: Plan) -> Result<()> {
+        // Create source from plan
+        let source = self.registry.create_source(&plan).await?;
+        let mut stream = source.start(&plan).await?;
+
+        // Create sinks from plan  
+        let sinks = self.registry.create_sinks(&plan)?;
+
+        // Create broadcast channel for distributing observations
+        let (brtx, _) = broadcast::channel::<Observation>(1024);
+        
+        // Spawn task to read from source and broadcast to sinks
+        let tx = brtx.clone();
+        tokio::spawn(async move {
+            while let Some(obs) = stream.next().await { 
+                let _ = tx.send(obs); 
+            }
+        });
+
+        // Start all sinks
+        let mut tasks = Vec::new();
+        for sink in sinks {
+            let rx = brtx.subscribe();
+            let obs_stream = broadcast_to_stream(rx);
+            tasks.push(tokio::spawn(async move {
+                sink.run(obs_stream).await
+            }));
+        }
+
+        // Wait for all tasks to complete
+        for task in tasks {
+            let _ = task.await;
+        }
+
+        Ok(())
+    }
+}
+
+fn broadcast_to_stream(sub: broadcast::Receiver<Observation>) -> ObsStream {
+    stream::unfold(sub, |mut receiver| async move {
+        match receiver.recv().await {
+            Ok(obs) => Some((obs, receiver)),
+            Err(_) => None,
+        }
+    }).boxed()
 }

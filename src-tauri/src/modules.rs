@@ -6,7 +6,7 @@
 pub use crate::scanning::masscan::MasscanScanner;
 pub use crate::scanning::nmap::NmapScanner;
 
-// Import from core directory
+// Import from core director
 pub use crate::core::sinks::{UiSink, DbSink};
 
 /// Module configuration and initialization
@@ -18,11 +18,6 @@ pub fn init() -> anyhow::Result<()> {
     
     Ok(())
 }
-
-// Re-export commonly used types
-pub use scanning::masscan::MasscanScanner;
-pub use scanning::nmap::NmapScanner;
-pub use core::sinks::{UiSink, DbSink};
 
 #[cfg(test)]
 mod tests {

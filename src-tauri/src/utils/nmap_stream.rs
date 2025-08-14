@@ -18,15 +18,15 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use tauri::{Manager, AppHandle, Runtime};
+use tauri::{AppHandle, Runtime, Emitter};
 use anyhow::Result;
 use chrono::Utc;
 use serde::Serialize;
 use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command};
-use crate::db::Db;
+use crate::database::Db;
 use crate::core::registry::Registry;
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct NmapHostEvent { 
     pub ts: String, 
     pub ip: String, 
@@ -37,13 +37,13 @@ pub struct NmapHostEvent {
     pub reason: Option<String> 
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct NmapStatusEvent { 
     pub phase: String, 
     pub message: String 
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct NmapProgressEvent { 
     pub ts: String, 
     pub percent: Option<f32>,
@@ -65,7 +65,7 @@ pub async fn run_nmap_stream<R: Runtime>(
                       .stderr(std::process::Stdio::piped())
                       .spawn()?;
 
-    app.emit_all("nmap:status", NmapStatusEvent { 
+    app.emit("nmap:status", NmapStatusEvent { 
         phase: "starting".into(), 
         message: format!("spawned nmap for target: {}", target) 
     })?;
@@ -78,12 +78,12 @@ pub async fn run_nmap_stream<R: Runtime>(
         while let Some(line) = lines.next_line().await? {
             // Parse different types of nmap output
             if let Some(evt) = parse_nmap_host_line(&line) {
-                app.emit_all("nmap:host", evt)?;
+                app.emit("nmap:host", evt)?;
             } else if let Some(progress) = parse_nmap_progress_line(&line) {
-                app.emit_all("nmap:progress", progress)?;
+                app.emit("nmap:progress", progress)?;
             } else if !line.trim().is_empty() {
                 // Send general log messages
-                app.emit_all("nmap:log", NmapStatusEvent { 
+                app.emit("nmap:log", NmapStatusEvent { 
                     phase: "scanning".into(), 
                     message: line 
                 })?;
@@ -92,11 +92,11 @@ pub async fn run_nmap_stream<R: Runtime>(
     }
 
     let status = child.wait().await?;
-    app.emit_all("nmap:status", NmapStatusEvent { 
+    app.emit("nmap:status", NmapStatusEvent { 
         phase: "finished".into(), 
         message: format!("exit status: {}", status) 
     })?;
-    app.emit_all("nmap:done", serde_json::json!({ "ts": Utc::now().to_rfc3339() }))?;
+    app.emit("nmap:done", serde_json::json!({ "ts": Utc::now().to_rfc3339() }))?;
     Ok(())
 }
 
@@ -116,7 +116,7 @@ pub async fn run_nmap_stream_and_store<R: Runtime>(
                       .stderr(std::process::Stdio::piped())
                       .spawn()?;
 
-    app.emit_all("nmap:status", NmapStatusEvent { 
+    app.emit("nmap:status", NmapStatusEvent { 
         phase: "starting".into(), 
         message: format!("spawned nmap for target: {}", target) 
     })?;
@@ -133,11 +133,11 @@ pub async fn run_nmap_stream_and_store<R: Runtime>(
                     evt.service.as_deref(), Utc::now())?;
                 
                 // Emit to frontend
-                app.emit_all("nmap:host", &evt)?;
+                app.emit("nmap:host", &evt)?;
             } else if let Some(progress) = parse_nmap_progress_line(&line) {
-                app.emit_all("nmap:progress", progress)?;
+                app.emit("nmap:progress", progress)?;
             } else if !line.trim().is_empty() {
-                app.emit_all("nmap:log", NmapStatusEvent { 
+                app.emit("nmap:log", NmapStatusEvent { 
                     phase: "scanning".into(), 
                     message: line 
                 })?;
@@ -146,11 +146,11 @@ pub async fn run_nmap_stream_and_store<R: Runtime>(
     }
 
     let status = child.wait().await?;
-    app.emit_all("nmap:status", NmapStatusEvent { 
+    app.emit("nmap:status", NmapStatusEvent { 
         phase: "finished".into(), 
         message: format!("exit status: {}", status) 
     })?;
-    app.emit_all("nmap:done", serde_json::json!({ "ts": Utc::now().to_rfc3339() }))?;
+    app.emit("nmap:done", serde_json::json!({ "ts": Utc::now().to_rfc3339() }))?;
     Ok(())
 }
 

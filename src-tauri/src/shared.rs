@@ -87,6 +87,15 @@ impl Protocol {
     }
 }
 
+impl fmt::Display for Protocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Protocol::Tcp => write!(f, "tcp"),
+            Protocol::Udp => write!(f, "udp"),
+        }
+    }
+}
+
 impl FromStr for Protocol {
     type Err = anyhow::Error;
 
@@ -115,6 +124,17 @@ impl PortState {
             PortState::Closed => "closed",
             PortState::Filtered => "filtered",
             PortState::Unknown => "unknown",
+        }
+    }
+}
+
+impl fmt::Display for PortState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PortState::Open => write!(f, "open"),
+            PortState::Closed => write!(f, "closed"),
+            PortState::Filtered => write!(f, "filtered"),
+            PortState::Unknown => write!(f, "unknown"),
         }
     }
 }
@@ -249,6 +269,8 @@ pub enum EventType {
     ScanStarted,
     ScanCompleted,
     ScanFailed,
+    ScanProgress,
+    ScanOutput,
     HostDiscovered,
     ServiceDiscovered,
     Progress,
@@ -257,13 +279,10 @@ pub enum EventType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanEvent {
-    pub id: String,
+    pub scan_id: String,
     pub event_type: EventType,
     pub timestamp: DateTime<Utc>,
-    pub scan_id: Option<String>,
-    pub target: Option<String>,
     pub data: serde_json::Value,
-    pub message: Option<String>,
 }
 
 // Minimal event streamer

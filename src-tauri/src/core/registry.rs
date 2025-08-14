@@ -7,7 +7,7 @@ use tauri::AppHandle;
 use std::sync::Arc;
 use std::collections::HashMap;
 
-use super::traits::{Sink, Source, Transform};
+use super::traits::{Sink, Source};
 use super::types::Plan;
 use super::sinks::{UiSink, DbSink};
 use crate::database::Db;
@@ -40,7 +40,7 @@ impl Registry {
                 Ok(Box::new(scanner))
             }
             "nmap" => {
-                let scanner = NmapScanner::new()?;
+                let scanner = NmapScanner::new();
                 Ok(Box::new(scanner))
             }
             _ => Err(anyhow!("Unknown source type: {}", plan.source_type))
@@ -53,8 +53,8 @@ impl Registry {
 
         for sink_type in &plan.sink_types {
             match sink_type.as_str() {
-                "ui" => sinks.push(Box::new(UiSink::new(self.app_handle.clone()))),
-                "db" => sinks.push(Box::new(DbSink::new(self.db.clone()))),
+                "ui" => sinks.push(Box::new(UiSink::new(self.app_handle.clone())) as Box<dyn Sink>),
+                "db" => sinks.push(Box::new(DbSink::new(self.db.clone())) as Box<dyn Sink>),
                 _ => log::warn!("Unknown sink type: {}, skipping", sink_type),
             }
         }

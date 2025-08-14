@@ -13,21 +13,95 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use crate::database::{Host, HostStatus};
-use crate::shared::{StoredPort, StoredVulnerability, Protocol, PortState, Severity};
-use std::str::FromStr;
-use uuid::Uuid;
+use crate::shared::{
+    Host, HostStatus, PortState, Protocol, Severity, StoredPort, StoredVulnerability,
+};
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use rusqlite::{params, Connection};
+use std::str::FromStr;
+use std::sync::Mutex;
+use uuid::Uuid;
 
-// High-performance database operations
+/// Database operations using rusqlite
 pub struct DatabaseOperations {
-    pool: rusqlite::Connection,
+    conn: Mutex<Connection>,
 }
 
 impl DatabaseOperations {
-    pub fn new(pool: rusqlite::Connection) -> Self {
-        Self { pool }
+    pub fn new(conn: Connection) -> Self {
+        Self {
+            conn: Mutex::new(conn),
+        }
+    }
+
+    pub fn init_schema(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute_batch(
+            r#"
+            PRAGMA journal_mode=WAL;
+            PRAGMA foreign_keys=ON;
+            
+            CREATE TABLE IF NOT EXISTS hosts (
+                id TEXT PRIMARY KEY,
+                ip TEXT UNIQUE NOT NULL,
+                hostname TEXT,
+                mac_address TEXT,
+                vendor TEXT,
+                os_name TEXT,
+                os_family TEXT,
+                os_accuracy REAL,
+                status TEXT NOT NULL DEFAULT 'unknown',
+                last_seen TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                port_count INTEGER DEFAULT 0,
+                vulnerability_count INTEGER DEFAULT 0,
+                notes TEXT,
+                tags TEXT DEFAULT '[]',
+                scan_progress REAL
+            );
+            
+            CREATE TABLE IF NOT EXISTS ports (
+                id TEXT PRIMARY KEY,
+                host_id TEXT NOT NULL,
+                number INTEGER NOT NULL,
+                protocol TEXT NOT NULL,
+                state TEXT NOT NULL,
+                service TEXT,
+                version TEXT,
+                banner TEXT,
+                confidence REAL,
+                cpe TEXT DEFAULT '[]',
+                discovered_at TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE CASCADE,
+                UNIQUE(host_id, number, protocol)
+            );
+            
+            CREATE TABLE IF NOT EXISTS vulnerabilities (
+                id TEXT PRIMARY KEY,
+                host_id TEXT NOT NULL,
+                port_id TEXT,
+                name TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                description TEXT NOT NULL,
+                cvss_score REAL,
+                cvss_vector TEXT,
+                cve_id TEXT,
+                reference_links TEXT DEFAULT '[]',
+                exploitable INTEGER DEFAULT 0,
+                discovered_at TEXT NOT NULL,
+                verified INTEGER DEFAULT 0,
+                false_positive INTEGER DEFAULT 0,
+                FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE CASCADE,
+                FOREIGN KEY (port_id) REFERENCES ports(id) ON DELETE CASCADE
+            );
+        "#,
+        )?;
+
+        Ok(())
     }
 
     // HOST OPERATIONS - Core functionality
@@ -36,7 +110,7 @@ impl DatabaseOperations {
     pub async fn upsert_host(&self, ip: &str, hostname: Option<&str>) -> Result<Host> {
         let now = Utc::now();
         let host_id = Uuid::new_v4().to_string();
-        
+
         // Check if host exists
         if let Ok(existing_host) = self.get_host_by_ip(ip).await {
             // Update existing host
@@ -44,26 +118,16 @@ impl DatabaseOperations {
             updated_host.hostname = hostname.map(|h| h.to_string());
             updated_host.last_seen = now;
             updated_host.updated_at = now;
-            
-            let last_seen_str = now.to_rfc3339();
-            let updated_at_str = now.to_rfc3339();
-            rusqlite::query!(
-                r#"
-                UPDATE hosts 
-                SET hostname = ?, last_seen = ?, updated_at = ?
-                WHERE ip = ?
-                "#,
-                hostname,
-                last_seen_str,
-                updated_at_str,
-                ip
-            )
-            .execute(&self.pool)
-            .await?;
-            
+
+            let conn = self.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE hosts SET hostname = ?, last_seen = ?, updated_at = ? WHERE ip = ?",
+                params![hostname, now.to_rfc3339(), now.to_rfc3339(), ip],
+            )?;
+
             return Ok(updated_host);
         }
-        
+
         // Insert new host
         let host = Host {
             id: host_id.clone(),
@@ -84,203 +148,278 @@ impl DatabaseOperations {
             tags: Vec::new(),
             scan_progress: None,
         };
-        
-        let status_str = host.status.to_string();
-        let last_seen_str = host.last_seen.to_rfc3339();
-        let created_at_str = host.created_at.to_rfc3339();
-        let updated_at_str = host.updated_at.to_rfc3339();
-        rusqlite::query!(
-            r#"
-            INSERT INTO hosts (
+
+        let tags_json = serde_json::to_string(&host.tags)?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            r#"INSERT INTO hosts (
                 id, ip, hostname, mac_address, vendor, os_name, os_family, 
-                os_accuracy, status, last_seen, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
-            host.id,
-            host.ip,
-            host.hostname,
-            host.mac_address,
-            host.vendor,
-            host.os_name,
-            host.os_family,
-            host.os_accuracy,
-            status_str,
-            last_seen_str,
-            created_at_str,
-            updated_at_str
-        )
-        .execute(&self.pool)
-        .await?;
-        
+                os_accuracy, status, last_seen, created_at, updated_at, 
+                port_count, vulnerability_count, notes, tags, scan_progress
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+            params![
+                host.id,
+                host.ip,
+                host.hostname,
+                host.mac_address,
+                host.vendor,
+                host.os_name,
+                host.os_family,
+                host.os_accuracy,
+                host.status.to_string(),
+                host.last_seen.to_rfc3339(),
+                host.created_at.to_rfc3339(),
+                host.updated_at.to_rfc3339(),
+                host.port_count,
+                host.vulnerability_count,
+                host.notes,
+                tags_json,
+                host.scan_progress
+            ],
+        )?;
+
         Ok(host)
     }
 
-    /// Get host by IP address
+    /// Get host by IP
     pub async fn get_host_by_ip(&self, ip: &str) -> Result<Host> {
-        let row = rusqlite::query!(
-            "SELECT id, ip, hostname, mac_address, vendor, os_name, os_family, os_accuracy, status, port_count, vulnerability_count, last_seen, created_at, updated_at, notes, tags, scan_progress FROM hosts WHERE ip = ?",
-            ip
-        )
-        .fetch_one(&self.pool)
-        .await?;
-    
+        let conn = self.conn.lock().unwrap();
 
-        let status = HostStatus::from_str(&row.status)?;
-        let tags: Vec<String> = serde_json::from_str(if row.tags.is_empty() { "[]" } else { &row.tags })?;
+        let host = conn.query_row(
+            r#"
+            SELECT id, ip, hostname, mac_address, vendor, os_name, os_family,
+                   os_accuracy, status, last_seen, created_at, updated_at,
+                   port_count, vulnerability_count, notes, tags, scan_progress
+            FROM hosts WHERE ip = ?1
+            "#,
+            params![ip],
+            |row| {
+                let tags_str: String = row.get("tags")?;
+                let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+
+                Ok(Host {
+                    id: row.get("id")?,
+                    ip: row.get("ip")?,
+                    hostname: row.get("hostname")?,
+                    mac_address: row.get("mac_address")?,
+                    vendor: row.get("vendor")?,
+                    os_name: row.get("os_name")?,
+                    os_family: row.get("os_family")?,
+                    os_accuracy: row.get("os_accuracy")?,
+                    status: HostStatus::from_str(&row.get::<_, String>("status")?)
+                        .unwrap_or(HostStatus::Unknown),
+                    last_seen: DateTime::parse_from_rfc3339(&row.get::<_, String>("last_seen")?)
+                        .map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?
+                        .with_timezone(&Utc),
+                    created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>("created_at")?)
+                        .map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?
+                        .with_timezone(&Utc),
+                    updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>("updated_at")?)
+                        .map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?
+                        .with_timezone(&Utc),
+                    port_count: row.get("port_count")?,
+                    vulnerability_count: row.get("vulnerability_count")?,
+                    notes: row.get("notes")?,
+                    tags,
+                    scan_progress: row.get("scan_progress")?,
+                })
+            },
+        )?;
+
+        Ok(host)
+    }
+
+    /// Helper function to parse a host from a row
+    fn parse_host_row(row: &rusqlite::Row) -> rusqlite::Result<Host> {
+        let tags_str: String = row.get("tags")?;
+        let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
 
         Ok(Host {
-            id: row.id.unwrap_or_default(),
-            ip: row.ip,
-            hostname: row.hostname,
-            mac_address: row.mac_address,
-            vendor: row.vendor,
-            os_name: row.os_name,
-            os_family: row.os_family,
-            os_accuracy: row.os_accuracy.map(|f| f as f32),
-            status,
-            last_seen: chrono::DateTime::parse_from_rfc3339(&row.last_seen)?.with_timezone(&chrono::Utc),
-            created_at: chrono::DateTime::parse_from_rfc3339(&row.created_at)?.with_timezone(&chrono::Utc),
-            updated_at: chrono::DateTime::parse_from_rfc3339(&row.updated_at)?.with_timezone(&chrono::Utc),
-            port_count: row.port_count as i32,
-            vulnerability_count: row.vulnerability_count as i32,
-            notes: row.notes,
+            id: row.get("id")?,
+            ip: row.get("ip")?,
+            hostname: row.get("hostname")?,
+            mac_address: row.get("mac_address")?,
+            vendor: row.get("vendor")?,
+            os_name: row.get("os_name")?,
+            os_family: row.get("os_family")?,
+            os_accuracy: row.get("os_accuracy")?,
+            status: HostStatus::from_str(&row.get::<_, String>("status")?)
+                .unwrap_or(HostStatus::Unknown),
+            last_seen: DateTime::parse_from_rfc3339(&row.get::<_, String>("last_seen")?)
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?
+                .with_timezone(&Utc),
+            created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>("created_at")?)
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?
+                .with_timezone(&Utc),
+            updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>("updated_at")?)
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?
+                .with_timezone(&Utc),
+            port_count: row.get("port_count")?,
+            vulnerability_count: row.get("vulnerability_count")?,
+            notes: row.get("notes")?,
             tags,
-            scan_progress: row.scan_progress.map(|f| f as f32),
+            scan_progress: row.get("scan_progress")?,
         })
     }
 
     /// Get all hosts with optional filtering
     pub async fn get_hosts(&self, status_filter: Option<HostStatus>) -> Result<Vec<Host>> {
-        #[derive(rusqlite::FromRow)]
-        struct HostRow {
-            id: Option<String>,
-            ip: String,
-            hostname: Option<String>,
-            mac_address: Option<String>,
-            vendor: Option<String>,
-            os_name: Option<String>,
-            os_family: Option<String>,
-            os_accuracy: Option<f64>,
-            status: String,
-            port_count: i64,
-            vulnerability_count: i64,
-            last_seen: String,
-            created_at: String,
-            updated_at: String,
-            notes: Option<String>,
-            tags: String,
-            scan_progress: Option<f64>,
-        }
+        let conn = self.conn.lock().unwrap();
 
-        let rows = if let Some(status) = status_filter {
-            let status_str = status.to_string();
-            rusqlite::query_as!(
-                HostRow,
-                "SELECT id, ip, hostname, mac_address, vendor, os_name, os_family, os_accuracy, status, port_count, vulnerability_count, last_seen, created_at, updated_at, notes, tags, scan_progress FROM hosts WHERE status = ? ORDER BY last_seen DESC",
-                status_str
-            )
-            .fetch_all(&self.pool)
-            .await?
+        let query = if status_filter.is_some() {
+            "SELECT id, ip, hostname, mac_address, vendor, os_name, os_family, os_accuracy, status, port_count, vulnerability_count, last_seen, created_at, updated_at, notes, tags, scan_progress FROM hosts WHERE status = ?1 ORDER BY last_seen DESC"
         } else {
-            rusqlite::query_as!(HostRow, "SELECT id, ip, hostname, mac_address, vendor, os_name, os_family, os_accuracy, status, port_count, vulnerability_count, last_seen, created_at, updated_at, notes, tags, scan_progress FROM hosts ORDER BY last_seen DESC")
-                .fetch_all(&self.pool)
-                .await?
+            "SELECT id, ip, hostname, mac_address, vendor, os_name, os_family, os_accuracy, status, port_count, vulnerability_count, last_seen, created_at, updated_at, notes, tags, scan_progress FROM hosts ORDER BY last_seen DESC"
         };
-        
+
+        let mut stmt = conn.prepare(query)?;
+        let rows = if let Some(status) = status_filter {
+            stmt.query_map(params![status.to_string()], Self::parse_host_row)?
+        } else {
+            stmt.query_map([], Self::parse_host_row)?
+        };
+
         let mut hosts = Vec::new();
         for row in rows {
-            let status = HostStatus::from_str(&row.status)?;
-            let tags: Vec<String> = serde_json::from_str(if row.tags.is_empty() { "[]" } else { &row.tags })?;
-
-            hosts.push(Host {
-                id: row.id.unwrap_or_default(),
-                ip: row.ip,
-                hostname: row.hostname,
-                mac_address: row.mac_address,
-                vendor: row.vendor,
-                os_name: row.os_name,
-                os_family: row.os_family,
-                os_accuracy: row.os_accuracy.map(|f| f as f32),
-                status,
-                last_seen: chrono::DateTime::parse_from_rfc3339(&row.last_seen)?.with_timezone(&chrono::Utc),
-                created_at: chrono::DateTime::parse_from_rfc3339(&row.created_at)?.with_timezone(&chrono::Utc),
-                updated_at: chrono::DateTime::parse_from_rfc3339(&row.updated_at)?.with_timezone(&chrono::Utc),
-                port_count: row.port_count as i32,
-                vulnerability_count: row.vulnerability_count as i32,
-                notes: row.notes,
-                tags,
-                scan_progress: row.scan_progress.map(|f| f as f32),
-            });
+            hosts.push(row?);
         }
-        
+
         Ok(hosts)
     }
 
-    /// Update host status and scanning progress
-    pub async fn update_host_status(&self, host_id: &str, status: HostStatus, _progress: Option<f32>) -> Result<()> {
-        let now = Utc::now();
-        let status_str = status.to_string();
-        let updated_at_str = now.to_rfc3339();
-        let last_seen_str = now.to_rfc3339();
-        
-        rusqlite::query!(
-            r#"
-            UPDATE hosts 
-            SET status = ?, updated_at = ?, last_seen = ?
-            WHERE id = ?
-            "#,
-            status_str,
-            updated_at_str,
-            last_seen_str,
-            host_id
-        )
-        .execute(&self.pool)
-        .await?;
-        
+    /// Update host status
+    pub async fn update_host_status(
+        &self,
+        host_id: &str,
+        status: HostStatus,
+        progress: Option<f32>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "UPDATE hosts SET status = ?1, scan_progress = ?2, updated_at = ?3 WHERE id = ?4",
+            params![
+                status.to_string(),
+                progress,
+                Utc::now().to_rfc3339(),
+                host_id
+            ],
+        )?;
+
         Ok(())
     }
 
     /// Update host OS information
-    pub async fn update_host_os(&self, host_id: &str, os_name: &str, os_family: &str, accuracy: f32) -> Result<()> {
+    pub async fn update_host_os(
+        &self,
+        host_id: &str,
+        os_name: &str,
+        os_family: &str,
+        accuracy: f32,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
-        rusqlite::query!(
-            r#"
-            UPDATE hosts 
-            SET os_name = ?, os_family = ?, os_accuracy = ?, updated_at = ?
-            WHERE id = ?
-            "#,
-            os_name,
-            os_family,
-            accuracy,
-            now,
-            host_id
-        )
-        .execute(&self.pool)
-        .await?;
-        
+
+        conn.execute(
+            "UPDATE hosts SET os_name = ?1, os_family = ?2, os_accuracy = ?3, updated_at = ?4 WHERE id = ?5",
+            params![os_name, os_family, accuracy, now, host_id],
+        )?;
+
         Ok(())
     }
 
-    /// Delete host and all associated data
+    /// Store port information
+    pub async fn store_port(&self, port: &StoredPort) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        let cpe_json = serde_json::to_string(&port.cpe)?;
+
+        conn.execute(
+            r#"
+            INSERT INTO ports (
+                id, host_id, number, protocol, state, service, version,
+                banner, confidence, cpe, discovered_at, last_seen
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ON CONFLICT(host_id, number, protocol) DO UPDATE SET
+                state = ?5,
+                service = COALESCE(?6, service),
+                version = COALESCE(?7, version),
+                banner = COALESCE(?8, banner),
+                confidence = COALESCE(?9, confidence),
+                cpe = ?10,
+                last_seen = ?12
+            "#,
+            params![
+                port.id,
+                port.host_id,
+                port.number,
+                port.protocol.to_string(),
+                port.state.to_string(),
+                port.service,
+                port.version,
+                port.banner,
+                port.confidence,
+                cpe_json,
+                port.discovered_at.to_rfc3339(),
+                port.last_seen.to_rfc3339()
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Delete host
     pub async fn delete_host(&self, host_id: &str) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        
-        // Delete vulnerabilities first (foreign key constraint)
-        rusqlite::query!("DELETE FROM vulnerabilities WHERE host_id = ?", host_id)
-            .execute(&mut *tx)
-            .await?;
-            
+        let conn = self.conn.lock().unwrap();
+
+        // Delete vulnerabilities first
+        conn.execute(
+            "DELETE FROM vulnerabilities WHERE host_id = ?1",
+            params![host_id],
+        )?;
+
         // Delete ports
-        rusqlite::query!("DELETE FROM ports WHERE host_id = ?", host_id)
-            .execute(&mut *tx)
-            .await?;
-            
+        conn.execute("DELETE FROM ports WHERE host_id = ?1", params![host_id])?;
+
         // Delete host
-        rusqlite::query!("DELETE FROM hosts WHERE id = ?", host_id)
-            .execute(&mut *tx)
-            .await?;
-            
-        tx.commit().await?;
+        conn.execute("DELETE FROM hosts WHERE id = ?1", params![host_id])?;
+
         Ok(())
     }
 
@@ -288,73 +427,99 @@ impl DatabaseOperations {
 
     /// Add port to host
     pub async fn add_port(&self, port: &StoredPort) -> Result<()> {
-        let protocol_str = match port.protocol { Protocol::Tcp => "tcp", Protocol::Udp => "udp" };
-        let state_str = match port.state {
-            PortState::Open => "open", 
-            PortState::Closed => "closed", 
-            PortState::Filtered => "filtered",
-            PortState::Unknown => "unknown",
-        };
+        let conn = self.conn.lock().unwrap();
         let cpe_json = serde_json::to_string(&port.cpe)?;
-        let discovered_at_str = port.discovered_at.to_rfc3339();
-        let last_seen_str = port.last_seen.to_rfc3339();
 
-        rusqlite::query!(
-            r#"            INSERT INTO ports (
+        conn.execute(
+            r#"
+            INSERT INTO ports (
                 id, host_id, number, protocol, state, service, version, 
                 banner, confidence, cpe, discovered_at, last_seen
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ON CONFLICT(host_id, number, protocol) DO UPDATE SET
+                state = ?5,
+                service = COALESCE(?6, service),
+                version = COALESCE(?7, version),
+                banner = COALESCE(?8, banner),
+                confidence = COALESCE(?9, confidence),
+                cpe = ?10,
+                last_seen = ?12
             "#,
-            port.id,
-            port.host_id,
-            port.number,
-            protocol_str,
-            state_str,
-            port.service,
-            port.version,
-            port.banner,
-            port.confidence,
-            cpe_json,
-            discovered_at_str,
-            last_seen_str
-        )
-        .execute(&self.pool)
-        .await?;
-        
+            params![
+                port.id,
+                port.host_id,
+                port.number,
+                port.protocol.to_string(),
+                port.state.to_string(),
+                port.service,
+                port.version,
+                port.banner,
+                port.confidence,
+                cpe_json,
+                port.discovered_at.to_rfc3339(),
+                port.last_seen.to_rfc3339()
+            ],
+        )?;
+
         // Update host port count
         self.update_host_port_count(&port.host_id).await?;
-        
+
         Ok(())
     }
 
     /// Get ports for host
     pub async fn get_host_ports(&self, host_id: &str) -> Result<Vec<StoredPort>> {
-        let rows = rusqlite::query!(
-            "SELECT id, host_id, number, protocol, state, service, version, banner, confidence, cpe, discovered_at, last_seen FROM ports WHERE host_id = ? ORDER BY number",
-            host_id
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, host_id, number, protocol, state, service, version, banner, confidence, cpe, discovered_at, last_seen FROM ports WHERE host_id = ?1 ORDER BY number"
+        )?;
+
+        let rows = stmt.query_map(params![host_id], |row| {
+            let cpe_str: String = row.get("cpe")?;
+            let cpe: Vec<String> = serde_json::from_str(&cpe_str).unwrap_or_default();
+
+            Ok(StoredPort {
+                id: row.get("id")?,
+                host_id: row.get("host_id")?,
+                number: row.get("number")?,
+                protocol: Protocol::from_str(&row.get::<_, String>("protocol")?)
+                    .unwrap_or(Protocol::Tcp),
+                state: PortState::from_str(&row.get::<_, String>("state")?)
+                    .unwrap_or(PortState::Unknown),
+                service: row.get("service")?,
+                version: row.get("version")?,
+                banner: row.get("banner")?,
+                confidence: row.get("confidence")?,
+                cpe,
+                discovered_at: DateTime::parse_from_rfc3339(
+                    &row.get::<_, String>("discovered_at")?,
+                )
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?
+                .with_timezone(&Utc),
+                last_seen: DateTime::parse_from_rfc3339(&row.get::<_, String>("last_seen")?)
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?
+                    .with_timezone(&Utc),
+            })
+        })?;
+
         let mut ports = Vec::new();
         for row in rows {
-            let cpe: Vec<String> = serde_json::from_str(&row.cpe.unwrap_or("[]".to_string()))?;
-            ports.push(StoredPort {
-                id: row.id.unwrap_or_default(),
-                host_id: row.host_id,
-                number: row.number as i32,
-                protocol: Protocol::from_str(&row.protocol)?,
-                state: PortState::from_str(&row.state)?,
-                service: row.service,
-                version: row.version,
-                banner: row.banner,
-                confidence: row.confidence.map(|c| c as f32),
-                cpe,
-                discovered_at: chrono::DateTime::parse_from_rfc3339(&row.discovered_at)?.with_timezone(&chrono::Utc),
-                last_seen: chrono::DateTime::parse_from_rfc3339(&row.last_seen)?.with_timezone(&chrono::Utc),
-            });
+            ports.push(row?);
         }
-        
+
         Ok(ports)
     }
 
@@ -362,111 +527,441 @@ impl DatabaseOperations {
 
     /// Add vulnerability to host
     pub async fn add_vulnerability(&self, vulnerability: &StoredVulnerability) -> Result<()> {
-        let severity_str = match vulnerability.severity {
-            Severity::Info => "info",
-            Severity::Low => "low", 
-            Severity::Medium => "medium",
-            Severity::High => "high",
-            Severity::Critical => "critical",
-        };
+        let conn = self.conn.lock().unwrap();
         let reference_links_json = serde_json::to_string(&vulnerability.reference_links)?;
-        let discovered_at_str = vulnerability.discovered_at.to_rfc3339();
 
-        rusqlite::query!(
-            r#"            INSERT INTO vulnerabilities (
+        conn.execute(
+            r#"
+            INSERT INTO vulnerabilities (
                 id, host_id, port_id, name, severity, description, 
                 cvss_score, cvss_vector, cve_id, reference_links, exploitable, 
                 discovered_at, verified, false_positive
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
             "#,
-            vulnerability.id,
-            vulnerability.host_id,
-            vulnerability.port_id,
-            vulnerability.name,
-            severity_str,
-            vulnerability.description,
-            vulnerability.cvss_score,
-            vulnerability.cvss_vector,
-            vulnerability.cve_id,
-            reference_links_json,
-            vulnerability.exploitable,
-            discovered_at_str,
-            vulnerability.verified,
-            vulnerability.false_positive
-        )
-        .execute(&self.pool)
-        .await?;
-        
+            params![
+                vulnerability.id,
+                vulnerability.host_id,
+                vulnerability.port_id,
+                vulnerability.name,
+                vulnerability.severity.to_string(),
+                vulnerability.description,
+                vulnerability.cvss_score,
+                vulnerability.cvss_vector,
+                vulnerability.cve_id,
+                reference_links_json,
+                vulnerability.exploitable,
+                vulnerability.discovered_at.to_rfc3339(),
+                vulnerability.verified,
+                vulnerability.false_positive
+            ],
+        )?;
+
         // Update host vulnerability count
-        self.update_host_vulnerability_count(&vulnerability.host_id).await?;
-        
+        self.update_host_vulnerability_count(&vulnerability.host_id)
+            .await?;
+
         Ok(())
     }
 
     /// Get vulnerabilities for host
-    pub async fn get_host_vulnerabilities(&self, host_id: &str) -> Result<Vec<StoredVulnerability>> {
-        let rows = rusqlite::query!(
-            "SELECT id, host_id, port_id, name, severity, description, cvss_score, cvss_vector, cve_id, reference_links, exploitable, discovered_at, verified, false_positive FROM vulnerabilities WHERE host_id = ? ORDER BY severity, name",
-            host_id
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        
+    pub async fn get_host_vulnerabilities(
+        &self,
+        host_id: &str,
+    ) -> Result<Vec<StoredVulnerability>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, host_id, port_id, name, severity, description, cvss_score, cvss_vector, cve_id, reference_links, exploitable, discovered_at, verified, false_positive FROM vulnerabilities WHERE host_id = ?1 ORDER BY severity, name"
+        )?;
+
+        let rows = stmt.query_map(params![host_id], |row| {
+            let reference_links_str: String = row.get("reference_links")?;
+            let reference_links: Vec<String> =
+                serde_json::from_str(&reference_links_str).unwrap_or_default();
+
+            Ok(StoredVulnerability {
+                id: row.get("id")?,
+                host_id: row.get("host_id")?,
+                port_id: row.get("port_id")?,
+                name: row.get("name")?,
+                severity: Severity::from_str(&row.get::<_, String>("severity")?)
+                    .unwrap_or(Severity::Info),
+                description: row.get("description")?,
+                cvss_score: row.get("cvss_score")?,
+                cvss_vector: row.get("cvss_vector")?,
+                cve_id: row.get("cve_id")?,
+                reference_links,
+                exploitable: row.get("exploitable")?,
+                discovered_at: DateTime::parse_from_rfc3339(
+                    &row.get::<_, String>("discovered_at")?,
+                )
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?
+                .with_timezone(&Utc),
+                verified: row.get("verified")?,
+                false_positive: row.get("false_positive")?,
+            })
+        })?;
+
         let mut vulnerabilities = Vec::new();
         for row in rows {
-            let severity = Severity::from_str(&row.severity)?;
-            let reference_links: Vec<String> = serde_json::from_str(&row.reference_links.unwrap_or("[]".to_string()))?;
-            
-            vulnerabilities.push(StoredVulnerability {
-                id: row.id.unwrap_or_default(),
-                host_id: row.host_id,
-                port_id: row.port_id,
-                name: row.name,
-                severity,
-                description: row.description,
-                cvss_score: row.cvss_score.map(|s| s as f32),
-                cvss_vector: row.cvss_vector,
-                cve_id: row.cve_id,
-                reference_links,
-                exploitable: row.exploitable,
-                discovered_at: chrono::DateTime::parse_from_rfc3339(&row.discovered_at)?.with_timezone(&chrono::Utc),
-                verified: row.verified,
-                false_positive: row.false_positive,
-            });
+            vulnerabilities.push(row?);
         }
-        
+
         Ok(vulnerabilities)
     }
 
-    
+    /// Get vulnerability statistics
+    pub async fn get_vulnerability_stats(&self) -> Result<std::collections::HashMap<String, i32>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stats = std::collections::HashMap::new();
+
+        let total: i32 =
+            conn.query_row("SELECT COUNT(*) FROM vulnerabilities", [], |row| row.get(0))?;
+        stats.insert("total".to_string(), total);
+
+        // Count by severity
+        let mut stmt =
+            conn.prepare("SELECT severity, COUNT(*) FROM vulnerabilities GROUP BY severity")?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
+        })?;
+
+        for row in rows {
+            let (severity, count) = row?;
+            stats.insert(severity, count);
+        }
+
+        Ok(stats)
+    }
+
+    /// Get host by ID
+    pub async fn get_host_by_id(&self, host_id: &str) -> Result<Host> {
+        let conn = self.conn.lock().unwrap();
+
+        let host = conn.query_row(
+            r#"
+            SELECT id, ip, hostname, mac_address, vendor, os_name, os_family,
+                   os_accuracy, status, last_seen, created_at, updated_at,
+                   port_count, vulnerability_count, notes, tags, scan_progress
+            FROM hosts WHERE id = ?1
+            "#,
+            params![host_id],
+            |row| {
+                let tags_str: String = row.get("tags")?;
+                let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+
+                Ok(Host {
+                    id: row.get("id")?,
+                    ip: row.get("ip")?,
+                    hostname: row.get("hostname")?,
+                    mac_address: row.get("mac_address")?,
+                    vendor: row.get("vendor")?,
+                    os_name: row.get("os_name")?,
+                    os_family: row.get("os_family")?,
+                    os_accuracy: row.get("os_accuracy")?,
+                    status: HostStatus::from_str(&row.get::<_, String>("status")?)
+                        .unwrap_or(HostStatus::Unknown),
+                    last_seen: DateTime::parse_from_rfc3339(&row.get::<_, String>("last_seen")?)
+                        .map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?
+                        .with_timezone(&Utc),
+                    created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>("created_at")?)
+                        .map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?
+                        .with_timezone(&Utc),
+                    updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>("updated_at")?)
+                        .map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?
+                        .with_timezone(&Utc),
+                    port_count: row.get("port_count")?,
+                    vulnerability_count: row.get("vulnerability_count")?,
+                    notes: row.get("notes")?,
+                    tags,
+                    scan_progress: row.get("scan_progress")?,
+                })
+            },
+        )?;
+
+        Ok(host)
+    }
+
+    /// Update host notes
+    pub async fn update_host_notes(&self, host_id: &str, notes: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "UPDATE hosts SET notes = ?1, updated_at = ?2 WHERE id = ?3",
+            params![notes, Utc::now().to_rfc3339(), host_id],
+        )?;
+
+        Ok(())
+    }
+
+    /// Update host tags
+    pub async fn update_host_tags(&self, host_id: &str, tags: &[String]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let tags_json = serde_json::to_string(tags)?;
+
+        conn.execute(
+            "UPDATE hosts SET tags = ?1, updated_at = ?2 WHERE id = ?3",
+            params![tags_json, Utc::now().to_rfc3339(), host_id],
+        )?;
+
+        Ok(())
+    }
+
+    /// Search hosts by various criteria
+    pub async fn search_hosts(&self, query: &str) -> Result<Vec<Host>> {
+        let conn = self.conn.lock().unwrap();
+        let search_term = format!("%{}%", query);
+
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, ip, hostname, mac_address, vendor, os_name, os_family,
+                   os_accuracy, status, last_seen, created_at, updated_at,
+                   port_count, vulnerability_count, notes, tags, scan_progress
+            FROM hosts 
+            WHERE ip LIKE ?1 OR hostname LIKE ?1 OR os_name LIKE ?1 OR notes LIKE ?1
+            ORDER BY last_seen DESC
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![search_term], Self::parse_host_row)?;
+
+        let mut hosts = Vec::new();
+        for row in rows {
+            hosts.push(row?);
+        }
+
+        Ok(hosts)
+    }
+
+    /// Batch insert hosts with transaction support
+    pub async fn batch_upsert_hosts(&self, hosts: &[Host]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+
+        let mut stmt = tx.prepare(
+            r#"
+            INSERT INTO hosts (
+                id, ip, hostname, mac_address, vendor, os_name, os_family, 
+                os_accuracy, status, last_seen, created_at, updated_at,
+                port_count, vulnerability_count, notes, tags, scan_progress
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+            ON CONFLICT(ip) DO UPDATE SET
+                hostname = COALESCE(?3, hostname),
+                mac_address = COALESCE(?4, mac_address),
+                vendor = COALESCE(?5, vendor),
+                os_name = COALESCE(?6, os_name),
+                os_family = COALESCE(?7, os_family),
+                os_accuracy = COALESCE(?8, os_accuracy),
+                status = ?9,
+                last_seen = ?10,
+                updated_at = ?12,
+                port_count = ?13,
+                vulnerability_count = ?14,
+                notes = COALESCE(?15, notes),
+                tags = ?16,
+                scan_progress = ?17
+            "#,
+        )?;
+
+        for host in hosts {
+            let tags_json = serde_json::to_string(&host.tags)?;
+            stmt.execute(params![
+                host.id,
+                host.ip,
+                host.hostname,
+                host.mac_address,
+                host.vendor,
+                host.os_name,
+                host.os_family,
+                host.os_accuracy,
+                host.status.to_string(),
+                host.last_seen.to_rfc3339(),
+                host.created_at.to_rfc3339(),
+                host.updated_at.to_rfc3339(),
+                host.port_count,
+                host.vulnerability_count,
+                host.notes,
+                tags_json,
+                host.scan_progress
+            ])?;
+        }
+
+        drop(stmt); // Explicitly drop the statement before committing
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Batch insert ports with transaction support
+    pub async fn batch_insert_ports(&self, ports: &[StoredPort]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        {
+            let tx = conn.unchecked_transaction()?;
+
+            let mut stmt = tx.prepare(
+                r#"
+                INSERT INTO ports (
+                    id, host_id, number, protocol, state, service, version,
+                    banner, confidence, cpe, discovered_at, last_seen
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                ON CONFLICT(host_id, number, protocol) DO UPDATE SET
+                    state = ?5,
+                    service = COALESCE(?6, service),
+                    version = COALESCE(?7, version),
+                    banner = COALESCE(?8, banner),
+                    confidence = COALESCE(?9, confidence),
+                    cpe = ?10,
+                    last_seen = ?12
+                "#,
+            )?;
+
+            for port in ports {
+                let cpe_json = serde_json::to_string(&port.cpe)?;
+                stmt.execute(params![
+                    port.id,
+                    port.host_id,
+                    port.number,
+                    port.protocol.to_string(),
+                    port.state.to_string(),
+                    port.service,
+                    port.version,
+                    port.banner,
+                    port.confidence,
+                    cpe_json,
+                    port.discovered_at.to_rfc3339(),
+                    port.last_seen.to_rfc3339()
+                ])?;
+            }
+
+            drop(stmt); // Explicitly drop the statement before committing
+            tx.commit()?;
+        }
+
+        // Update port counts for affected hosts after transaction is complete
+        let host_ids: std::collections::HashSet<_> =
+            ports.iter().map(|p| p.host_id.as_str()).collect();
+        drop(conn); // Release the connection lock before calling other methods
+
+        for host_id in host_ids {
+            self.update_host_port_count(host_id).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Batch insert vulnerabilities with transaction support
+    pub async fn batch_insert_vulnerabilities(
+        &self,
+        vulnerabilities: &[StoredVulnerability],
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        {
+            let tx = conn.unchecked_transaction()?;
+
+            let mut stmt = tx.prepare(
+                r#"
+                INSERT INTO vulnerabilities (
+                    id, host_id, port_id, name, severity, description, 
+                    cvss_score, cvss_vector, cve_id, reference_links, exploitable, 
+                    discovered_at, verified, false_positive
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                "#,
+            )?;
+
+            for vulnerability in vulnerabilities {
+                let reference_links_json = serde_json::to_string(&vulnerability.reference_links)?;
+                stmt.execute(params![
+                    vulnerability.id,
+                    vulnerability.host_id,
+                    vulnerability.port_id,
+                    vulnerability.name,
+                    vulnerability.severity.to_string(),
+                    vulnerability.description,
+                    vulnerability.cvss_score,
+                    vulnerability.cvss_vector,
+                    vulnerability.cve_id,
+                    reference_links_json,
+                    vulnerability.exploitable,
+                    vulnerability.discovered_at.to_rfc3339(),
+                    vulnerability.verified,
+                    vulnerability.false_positive
+                ])?;
+            }
+
+            drop(stmt); // Explicitly drop the statement before committing
+            tx.commit()?;
+        }
+
+        // Update vulnerability counts for affected hosts after transaction is complete
+        let host_ids: std::collections::HashSet<_> =
+            vulnerabilities.iter().map(|v| v.host_id.as_str()).collect();
+        drop(conn); // Release the connection lock before calling other methods
+
+        for host_id in host_ids {
+            self.update_host_vulnerability_count(host_id).await?;
+        }
+
+        Ok(())
+    }
 
     async fn update_host_port_count(&self, host_id: &str) -> Result<()> {
-        let count: i32 = rusqlite::query_scalar("SELECT COUNT(*) FROM ports WHERE host_id = ?")
-            .bind(host_id)
-            .fetch_one(&self.pool)
-            .await?;
-        
-        rusqlite::query("UPDATE hosts SET port_count = ? WHERE id = ?")
-            .bind(count)
-            .bind(host_id)
-            .execute(&self.pool)
-            .await?;
-            
+        let conn = self.conn.lock().unwrap();
+
+        let count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM ports WHERE host_id = ?1",
+            params![host_id],
+            |row| row.get(0),
+        )?;
+
+        conn.execute(
+            "UPDATE hosts SET port_count = ?1 WHERE id = ?2",
+            params![count, host_id],
+        )?;
+
         Ok(())
     }
 
     async fn update_host_vulnerability_count(&self, host_id: &str) -> Result<()> {
-        let count: i32 = rusqlite::query_scalar("SELECT COUNT(*) FROM vulnerabilities WHERE host_id = ?")
-            .bind(host_id)
-            .fetch_one(&self.pool)
-            .await?;
+        let conn = self.conn.lock().unwrap();
 
-        rusqlite::query("UPDATE hosts SET vulnerability_count = ? WHERE id = ?")
-            .bind(count)
-            .bind(host_id)
-            .execute(&self.pool)
-            .await?;
-            
+        let count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM vulnerabilities WHERE host_id = ?1",
+            params![host_id],
+            |row| row.get(0),
+        )?;
+
+        conn.execute(
+            "UPDATE hosts SET vulnerability_count = ?1 WHERE id = ?2",
+            params![count, host_id],
+        )?;
+
         Ok(())
     }
 }

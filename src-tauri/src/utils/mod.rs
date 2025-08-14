@@ -6,4 +6,3 @@ pub mod os_test;
 pub mod os;
 pub mod parsing;
 pub mod process;
-pub mod validation;

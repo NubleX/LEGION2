@@ -1,20 +1,15 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-
 // Forked from an earlier version of LEGION, which was originally created by Gotham Security.
 // It was archived in 2024.
-
 // LEGION (https://gotham-security.com)
 // Copyright (c) 2023 Gotham Security
-
 //     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
 //     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
 //     version.
-
 //     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
 //     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
 //     details.
-
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
@@ -22,8 +17,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use std::sync::Mutex;
-use crate::commands::operations::DatabaseOperations;
-use crate::core::registry::Registry;
+use uuid;
 
 pub struct Db { 
     conn: Mutex<Connection>
@@ -78,5 +72,48 @@ impl Db {
             params![ip, port as i64, proto, reason, &t, &t],
         )?;
         Ok(())
+    }
+
+    pub fn get_all_hosts(&self) -> Result<Vec<crate::shared::Host>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT ip, first_seen, last_seen FROM hosts")?;
+        let host_iter = stmt.query_map([], |row| {
+            let ip: String = row.get(0)?;
+            let first_seen_str: String = row.get(1)?;
+            let last_seen_str: String = row.get(2)?;
+            
+            let first_seen = DateTime::parse_from_rfc3339(&first_seen_str)
+                .map_err(|e| rusqlite::Error::InvalidColumnType(0, format!("Invalid date: {}", e).into(), rusqlite::types::Type::Text))?
+                .with_timezone(&chrono::Utc);
+            let last_seen = DateTime::parse_from_rfc3339(&last_seen_str)
+                .map_err(|e| rusqlite::Error::InvalidColumnType(1, format!("Invalid date: {}", e).into(), rusqlite::types::Type::Text))?
+                .with_timezone(&chrono::Utc);
+            
+            Ok(crate::shared::Host {
+                id: uuid::Uuid::new_v4().to_string(),
+                ip,
+                hostname: None,
+                mac_address: None,
+                vendor: None,
+                os_name: None,
+                os_family: None,
+                os_accuracy: None,
+                status: crate::shared::HostStatus::Up,
+                last_seen,
+                created_at: first_seen,
+                updated_at: last_seen,
+                port_count: 0,
+                vulnerability_count: 0,
+                notes: None,
+                tags: Vec::new(),
+                scan_progress: None,
+            })
+        })?;
+        
+        let mut hosts = Vec::new();
+        for host in host_iter {
+            hosts.push(host?);
+        }
+        Ok(hosts)
     }
 }

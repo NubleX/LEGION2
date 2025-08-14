@@ -6,9 +6,15 @@ use chrono::{DateTime, Utc};
 /// Types of scans that can be performed
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ScanType {
-    /// Network discovery scan
+    /// Quick discovery scan
     Discovery,
-    /// Port scanning
+    /// Quick scan with top ports
+    Quick,
+    /// Comprehensive scan with service detection
+    Comprehensive,
+    /// Stealth scan to avoid detection
+    Stealth,
+    /// Port scanning only
     PortScan,
     /// Service detection
     ServiceDetection,
@@ -17,7 +23,7 @@ pub enum ScanType {
     /// Vulnerability scanning
     Vulnerability,
     /// Custom scan with specific parameters
-    Custom(String),
+    Custom { options: String },
 }
 
 /// Target specification for scanning
@@ -104,13 +110,13 @@ pub struct ScanProgress {
     /// Current target being scanned
     pub current_target: Option<String>,
     /// Hosts discovered - alias for hosts_found
-    pub hosts_discovered: usize,
+    pub hosts_discovered: u32,
     /// Ports found/scanned
-    pub ports_found: usize,
+    pub ports_found: u32,
     /// Vulnerabilities discovered
-    pub vulnerabilities: usize,
+    pub vulnerabilities: u32,
     /// Elapsed time in seconds
-    pub elapsed_time: Option<u64>,
+    pub elapsed_time: u64,
     /// Estimated remaining time
     pub estimated_remaining: Option<u64>,
     /// Progress message
@@ -119,12 +125,6 @@ pub struct ScanProgress {
     pub start_time: DateTime<Utc>,
     /// Current phase of the scan
     pub current_phase: String,
-    /// Target ID being processed
-    pub target_id: Option<String>,
-    /// Total ports scanned so far
-    pub total_ports_scanned: usize,
-    /// Total open ports found
-    pub open_ports_found: usize,
 }
 
 /// Configuration for a scan
@@ -294,6 +294,15 @@ pub struct ScanStatistics {
     pub total_time_seconds: u64,
     /// Network utilization statistics
     pub network_stats: Option<NetworkStats>,
+    
+    // Additional fields for coordinator compatibility
+    pub total_scans: u32,
+    pub active_scans: u32,
+    pub completed_scans: u32,
+    pub failed_scans: u32,
+    pub total_hosts_discovered: u32,
+    pub total_ports_found: u32,
+    pub total_vulnerabilities: u32,
 }
 
 /// Network utilization statistics
@@ -315,17 +324,21 @@ pub struct NetworkStats {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OSDetection {
     /// Detected OS name
-    pub name: Option<String>,
+    pub name: String,
     /// OS family
-    pub family: Option<String>,
+    pub family: String,
     /// OS version
     pub version: Option<String>,
-    /// Detection confidence (0.0 to 1.0)
-    pub confidence: f32,
+    /// Detection confidence (0.0 to 100.0)
+    pub accuracy: f32,
+    /// Vendor information
+    pub vendor: Option<String>,
+    /// Generation info
+    pub generation: Option<String>,
+    /// Fingerprint data
+    pub fingerprint: Option<String>,
     /// CPE (Common Platform Enumeration) strings
     pub cpe: Vec<String>,
-    /// Additional OS fingerprinting data
-    pub fingerprints: Vec<serde_json::Value>,
 }
 
 impl Default for ScanStatus {
@@ -344,11 +357,14 @@ impl std::fmt::Display for ScanType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ScanType::Discovery => write!(f, "Discovery"),
+            ScanType::Quick => write!(f, "Quick"),
+            ScanType::Comprehensive => write!(f, "Comprehensive"),
+            ScanType::Stealth => write!(f, "Stealth"),
             ScanType::PortScan => write!(f, "Port Scan"),
             ScanType::ServiceDetection => write!(f, "Service Detection"),
             ScanType::OsDetection => write!(f, "OS Detection"),
             ScanType::Vulnerability => write!(f, "Vulnerability Scan"),
-            ScanType::Custom(name) => write!(f, "Custom: {}", name),
+            ScanType::Custom { options } => write!(f, "Custom: {}", options),
         }
     }
 }

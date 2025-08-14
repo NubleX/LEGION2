@@ -18,26 +18,22 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use anyhow::{Result, anyhow};
 use chrono::Utc;
 use serde::Serialize;
-use tauri::Emitter;
-use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command};
-use crate::db::Db;
-use chrono::Utc;
-use crate::core::registry::Registry;
+use tokio::{io::BufReader, process::Command};
+use crate::database::Db;
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct HostEvent { pub ts: String, pub ip: String, pub port: u16, pub proto: String, pub reason: Option<String> }
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct StatusEvent { pub phase: String, pub message: String }
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct ProgressEvent { pub ts: String, pub scanned: Option<u64>, pub rate: Option<u64> }
 
-pub async fn run_masscan_stream_and_store<W: tauri::Manager>(
-  app: &W, db: &Db, bin: &std::path::Path, targets: &str, ports: &str, extra: &[String]
+pub async fn run_masscan_stream_and_store<R: tauri::Runtime>(
+  app: &tauri::AppHandle<R>, db: &Db, bin: &std::path::Path, targets: &str, ports: &str, extra: &[String]
 ) -> anyhow::Result<()> {
-  use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command};
+  use tokio::io::AsyncBufReadExt;
   use tauri::Emitter;
 
   let mut cmd = Command::new(bin);
@@ -52,7 +48,7 @@ pub async fn run_masscan_stream_and_store<W: tauri::Manager>(
                     .stderr(std::process::Stdio::piped())
                     .spawn()?;
 
-  app.emit_all("masscan:status", StatusEvent { phase: "starting".into(), message: format!("spawned {:?}", bin) })?;
+  app.emit("masscan:status", StatusEvent { phase: "starting".into(), message: format!("spawned {:?}", bin) })?;
 
   if let Some(out) = child.stdout.take() {
     let reader = BufReader::new(out);
@@ -64,14 +60,14 @@ pub async fn run_masscan_stream_and_store<W: tauri::Manager>(
         db.upsert_host(&evt.ip, Utc::now())?;
         db.upsert_service(&evt.ip, evt.port, &evt.proto, evt.reason.as_deref(), Utc::now())?;
         // emit
-        app.emit_all("masscan:host", &evt)?;
+        app.emit("masscan:host", &evt)?;
       }
     }
   }
 
   let status = child.wait().await?;
-  app.emit_all("masscan:status", StatusEvent { phase: "finished".into(), message: status.to_string() })?;
-  app.emit_all("masscan:done", serde_json::json!({ "ts": Utc::now().to_rfc3339() }))?;
+  app.emit("masscan:status", StatusEvent { phase: "finished".into(), message: status.to_string() })?;
+  app.emit("masscan:done", serde_json::json!({ "ts": Utc::now().to_rfc3339() }))?;
   Ok(())
 }
 

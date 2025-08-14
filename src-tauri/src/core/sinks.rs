@@ -1,19 +1,17 @@
 use std::sync::Arc;
-use std::path::PathBuf;
 use std::collections::HashMap;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Serialize, Deserialize};
 use tauri::{AppHandle, Emitter};
-use chrono::Utc;
-use rusqlite::{Connection, params};
 use futures::StreamExt;
+use chrono::Utc;
 use tokio::time::{Duration, interval};
 use tokio::sync::Mutex;
 
 use crate::core::traits::Sink;
-use crate::core::types::{Observation, ObservationKind, ObsStream};
-use crate::db::Db;
+use crate::core::types::{ObservationKind, ObsStream};
+use crate::database::Db;
 
 // Event structures for frontend communication
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -384,18 +382,30 @@ impl DbSink {
 
     /// Helper to extract host information from observation
     async fn process_host(&self, ip: &str, hostname: Option<&str>) -> Result<()> {
-        // For now, use existing Db methods if available
-        // This would need to be implemented based on your Db interface
         log::debug!("Processing host: {} ({})", ip, hostname.unwrap_or("no hostname"));
-        self.metrics.increment_hosts().await;
+        
+        // Use the existing Db.upsert_host method
+        if let Err(e) = self.db.upsert_host(ip, Utc::now()) {
+            log::error!("Failed to upsert host {}: {}", ip, e);
+            self.metrics.increment_errors().await;
+        } else {
+            self.metrics.increment_hosts().await;
+        }
         Ok(())
     }
 
     /// Helper to extract service information from observation
     async fn process_service(&self, ip: &str, port: u16, protocol: &str, reason: &str) -> Result<()> {
-        // For now, just log - would use actual Db methods
         log::debug!("Processing service: {}:{}/{} ({})", ip, port, protocol, reason);
-        self.metrics.increment_services().await;
+        
+        // Use the existing Db.upsert_service method
+        let reason_opt = if reason.is_empty() { None } else { Some(reason) };
+        if let Err(e) = self.db.upsert_service(ip, port, protocol, reason_opt, Utc::now()) {
+            log::error!("Failed to upsert service {}:{}/{}: {}", ip, port, protocol, e);
+            self.metrics.increment_errors().await;
+        } else {
+            self.metrics.increment_services().await;
+        }
         Ok(())
     }
 }

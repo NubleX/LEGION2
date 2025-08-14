@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use anyhow::Result;
 
-use crate::db::Db;
+use crate::database::Db;
 use crate::analysis::types::{Finding, AttackPath, AttackStep, Difficulty, Severity};
 
 /// Correlation engine for connecting findings and generating attack paths

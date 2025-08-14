@@ -23,7 +23,7 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 use tauri::{AppHandle, Emitter};
 
-use crate::db::Db;
+use crate::database::Db;
 use crate::analysis::types::{AnalysisResult, Finding, Vulnerability, AttackPath, NetworkTopology};
 use crate::analysis::vulnerability::VulnerabilityEngine;
 use crate::analysis::correlation::CorrelationEngine;
@@ -81,12 +81,15 @@ impl AnalysisEngine {
         // Build topology (simplified for now)
         let topology = self.build_host_topology(host_ip).await?;
 
+        // Generate summary before moving values
+        let summary = self.generate_summary(&findings, &vulnerabilities).await?;
+        
         let result = AnalysisResult {
             findings,
             vulnerabilities,
             attack_paths,
             topology,
-            summary: self.generate_summary(&findings, &vulnerabilities).await?,
+            summary,
             generated_at: chrono::Utc::now(),
         };
 
@@ -148,12 +151,15 @@ impl AnalysisEngine {
         // Build full network topology
         let topology = self.build_network_topology().await?;
 
+        // Generate summary before moving values
+        let summary = self.generate_summary(&findings, &vulnerabilities).await?;
+        
         let result = AnalysisResult {
             findings,
             vulnerabilities,
             attack_paths,
             topology,
-            summary: self.generate_summary(&[], &[]).await?, // TODO: Implement proper summary
+            summary,
             generated_at: chrono::Utc::now(),
         };
 
