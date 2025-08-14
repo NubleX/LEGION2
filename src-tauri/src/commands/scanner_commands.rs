@@ -57,6 +57,7 @@ pub struct ScanOptions {
     pub ports: Option<String>,
     pub rate: Option<u32>,
     pub extra_args: Option<Vec<String>>,
+    pub use_masscan: Option<bool>,
 }
 
 #[tauri::command]
@@ -68,9 +69,15 @@ pub async fn start_scan<R: Runtime>(
     // Convert the request into a ScanTarget
     let target = ScanTarget::from_string(&request.target).map_err(|e| e.to_string())?;
 
+    let use_masscan = request
+        .options
+        .as_ref()
+        .and_then(|o| o.use_masscan)
+        .unwrap_or(false);
+
     // Start the scan using the coordinator
     let scan_id = coordinator
-        .start_scan(target)
+        .start_scan(target, use_masscan)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -131,7 +138,7 @@ pub async fn get_scan_status(
 
 #[tauri::command]
 pub async fn get_scan_results(
-    db: State<'_, Arc<crate::database::DatabaseOperations>>,
+    _db: State<'_, Arc<crate::database::Db>>,
     scan_id: String,
 ) -> Result<String, String> {
     // For now, return empty results since scan results are stored in database

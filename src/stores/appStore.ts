@@ -23,9 +23,6 @@ import type { ScanConfig } from '../types/scanning';
 
 // Simple state reflecting backend events
 interface AppState {
-  // Current active scans (from engine_execute calls)
-  activeScans: Set<string>;
-
   // Live data from UiSink events
   recentHosts: Array<{ ip: string; hostname?: string; timestamp: string }>;
   recentServices: Array<{ ip: string; port: number; protocol: string; timestamp: string }>;
@@ -46,7 +43,6 @@ interface AppState {
 interface AppActions {
   // Simple actions
   startScan: (config: ScanConfig) => Promise<void>;
-  cancelScan: (scanId: string) => Promise<void>;
   clearOutput: () => void;
 }
 
@@ -97,7 +93,6 @@ const useAppStore = create<AppState & AppActions>((set) => {
 
   return {
     // Initial state
-    activeScans: new Set(),
     recentHosts: [],
     recentServices: [],
     liveOutput: [],
@@ -111,40 +106,68 @@ const useAppStore = create<AppState & AppActions>((set) => {
 
     // Actions
     startScan: async (config: ScanConfig) => {
-      // Convert frontend ScanConfig to backend ScanConfig format
-      const backendConfig = {
-        targets: config.targets,
-        scan_type: config.scanType || 'comprehensive',
-        ports: config.ports || undefined,
-        use_masscan: config.useMasscan || false,
-        masscan_rate: config.masscanRate || undefined,
-        nmap_options: config.nmapOptions || undefined,
-        modules: [], // Could be populated from frontend later
-      };
+      const targets = config.targets;
+      const ports = config.ports && config.ports.trim() !== '' ? config.ports : '1-65535';
 
-      set(state => ({
+      // Build plans based on selected tools
+      const plans: any[] = [];
+
+      if (config.useMasscan) {
+        plans.push({
+          scan_id: crypto.randomUUID(),
+          targets,
+          ports,
+          rate: config.rate || 1000,
+          extra: [],
+          modules: [],
+          source_type: 'masscan',
+          sink_types: ['ui', 'db'],
+        });
+      }
+
+      if (config.useNmap) {
+        const nmapArgs: string[] = [];
+
+        // Preset options based on scan type
+        switch (config.scanType) {
+          case 'quick':
+            nmapArgs.push('-T4', '-F');
+            break;
+          case 'comprehensive':
+            nmapArgs.push('-sS', '-sV', '-O', '-A', '-T4');
+            break;
+          case 'stealth':
+            nmapArgs.push('-sS', '-T2', '-f', '--randomize-hosts');
+            break;
+        }
+
+        if (config.detectOS) nmapArgs.push('-O');
+        if (config.detectVersions) nmapArgs.push('-sV');
+        if (config.skipPing) nmapArgs.push('-Pn');
+        if (config.extra) {
+          nmapArgs.push(...config.extra.split(' '));
+        }
+
+        plans.push({
+          scan_id: crypto.randomUUID(),
+          targets,
+          ports,
+          rate: null,
+          extra: nmapArgs,
+          modules: [],
+          source_type: 'nmap',
+          sink_types: ['ui', 'db'],
+        });
+      }
+
+      set(() => ({
         scanInProgress: true,
-        liveOutput: [`Starting ${backendConfig.use_masscan ? 'masscan' : 'nmap'} scan for ${backendConfig.targets}...`]
+        liveOutput: [`Starting scan for ${targets} using ${plans.map(p => p.source_type).join(' & ')}...`],
       }));
 
-      // Use the new command that leverages Plan builders
-      const scanId = await invoke('start_scan_with_config', { config: backendConfig }) as string;
-      
-      set(state => ({
-        activeScans: new Set([...state.activeScans, scanId])
-      }));
-    },
-
-    cancelScan: async (scanId: string) => {
-      await invoke('cancel_scan', { scan_id: scanId });
-      set(state => {
-        const newScans = new Set(state.activeScans);
-        newScans.delete(scanId);
-        return {
-          activeScans: newScans,
-          scanInProgress: newScans.size > 0
-        };
-      });
+      for (const plan of plans) {
+        await invoke('engine_execute', { plan });
+      }
     },
 
     clearOutput: () => {

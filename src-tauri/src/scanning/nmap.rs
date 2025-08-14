@@ -13,12 +13,12 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use crate::commands::scanner_commands::ScanTarget;
 use crate::core::traits::Source;
-use crate::shared::{ObsStream, Observation};
 use crate::plan::Plan;
 use crate::scanning::events::{EventType, ScanEvent};
+use crate::commands::scanner_commands::ScanTarget;
 use crate::scanning::models::{OSDetection, ScanProgress, ScanType};
+use crate::shared::{ObsStream, Observation};
 use crate::shared::{PortState, Protocol, ScanPort, ScanVulnerability};
 use crate::utils::os::{get_nmap_binary_path, is_nmap_available};
 use serde::{Deserialize, Serialize};
@@ -622,7 +622,7 @@ impl Source for NmapScanner {
 
     async fn start(&self, plan: &Plan) -> anyhow::Result<ObsStream> {
         // Create a stream of observations from nmap scan
-        use futures::stream::{self, StreamExt};
+        use futures::stream;
         use tokio::process::Command;
         use tokio::io::{BufReader, AsyncBufReadExt};
         

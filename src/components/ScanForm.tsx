@@ -18,8 +18,8 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
+import { AlertCircle, Network, Play, Settings, Shield, Target, Zap } from 'lucide-react';
 import React, { useState } from 'react';
-import { Play, Settings, Network, Zap, Shield, Target, AlertCircle } from 'lucide-react';
 import { ScanConfig } from '../types/scanning';
 
 interface ScanFormProps {
@@ -36,8 +36,8 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, isScanning }) => {
     excludeHosts: '',
     useNmap: true,
     useMasscan: false,
-    nmapOptions: '',
-    masscanRate: 1000,
+    extra: '',
+    rate: 1000,
     detectOS: false,
     detectVersions: true,
     skipPing: false,
@@ -46,34 +46,34 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, isScanning }) => {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
 
-const validateForm = (): boolean => {
-  const newErrors: string[] = [];
-  
-  if (!config.targets.trim()) {
-    newErrors.push('Target is required');
-  }
-  
-  if (!config.useNmap && !config.useMasscan) {
-    newErrors.push('Select at least one scanning tool');
-  }
-  
-  if (config.masscanRate !== undefined && (config.masscanRate < 100 || config.masscanRate > 100000)) {
-    newErrors.push('Masscan rate must be between 100-100000');
-  }
-  
-  setErrors(newErrors);
-  return newErrors.length === 0;
-};
+  const validateForm = (): boolean => {
+    const newErrors: string[] = [];
+
+    if (!config.targets.trim()) {
+      newErrors.push('Target is required');
+    }
+
+    if (!config.useNmap && !config.useMasscan) {
+      newErrors.push('Select at least one scanning tool');
+    }
+
+    if (config.rate !== undefined && (config.rate < 100 || config.rate > 100000)) {
+      newErrors.push('Masscan rate must be between 100-100000');
+    }
+
+    setErrors(newErrors);
+    return newErrors.length === 0;
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     console.log('ScanForm handleSubmit called');
     e.preventDefault();
-    
+
     console.log('Form config:', config);
     const isValid = validateForm();
     console.log('Form validation result:', isValid);
     console.log('Validation errors:', errors);
-    
+
     if (isValid) {
       console.log('Calling onStartScan with config:', config);
       onStartScan(config);
@@ -139,11 +139,10 @@ const validateForm = (): boolean => {
                 key={preset}
                 type="button"
                 onClick={() => handlePreset(preset as keyof typeof presetConfigs)}
-                className={`p-3 rounded border transition-colors ${
-                  config.scanType === preset
-                    ? 'bg-blue-600 border-blue-500 text-white'
-                    : 'bg-gray-800 border-gray-600 text-gray-300 hover:bg-gray-700'
-                }`}
+                className={`p-3 rounded border transition-colors ${config.scanType === preset
+                  ? 'bg-blue-600 border-blue-500 text-white'
+                  : 'bg-gray-800 border-gray-600 text-gray-300 hover:bg-gray-700'
+                  }`}
                 disabled={isScanning}
               >
                 <div className="flex items-center justify-center mb-1">
@@ -240,8 +239,8 @@ const validateForm = (): boolean => {
                   </label>
                   <input
                     type="number"
-                    value={config.masscanRate}
-                    onChange={(e) => setConfig(prev => ({ ...prev, masscanRate: parseInt(e.target.value) }))}
+                    value={config.rate}
+                    onChange={(e) => setConfig(prev => ({ ...prev, rate: parseInt(e.target.value) }))}
                     min="100"
                     max="100000"
                     className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white focus:ring-2 focus:ring-blue-500"
@@ -257,8 +256,8 @@ const validateForm = (): boolean => {
                   </label>
                   <input
                     type="text"
-                    value={config.nmapOptions}
-                    onChange={(e) => setConfig(prev => ({ ...prev, nmapOptions: e.target.value }))}
+                    value={config.extra}
+                    onChange={(e) => setConfig(prev => ({ ...prev, extra: e.target.value }))}
                     placeholder="-T4 --script vuln"
                     className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white focus:ring-2 focus:ring-blue-500"
                     disabled={isScanning}
@@ -306,7 +305,7 @@ const validateForm = (): boolean => {
         <button
           type="submit"
           disabled={isScanning || !config.targets.trim()}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded transition-colors"
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded transition-colors"
         >
           {isScanning ? (
             <>
