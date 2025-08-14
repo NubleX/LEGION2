@@ -21,11 +21,9 @@
 
 import { AlertTriangle, Download, Search, Shield } from 'lucide-react';
 import React, { useMemo, useState } from 'react';
-import { Host } from '../types/scanning';
 
 interface ResultViewerProps {
   selectedScanId?: string;
-  selectedHost?: Host;
   className?: string;
 }
 

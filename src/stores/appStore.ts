@@ -106,25 +106,68 @@ const useAppStore = create<AppState & AppActions>((set) => {
 
     // Actions
     startScan: async (config: ScanConfig) => {
-      // Build execution plan from frontend ScanConfig
-      const plan = {
-        scan_id: crypto.randomUUID(),
-        targets: config.targets,
-        scan_type: config.scanType || 'comprehensive',
-        ports: config.ports || undefined,
-        use_masscan: config.useMasscan || false,
-        masscan_rate: config.masscanRate || undefined,
-        nmap_options: config.nmapOptions || undefined,
-        modules: [], // Could be populated from frontend later
-      };
+      const targets = config.targets;
+      const ports = config.ports && config.ports.trim() !== '' ? config.ports : '1-65535';
+
+      // Build plans based on selected tools
+      const plans: any[] = [];
+
+      if (config.useMasscan) {
+        plans.push({
+          scan_id: crypto.randomUUID(),
+          targets,
+          ports,
+          rate: config.masscanRate || 1000,
+          extra: [],
+          modules: [],
+          source_type: 'masscan',
+          sink_types: ['ui', 'db'],
+        });
+      }
+
+      if (config.useNmap) {
+        const nmapArgs: string[] = [];
+
+        // Preset options based on scan type
+        switch (config.scanType) {
+          case 'quick':
+            nmapArgs.push('-T4', '-F');
+            break;
+          case 'comprehensive':
+            nmapArgs.push('-sS', '-sV', '-O', '-A', '-T4');
+            break;
+          case 'stealth':
+            nmapArgs.push('-sS', '-T2', '-f', '--randomize-hosts');
+            break;
+        }
+
+        if (config.detectOS) nmapArgs.push('-O');
+        if (config.detectVersions) nmapArgs.push('-sV');
+        if (config.skipPing) nmapArgs.push('-Pn');
+        if (config.nmapOptions) {
+          nmapArgs.push(...config.nmapOptions.split(' '));
+        }
+
+        plans.push({
+          scan_id: crypto.randomUUID(),
+          targets,
+          ports,
+          rate: null,
+          extra: nmapArgs,
+          modules: [],
+          source_type: 'nmap',
+          sink_types: ['ui', 'db'],
+        });
+      }
 
       set(() => ({
         scanInProgress: true,
-        liveOutput: [`Starting ${plan.use_masscan ? 'masscan' : 'nmap'} scan for ${plan.targets}...`]
+        liveOutput: [`Starting scan for ${targets} using ${plans.map(p => p.source_type).join(' & ')}...`],
       }));
 
-      // Execute plan via engine
-      await invoke('engine_execute', { plan });
+      for (const plan of plans) {
+        await invoke('engine_execute', { plan });
+      }
     },
 
     clearOutput: () => {
