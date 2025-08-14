@@ -444,6 +444,70 @@ impl ScanCoordinator {
         Ok(host)
     }
 
+    /// Store scan results in database using StoredPort and StoredVulnerability
+    async fn store_scan_results(
+        database: &DatabaseOperations,
+        scan_result: &NmapScanResult,
+    ) -> Result<()> {
+        // Store host information
+        let host_id = uuid::Uuid::new_v4().to_string();
+        let host_ip = scan_result.target_ip.clone();
+        
+        let _stored_host = database
+            .upsert_host(&host_ip, None)
+            .await?;
+
+        // Store ports using StoredPort
+        for port in &scan_result.open_ports {
+            let stored_port = crate::shared::StoredPort {
+                id: uuid::Uuid::new_v4().to_string(),
+                host_id: host_id.clone(),
+                number: port.port as i32,
+                protocol: crate::shared::Protocol::Tcp, // Default to TCP
+                state: crate::shared::PortState::Open,
+                service: port.service.clone(),
+                version: port.version.clone(),
+                banner: None,
+                confidence: None,
+                cpe: Vec::new(),
+                discovered_at: chrono::Utc::now(),
+                last_seen: chrono::Utc::now(),
+            };
+
+            if let Err(e) = database.add_port(&stored_port).await {
+                log::error!("Failed to store port {}: {}", port.port, e);
+            }
+        }
+
+        // Store vulnerabilities using StoredVulnerability (if any found)
+        if let Some(vulnerabilities) = &scan_result.vulnerabilities {
+            for vuln in vulnerabilities {
+                let stored_vuln = crate::shared::StoredVulnerability {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    host_id: host_id.clone(),
+                    port_id: None,
+                    name: vuln.name.clone(),
+                    severity: vuln.severity.clone(),
+                    description: vuln.description.clone(),
+                    cvss_score: vuln.cvss_score,
+                    cvss_vector: vuln.cvss_vector.clone(),
+                    cve_id: vuln.cve_id.clone(),
+                    reference_links: vuln.reference_links.clone(),
+                    exploitable: vuln.exploitable,
+                    discovered_at: chrono::Utc::now(),
+                    verified: false,
+                    false_positive: false,
+                };
+
+                if let Err(e) = database.add_vulnerability(&stored_vuln).await {
+                    log::error!("Failed to store vulnerability {}: {}", vuln.name, e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     async fn handle_scan_result(
         scan_id: Uuid,
         result: Result<NmapScanResult>,
@@ -453,6 +517,12 @@ impl ScanCoordinator {
         match result {
             Ok(scan_result) => {
                 log::info!("Scan {} completed successfully", scan_id);
+                
+                // Process and store scan results in database
+                if let Err(e) = Self::store_scan_results(&database, &scan_result).await {
+                    log::error!("Failed to store scan results for {}: {}", scan_id, e);
+                }
+                
                 // Send success event
                 let _ = results_tx
                     .send(ScanEvent {

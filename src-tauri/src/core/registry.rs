@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 
 use super::traits::{Sink, Source};
-use super::types::Plan;
+use crate::plan::Plan;
 use super::sinks::{UiSink, DbSink};
 use crate::database::Db;
 use crate::scanning::masscan::MasscanScanner;

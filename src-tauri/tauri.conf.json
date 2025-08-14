@@ -1,41 +1,41 @@
 {
-  "productName": "LEGION2",
-  "version": "0.2.2-alpha",
-  "identifier": "com.legion2.app",
-  "build": {
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420"
-  },
   "app": {
     "windows": [
       {
-        "label": "main",
-        "title": "LEGION2",
-        "width": 1200,
+        "fullscreen": false,
         "height": 800,
+        "label": "main",
         "resizable": true,
-        "fullscreen": false
+        "title": "LEGION2",
+        "width": 1200
       }
     ]
+  },
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
   },
   "bundle": {
     "active": true,
     "category": "DeveloperTool",
     "copyright": "Copyright (c) 2025 NubleX",
-    "targets": "all",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "targets": "all"
   },
+  "identifier": "com.legion2.app",
   "plugins": {
     "shell": {
       "open": true
     }
-  }
+  },
+  "productName": "LEGION2",
+  "version": "0.3.0"
 }

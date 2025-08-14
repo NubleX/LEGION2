@@ -33,7 +33,13 @@ impl Db {
                 id INTEGER PRIMARY KEY,
                 ip TEXT UNIQUE,
                 first_seen TEXT NOT NULL,
-                last_seen  TEXT NOT NULL
+                last_seen  TEXT NOT NULL,
+                hostname TEXT,
+                mac_address TEXT,
+                vendor TEXT,
+                os_name TEXT,
+                os_family TEXT,
+                os_accuracy REAL
             );
             CREATE TABLE IF NOT EXISTS services (
                 id INTEGER PRIMARY KEY,
@@ -76,11 +82,17 @@ impl Db {
 
     pub fn get_all_hosts(&self) -> Result<Vec<crate::shared::Host>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT ip, first_seen, last_seen FROM hosts")?;
+        let mut stmt = conn.prepare("SELECT ip, first_seen, last_seen, hostname, mac_address, vendor, os_name, os_family, os_accuracy FROM hosts")?;
         let host_iter = stmt.query_map([], |row| {
             let ip: String = row.get(0)?;
             let first_seen_str: String = row.get(1)?;
             let last_seen_str: String = row.get(2)?;
+            let hostname: Option<String> = row.get(3)?;
+            let mac_address: Option<String> = row.get(4)?;
+            let vendor: Option<String> = row.get(5)?;
+            let os_name: Option<String> = row.get(6)?;
+            let os_family: Option<String> = row.get(7)?;
+            let os_accuracy: Option<f64> = row.get(8)?;
             
             let first_seen = DateTime::parse_from_rfc3339(&first_seen_str)
                 .map_err(|e| rusqlite::Error::InvalidColumnType(0, format!("Invalid date: {}", e).into(), rusqlite::types::Type::Text))?
@@ -92,12 +104,12 @@ impl Db {
             Ok(crate::shared::Host {
                 id: uuid::Uuid::new_v4().to_string(),
                 ip,
-                hostname: None,
-                mac_address: None,
-                vendor: None,
-                os_name: None,
-                os_family: None,
-                os_accuracy: None,
+                hostname,
+                mac_address,
+                vendor,
+                os_name,
+                os_family,
+                os_accuracy: os_accuracy.map(|a| a as f32),
                 status: crate::shared::HostStatus::Up,
                 last_seen,
                 created_at: first_seen,
@@ -115,5 +127,33 @@ impl Db {
             hosts.push(host?);
         }
         Ok(hosts)
+    }
+
+    pub fn update_host_os(&self, ip: &str, os_name: Option<&str>, os_family: Option<&str>, os_accuracy: Option<f32>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            r#"UPDATE hosts SET 
+               os_name = ?2, 
+               os_family = ?3, 
+               os_accuracy = ?4, 
+               last_seen = ?5
+               WHERE ip = ?1"#,
+            params![ip, os_name, os_family, os_accuracy, chrono::Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_host_info(&self, ip: &str, hostname: Option<&str>, mac_address: Option<&str>, vendor: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            r#"UPDATE hosts SET 
+               hostname = ?2, 
+               mac_address = ?3, 
+               vendor = ?4, 
+               last_seen = ?5
+               WHERE ip = ?1"#,
+            params![ip, hostname, mac_address, vendor, chrono::Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
     }
 }

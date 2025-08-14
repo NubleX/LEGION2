@@ -20,7 +20,6 @@
 
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tauri::Manager;
 use anyhow::Result;
 use rusqlite;
 
@@ -33,11 +32,9 @@ mod core;
 mod modules;
 mod analysis;
 mod utils;
+mod plan;
 
-use crate::core::{engine::Engine, bootstrap::make_registry, types::Plan};
-use crate::scanning::coordinator::ScanCoordinator;
 use crate::database::Db;
-use crate::core::registry::Registry;
 use crate::shared::EventStreamer;
 
 fn app_data_dir() -> std::path::PathBuf {
@@ -67,8 +64,15 @@ async fn main() {
     let (event_tx, mut event_rx) = mpsc::channel::<crate::shared::ScanEvent>(1000);
     let event_streamer = Arc::new(EventStreamer::new());
     
-    // Initialize scanner coordinator  
-    // TODO: Update ScanCoordinator to use Arc<Db> instead of DatabaseOperations
+    // Initialize database operations for scanning
+    use crate::commands::operations::DatabaseOperations;
+    use crate::scanning::coordinator::ScanCoordinator;
+    let db_path = app_data_dir().join("LEGION2").join("network.db");
+    let db_conn = rusqlite::Connection::open(&db_path).expect("Failed to open database connection");
+    let database_ops = Arc::new(DatabaseOperations::new(db_conn));
+    
+    // Initialize scanner coordinator
+    let coordinator = Arc::new(ScanCoordinator::new(database_ops, event_tx.clone()));
 
     // Bridge events to streamer
     let streamer_clone = event_streamer.clone();
@@ -83,10 +87,13 @@ async fn main() {
     
     tauri::Builder::default()
         .manage(db.clone())
-        // .manage(coordinator) // TODO: Update ScanCoordinator to use Arc<Db>
+        .manage(coordinator)
         .manage(event_streamer)
         .invoke_handler(tauri::generate_handler![
             commands::engine_commands::engine_execute,
+            commands::engine_commands::start_scan_with_config,
+            commands::engine_commands::start_advanced_scan,
+            commands::engine_commands::start_os_detection_scan,
             commands::host_commands::get_all_hosts,
             commands::host_commands::get_host_details,
             commands::host_commands::delete_host,

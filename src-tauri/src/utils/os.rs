@@ -18,7 +18,6 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +29,7 @@ pub enum OperatingSystem {
 }
 
 impl OperatingSystem {
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             OperatingSystem::Windows => "windows",
@@ -77,9 +77,9 @@ pub fn get_nmap_binary_path() -> PathBuf {
 pub fn get_local_masscan_path() -> PathBuf {
     let mut path = get_bin_directory();
     if cfg!(target_os = "windows") {
-        path.push("masscan.exe");
+        path.push("engines/windows/masscan-1.3.2/masscan.exe");
     } else {
-        path.push("masscan");
+        path.push("engines/linux/masscan");
     }
     path
 }
@@ -88,9 +88,9 @@ pub fn get_local_masscan_path() -> PathBuf {
 pub fn get_local_nmap_path() -> PathBuf {
     let mut path = get_bin_directory();
     if cfg!(target_os = "windows") {
-        path.push("nmap.exe");
+        path.push("engines/windows/nmap-7.97/nmap.exe");
     } else {
-        path.push("nmap");
+        path.push("engines/linux/nmap");
     }
     path
 }
@@ -123,16 +123,6 @@ pub fn get_nmap_binary_name() -> &'static str {
     }
 }
 
-/// Legacy function for backward compatibility
-pub fn get_masscan_binary() -> &'static str {
-    get_masscan_binary_name()
-}
-
-/// Legacy function for backward compatibility
-pub fn get_nmap_binary() -> &'static str {
-    get_nmap_binary_name()
-}
-
 /// Check if a command/binary is available on the system or locally
 pub async fn is_command_available(command_path: &Path) -> bool {
     let version_arg = match get_os() {
@@ -147,63 +137,6 @@ pub async fn is_command_available(command_path: &Path) -> bool {
         .map(|output| output.status.success())
         .unwrap_or(false)
 }
-
-/// Check if a command/binary is available by name (legacy function)
-pub async fn is_command_available_by_name(command: &str) -> bool {
-    is_command_available(Path::new(command)).await
-}
-
-/// Get system information
-pub fn get_system_info() -> SystemInfo {
-    SystemInfo {
-        os: get_os(),
-        arch: get_arch(),
-        masscan_binary: get_masscan_binary().to_string(),
-        nmap_binary: get_nmap_binary().to_string(),
-    }
-}
-
-/// Get the current architecture
-pub fn get_arch() -> &'static str {
-    if cfg!(target_arch = "x86_64") {
-        "x86_64"
-    } else if cfg!(target_arch = "x86") {
-        "x86"
-    } else if cfg!(target_arch = "aarch64") {
-        "aarch64"
-    } else if cfg!(target_arch = "arm") {
-        "arm"
-    } else {
-        "unknown"
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SystemInfo {
-    pub os: OperatingSystem,
-    pub arch: &'static str,
-    pub masscan_binary: String,
-    pub nmap_binary: String,
-}
-
-/// Run masscan with OS-appropriate binary (checks local /bin first)
-pub async fn run_masscan(ip_range: &str, ports: &str, rate: Option<u32>) -> Result<String> {
-    let masscan_path = get_masscan_binary_path();
-    let rate_str = rate.unwrap_or(1000).to_string();
-
-    let output = tokio::process::Command::new(&masscan_path)
-        .args(&["-p", ports, ip_range, "--rate", &rate_str])
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to execute {:?}: {}", masscan_path, e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!("Masscan failed: {}", stderr));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
 /// Check if masscan is available (checks local /bin first, then system PATH)
 pub async fn is_masscan_available() -> bool {
     let masscan_path = get_masscan_binary_path();
@@ -216,41 +149,114 @@ pub async fn is_nmap_available() -> bool {
     is_command_available(&nmap_path).await
 }
 
-/// Get status of local and system binaries
-pub async fn get_binary_status() -> BinaryStatus {
-    let local_masscan = get_local_masscan_path();
-    let local_nmap = get_local_nmap_path();
-    
-    BinaryStatus {
-        local_masscan_exists: local_masscan.exists(),
-        local_masscan_path: local_masscan.to_string_lossy().to_string(),
-        local_masscan_available: if local_masscan.exists() {
-            is_command_available(&local_masscan).await
-        } else {
-            false
-        },
-        local_nmap_exists: local_nmap.exists(),
-        local_nmap_path: local_nmap.to_string_lossy().to_string(),
-        local_nmap_available: if local_nmap.exists() {
-            is_command_available(&local_nmap).await
-        } else {
-            false
-        },
-        system_masscan_available: is_command_available_by_name(get_masscan_binary_name()).await,
-        system_nmap_available: is_command_available_by_name(get_nmap_binary_name()).await,
-        bin_directory: get_bin_directory().to_string_lossy().to_string(),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_os_detection() {
+        let os = get_os();
+        println!("Detected OS: {:?}", os);
+        
+        // On Windows, should detect Windows
+        #[cfg(target_os = "windows")]
+        assert_eq!(os, OperatingSystem::Windows);
+        
+        // On Linux, should detect Linux
+        #[cfg(target_os = "linux")]
+        assert_eq!(os, OperatingSystem::Linux);
+        
+        // On macOS, should detect macOS
+        #[cfg(target_os = "macos")]
+        assert_eq!(os, OperatingSystem::MacOS);
+    }
+
+    #[tokio::test]
+    async fn test_binary_names() {
+        let masscan_bin = get_masscan_binary_name();
+        let nmap_bin = get_nmap_binary_name();
+        
+        println!("Masscan binary: {}", masscan_bin);
+        println!("Nmap binary: {}", nmap_bin);
+        
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(masscan_bin, "masscan.exe");
+            assert_eq!(nmap_bin, "nmap.exe");
+        }
+        
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            assert_eq!(masscan_bin, "masscan");
+            assert_eq!(nmap_bin, "nmap");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_command_availability() {
+        // Test with a command that should always be available
+        #[cfg(target_os = "windows")]
+        let available = is_command_available(std::path::Path::new("cmd")).await;
+        
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let available = is_command_available(std::path::Path::new("ls")).await;
+        
+        println!("Command availability test result: {}", available);
+        
+        // Test with a command that should not be available
+        let unavailable = is_command_available(std::path::Path::new("nonexistent_command_12345")).await;
+        assert!(!unavailable);
+    }
+
+    #[tokio::test]
+    async fn test_scanner_availability() {
+        let masscan_available = is_masscan_available().await;
+        let nmap_available = is_nmap_available().await;
+        
+        println!("Masscan available: {}", masscan_available);
+        println!("Nmap available: {}", nmap_available);
+        
+        // These tests will depend on what's installed on the system
+        // So we just print the results rather than asserting
+    }
+
+    #[tokio::test]
+    async fn test_local_binary_paths() {
+        let bin_dir = get_bin_directory();
+        let local_masscan = get_local_masscan_path();
+        let local_nmap = get_local_nmap_path();
+        
+        println!("Bin directory: {:?}", bin_dir);
+        println!("Local masscan path: {:?}", local_masscan);
+        println!("Local nmap path: {:?}", local_nmap);
+        
+        // Check if paths are constructed correctly
+        assert!(bin_dir.to_string_lossy().ends_with("bin"));
+        
+        #[cfg(target_os = "windows")]
+        {
+            assert!(local_masscan.to_string_lossy().ends_with("masscan.exe"));
+            assert!(local_nmap.to_string_lossy().ends_with("nmap.exe"));
+        }
+        
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            assert!(local_masscan.to_string_lossy().ends_with("masscan"));
+            assert!(local_nmap.to_string_lossy().ends_with("nmap"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_binary_path_resolution() {
+        let masscan_path = get_masscan_binary_path();
+        let nmap_path = get_nmap_binary_path();
+        
+        println!("Resolved masscan path: {:?}", masscan_path);
+        println!("Resolved nmap path: {:?}", nmap_path);
+        
+        // Should return either local path or binary name
+        assert!(!masscan_path.as_os_str().is_empty());
+        assert!(!nmap_path.as_os_str().is_empty());
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct BinaryStatus {
-    pub local_masscan_exists: bool,
-    pub local_masscan_path: String,
-    pub local_masscan_available: bool,
-    pub local_nmap_exists: bool,
-    pub local_nmap_path: String,
-    pub local_nmap_available: bool,
-    pub system_masscan_available: bool,
-    pub system_nmap_available: bool,
-    pub bin_directory: String,
-}
