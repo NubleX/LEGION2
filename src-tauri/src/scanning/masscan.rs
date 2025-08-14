@@ -11,10 +11,15 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+use crate::commands::scanner_commands::ScanTarget;
 use crate::core::traits::Source;
 use crate::plan::Plan;
-use crate::scanning::models::ScanProgress;
+use crate::scanning::events::{EventType, ScanEvent};
+use crate::scanning::models::{ScanProgress, ScanStatus};
 use crate::shared::{ObsStream, Observation, ObservationKind};
+use serde_json::json;
+use std::collections::HashMap;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MasscanOptions {
@@ -68,6 +73,128 @@ impl MasscanScanner {
             .await
             .map(|output| output.status.success())
             .unwrap_or(false)
+    }
+
+    pub async fn scan_target(
+        &self,
+        target: &ScanTarget,
+        progress_tx: mpsc::Sender<ScanProgress>,
+        event_tx: mpsc::Sender<ScanEvent>,
+    ) -> Result<Vec<u16>> {
+        if !self.check_masscan_available().await {
+            return Err(anyhow!("masscan binary not found. Please install masscan."));
+        }
+
+        let ports_arg = if let Some(ports) = &target.ports {
+            ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
+        } else {
+            "1-65535".to_string()
+        };
+
+        let mut cmd = Command::new(&self.bin);
+        cmd.arg("-p")
+            .arg(&ports_arg)
+            .arg(target.ip.to_string())
+            .args(["--open", "--wait", "0"])
+            .arg("--rate")
+            .arg(self.options.rate.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+
+        let mut child = cmd.spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("Failed to get stdout"))?;
+        let mut lines = BufReader::new(stdout).lines();
+
+        let mut open_ports = Vec::new();
+        let now = Utc::now();
+        let _ = progress_tx
+            .send(ScanProgress {
+                scan_id: target.id.clone(),
+                status: ScanStatus::Running,
+                percentage: 0.0,
+                stage: "Masscan".to_string(),
+                targets_completed: 0,
+                targets_total: 1,
+                hosts_found: 0,
+                services_found: 0,
+                eta_seconds: None,
+                started_at: now,
+                updated_at: now,
+                rate: None,
+                details: HashMap::new(),
+                progress: 0.0,
+                current_target: Some(target.ip.to_string()),
+                hosts_discovered: 0,
+                ports_found: 0,
+                vulnerabilities: 0,
+                elapsed_time: 0,
+                estimated_remaining: None,
+                message: Some("Starting masscan".to_string()),
+                start_time: now,
+                current_phase: "Masscan".to_string(),
+            })
+            .await;
+
+        let scan_uuid = uuid::Uuid::parse_str(&target.id)?;
+        while let Some(line) = lines.next_line().await? {
+            if let Some(obs) = parse_masscan_line(&line, scan_uuid) {
+                if let Some(port_val) = obs.fields.get("port").and_then(|v| v.as_u64()) {
+                    open_ports.push(port_val as u16);
+                    let _ = event_tx
+                        .send(ScanEvent {
+                            scan_id: target.id.clone(),
+                            event_type: EventType::ServiceDiscovered,
+                            timestamp: Utc::now(),
+                            data: json!({
+                                "ip": target.ip.to_string(),
+                                "port": port_val,
+                                "protocol": obs
+                                    .fields
+                                    .get("protocol")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("tcp"),
+                            }),
+                        })
+                        .await;
+                }
+            }
+        }
+
+        let _ = child.wait().await?;
+
+        let now = Utc::now();
+        let _ = progress_tx
+            .send(ScanProgress {
+                scan_id: target.id.clone(),
+                status: ScanStatus::Running,
+                percentage: 100.0,
+                stage: "Masscan".to_string(),
+                targets_completed: 1,
+                targets_total: 1,
+                hosts_found: 0,
+                services_found: open_ports.len(),
+                eta_seconds: None,
+                started_at: now,
+                updated_at: now,
+                rate: None,
+                details: HashMap::new(),
+                progress: 100.0,
+                current_target: Some(target.ip.to_string()),
+                hosts_discovered: 0,
+                ports_found: open_ports.len() as u32,
+                vulnerabilities: 0,
+                elapsed_time: 0,
+                estimated_remaining: None,
+                message: Some("Masscan completed".to_string()),
+                start_time: now,
+                current_phase: "Masscan".to_string(),
+            })
+            .await;
+
+        Ok(open_ports)
     }
 }
 
