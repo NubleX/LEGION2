@@ -20,7 +20,6 @@
 
 import React, { useState, useMemo } from 'react';
 import { Shield, AlertTriangle, Download, Search } from 'lucide-react';
-import useAppStore from '../stores/appStore';
 import { Host } from '../types/scanning';
 
 interface ResultViewerProps {
@@ -30,11 +29,9 @@ interface ResultViewerProps {
 }
 
 const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
-  const { recentHosts, metrics } = useAppStore();
-  
   // Mock scan data for now since we're using a simplified store
   const scanHistory: any[] = [];
-  const getScanById = (id: string) => null;
+  const getScanById = (_id: string) => null;
   
   const [selectedTab, setSelectedTab] = useState<'ports' | 'vulnerabilities' | 'details'>('ports');
   const [severityFilter, setSeverityFilter] = useState<string>('all');

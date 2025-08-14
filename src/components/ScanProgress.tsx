@@ -68,20 +68,8 @@ const ScanProgress: React.FC<ScanProgressProps> = ({
   // Your existing store data (always available)
   const {
     scanInProgress: storeIsScanning,
-    activeScans: storeActiveScans,
-    metrics: storeMetrics,
-    cancelScan: storeCancelScan
+    metrics: storeMetrics
   } = useAppStore();
-  
-  // Mock data for compatibility
-  const storeProgress = new Map();
-  const storeStatistics = {
-    total_scans: 0,
-    active_scans: storeActiveScans.size,
-    total_hosts_discovered: storeMetrics.hosts_discovered,
-    total_vulnerabilities: 0
-  };
-  const storeCancelAllScans = () => {};
 
   // Backend data (may not be available initially)
   const [backendProgress, setBackendProgress] = useState<Map<string, BackendScanProgress>>(new Map());
@@ -95,11 +83,17 @@ const ScanProgress: React.FC<ScanProgressProps> = ({
     // 1. Try Backend Data First
     if (backendProgress.size > 0 || backendStats) {
       console.log('🔄 Using BACKEND data (real-time from Tauri API)');
+      const stats = backendStats ?? {
+        total_scans: 0,
+        active_scans: 0,
+        total_hosts_discovered: storeMetrics.hosts_discovered,
+        total_vulnerabilities: 0
+      };
       return {
         activeScans: Array.from(backendProgress.values()).map(progress => ({
           id: progress.scan_id,
           target_id: progress.current_target || 'Unknown',
-          status: progress.progress === 100 ? 'completed' : 
+          status: progress.progress === 100 ? 'completed' :
                   progress.current_phase === 'Failed' ? 'failed' :
                   progress.current_phase === 'Cancelled' ? 'cancelled' : 'running',
           start_time: progress.start_time,
@@ -109,34 +103,23 @@ const ScanProgress: React.FC<ScanProgressProps> = ({
           error_message: progress.current_phase === 'Failed' ? progress.message : undefined
         } as ScanResult)),
         progress: backendProgress,
-        statistics: backendStats || storeStatistics,
+        statistics: stats,
         isScanning: isBackendScanning
       };
     }
-    
-    // 2. Fallback to Store Data
-    if (storeActiveScans.size > 0) {
-      console.log('📦 Using STORE data (fallback from useScanStore)');
-      return {
-        activeScans: Array.from(storeActiveScans.values()),
-        progress: storeProgress,
-        statistics: storeStatistics,
-        isScanning: storeIsScanning
-      };
-    }
-    
-    // 3. Safe Defaults
+
+    // 2. Safe Defaults
     console.log('🔧 Using DEFAULT data (safe fallbacks)');
     return {
       activeScans: [],
       progress: new Map(),
       statistics: {
         total_scans: 0,
-        active_scans: 0,
-        total_hosts_discovered: 0,
+        active_scans: storeIsScanning ? 1 : 0,
+        total_hosts_discovered: storeMetrics.hosts_discovered,
         total_vulnerabilities: 0
       } as ScanStatistics,
-      isScanning: false
+      isScanning: storeIsScanning
     };
   };
 
@@ -209,21 +192,15 @@ const ScanProgress: React.FC<ScanProgressProps> = ({
     });
   };
 
-  // Enhanced cancel functions that try backend first, then store
+  // Cancel functions rely solely on backend
   const cancelScan = async (scanId: string) => {
     try {
-      // Try backend first
       if (scanAPI?.cancelNetworkScan) {
         await scanAPI.cancelNetworkScan(scanId);
       }
-      // Also update store as fallback
-      storeCancelScan(scanId);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to cancel scan';
       setBackendError(errorMessage);
-      // Try store cancellation as backup
-      storeCancelScan(scanId);
-      
       if (onError) {
         onError(errorMessage);
       }
@@ -232,24 +209,17 @@ const ScanProgress: React.FC<ScanProgressProps> = ({
 
   const cancelAllScans = async () => {
     try {
-      // Try backend first
       if (scanAPI?.cancelNetworkScan) {
-        const promises = Array.from(backendProgress.keys()).map(scanId => 
+        const promises = Array.from(backendProgress.keys()).map(scanId =>
           scanAPI.cancelNetworkScan(scanId)
         );
         await Promise.all(promises);
       }
       setBackendProgress(new Map());
       setIsBackendScanning(false);
-      
-      // Also update store
-      storeCancelAllScans();
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to cancel scans';
       setBackendError(errorMessage);
-      // Try store cancellation as backup
-      storeCancelAllScans();
-      
       if (onError) {
         onError(errorMessage);
       }
@@ -301,7 +271,7 @@ const ScanProgress: React.FC<ScanProgressProps> = ({
           Scan Progress
           {/* Data Source Indicator */}
           <span className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300">
-            {backendProgress.size > 0 ? '🔄 Live' : '📦 Store'}
+            {backendProgress.size > 0 ? '🔄 Live' : '⏸ Idle'}
           </span>
         </h2>
         
