@@ -48,7 +48,7 @@ pub enum ScanStatus {
     Failed,
     Cancelled,
 }
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
@@ -626,7 +626,8 @@ impl Source for NmapScanner {
         use tokio::process::Command;
         use tokio::io::{BufReader, AsyncBufReadExt};
         
-        let mut cmd = Command::new(&self.nmap_path);
+        let nmap_path = get_nmap_binary_path();
+        let mut cmd = Command::new(&nmap_path);
         cmd.args(&plan.extra);
         cmd.arg(&plan.targets);
         
@@ -660,7 +661,7 @@ impl Source for NmapScanner {
                                 kind: crate::shared::ObservationKind::Metric,
                                 fields: {
                                     let mut fields = serde_json::Map::new();
-                                    fields.insert("nmap_output".to_string(), line.into());
+                                    fields.insert("nmap_output".to_string(), line.clone().into());
                                     fields
                                 },
                                 ts: chrono::Utc::now(),
@@ -698,7 +699,7 @@ fn parse_nmap_line(line: &str, scan_id: uuid::Uuid) -> Option<Observation> {
                             fields.insert("protocol".to_string(), "tcp".into());
                             fields.insert("state".to_string(), "open".into());
                             if parts.len() > 2 {
-                                fields.insert("service".to_string(), parts[2].into());
+                                fields.insert("service".to_string(), parts[2].to_string().into());
                             }
                             fields
                         },

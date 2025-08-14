@@ -23,7 +23,7 @@ export type ScanStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancel
 export type PortState = 'open' | 'closed' | 'filtered' | 'unfiltered' | 'open|filtered' | 'closed|filtered';
 export type Protocol = 'tcp' | 'udp' | 'sctp';
 export type Severity = 'low' | 'medium' | 'high' | 'critical';
-export type HostStatus = 'up' | 'down' | 'unknown';
+export type HostStatus = 'up' | 'down' | 'unknown' | 'scanning';
 
 export interface ScanConfig {
   targets: string;

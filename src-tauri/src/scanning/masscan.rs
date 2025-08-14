@@ -13,6 +13,7 @@ use tokio::process::Command;
 
 use crate::core::traits::Source;
 use crate::plan::Plan;
+use crate::scanning::models::ScanProgress;
 use crate::shared::{ObsStream, Observation, ObservationKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
