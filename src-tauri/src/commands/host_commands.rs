@@ -64,12 +64,16 @@ pub async fn batch_import_hosts(
 
 #[tauri::command]
 pub async fn update_host_os_detection(
-    _host_id: String,
-    _os_detection: crate::scanning::models::OSDetection,
-    _database: State<'_, Arc<Db>>,
+    host_ip: String,
+    os_detection: crate::scanning::models::OSDetection,
+    db: State<'_, Arc<Db>>,
 ) -> Result<(), String> {
-    // TODO: Implement OS detection update in Db
-    Ok(())
+    db.update_host_os(
+        &host_ip,
+        Some(&os_detection.name),
+        Some(&os_detection.family),
+        Some(os_detection.accuracy),
+    ).map_err(|e| format!("Failed to update OS detection for {}: {}", host_ip, e))
 }
 
 #[tauri::command]

@@ -18,15 +18,14 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { useLegionStore } from '../stores/legionStore';
-import useHostStore, { Host } from '../stores/hostStore';
+import { useState, useEffect, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import useAppStore from '../stores/appStore';
+import { Host } from '../types/scanning';
 import ScanForm from './ScanForm';
-// import ToolOutput from './ToolOutput';
 import NetworkMap from './NetworkMap';
 import HostTable from './HostTable';
 import ResultViewer from './ResultViewer';
-import ScanProgress from './ScanProgress';
 import { 
   Shield, 
   Activity, 
@@ -34,7 +33,6 @@ import {
   Database,
   Zap,
   Server,
-  AlertTriangle,
   CheckCircle,
   Wifi,
   Target
@@ -44,102 +42,57 @@ const EnhancedScannerPanel = () => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'hosts-results'>('dashboard');
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
   const [scanDuration, setScanDuration] = useState(0);
-  const [liveOutput, setLiveOutput] = useState<string[]>([]);
-  const [scanStats, setScanStats] = useState({
-    hostsDiscovered: 0,
-    portsFound: 0,
-    vulnerabilities: 0
-  });
+  const [hosts, setHosts] = useState<Host[]>([]);
   
   const {
-    currentScan,
-    isScanning,
+    scanInProgress,
+    liveOutput,
+    metrics,
+    recentHosts,
     startScan
-  } = useLegionStore();
-
-  const { hosts, loadHosts } = useHostStore();
-  
-  const scanTimeRef = useRef<number>(0);
-
-  // Enhanced scan duration tracking
+  } = useAppStore();
+  // Simple scan duration tracking
   useEffect(() => {
     let interval: NodeJS.Timeout;
-    if (isScanning && currentScan) {
-      scanTimeRef.current = Date.now();
+    let startTime = Date.now();
+    
+    if (scanInProgress) {
       interval = setInterval(() => {
-        setScanDuration(Math.floor((Date.now() - scanTimeRef.current) / 1000));
+        setScanDuration(Math.floor((Date.now() - startTime) / 1000));
       }, 1000);
     } else {
       setScanDuration(0);
     }
+    
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [isScanning, currentScan]);
+  }, [scanInProgress]);
 
-  // Calculate real-time statistics
+  // Load hosts from database when needed
   useEffect(() => {
-    setScanStats({
-      hostsDiscovered: hosts?.length || 0,
-      portsFound: hosts?.reduce((total, host) => total + (host.port_count || 0), 0) || 0,
-      vulnerabilities: hosts?.reduce((total, host) => total + (host.vulnerability_count || 0), 0) || 0
-    });
-  }, [hosts]);
-
-  // Set up direct scan output listener
-  useEffect(() => {
-    console.log('ScannerPanel useEffect: Setting up scan output listener');
-    let unlisten: (() => void) | null = null;
-
-    const setupListener = async () => {
+    const loadHosts = async () => {
       try {
-        const { scanAPI } = await import('../services/tauriApi');
-        console.log('ScannerPanel: About to call listenToScanEvents');
-        unlisten = await scanAPI.listenToScanEvents((event) => {
-          if (event.event_type === 'ScanOutput' && event.data?.content) {
-            console.log('ScannerPanel: Received scan output event:', event.data.content);
-            setLiveOutput(prev => [...prev, event.data.content]);
-          }
-        });
-        console.log('ScannerPanel: Event listener setup complete');
+        const hostData = await invoke('get_all_hosts') as Host[];
+        setHosts(hostData);
       } catch (error) {
-        console.error('Failed to setup scan output listener:', error);
+        console.error('Failed to load hosts:', error);
       }
     };
-
-    setupListener();
-
-    return () => {
-      console.log('ScannerPanel useEffect cleanup: Removing listener');
-      if (unlisten) {
-        unlisten();
-      }
-    };
-  }, []);
-
-  // Clear live output when starting new scan
-  useEffect(() => {
-    if (isScanning && currentScan) {
-      setLiveOutput([`Starting scan for ${currentScan.targetIp}...`]);
-    }
-  }, [isScanning, currentScan]);
+    
+    // Load initially and when new hosts are discovered
+    loadHosts();
+  }, [recentHosts]); // Reload when new hosts discovered
 
   // For Live Output, we'll use a simple terminal-like display instead of ToolOutput
 
   const handleStartScan = useCallback(async (config: any) => {
-    console.log('handleStartScan called with config:', config);
     try {
-      console.log('Calling startScan from store...');
       await startScan(config);
-      console.log('startScan completed successfully');
-      // Refresh hosts after scan starts
-      if (loadHosts) {
-        await loadHosts();
-      }
     } catch (error) {
       console.error('Failed to start scan:', error);
     }
-  }, [startScan, loadHosts]);
+  }, [startScan]);
 
   const handleHostSelect = useCallback((host: Host) => {
     setSelectedHost(host);
@@ -152,14 +105,14 @@ const EnhancedScannerPanel = () => {
   };
 
   const getScanStatusIcon = () => {
-    if (isScanning) return <Activity className="w-5 h-5 text-yellow-400 animate-pulse" />;
-    if (currentScan) return <CheckCircle className="w-5 h-5 text-green-400" />;
+    if (scanInProgress) return <Activity className="w-5 h-5 text-yellow-400 animate-pulse" />;
+    if (metrics.hosts_discovered > 0) return <CheckCircle className="w-5 h-5 text-green-400" />;
     return <Shield className="w-5 h-5 text-blue-400" />;
   };
 
   const getScanStatusText = () => {
-    if (isScanning) return 'Scanning...';
-    if (currentScan) return 'Scan Complete';
+    if (scanInProgress) return 'Scanning...';
+    if (metrics.hosts_discovered > 0) return 'Scan Complete';
     return 'Ready';
   };
 
@@ -187,7 +140,7 @@ const EnhancedScannerPanel = () => {
               </div>
               
               {/* Scan Duration */}
-              {isScanning && (
+              {scanInProgress && (
                 <div className="flex items-center space-x-2">
                   <Clock className="w-4 h-4 text-blue-400" />
                   <span className="text-sm text-white font-mono">
@@ -203,22 +156,22 @@ const EnhancedScannerPanel = () => {
             <div className="bg-gray-700 rounded-lg p-3 flex items-center space-x-3">
               <Server className="w-5 h-5 text-green-400" />
               <div>
-                <div className="text-lg font-bold text-white">{scanStats.hostsDiscovered}</div>
+                <div className="text-lg font-bold text-white">{metrics.hosts_discovered}</div>
                 <div className="text-xs text-gray-400">Hosts Discovered</div>
               </div>
             </div>
             <div className="bg-gray-700 rounded-lg p-3 flex items-center space-x-3">
               <Wifi className="w-5 h-5 text-blue-400" />
               <div>
-                <div className="text-lg font-bold text-white">{scanStats.portsFound}</div>
-                <div className="text-xs text-gray-400">Open Ports</div>
+                <div className="text-lg font-bold text-white">{metrics.services_discovered}</div>
+                <div className="text-xs text-gray-400">Services Found</div>
               </div>
             </div>
             <div className="bg-gray-700 rounded-lg p-3 flex items-center space-x-3">
-              <AlertTriangle className="w-5 h-5 text-red-400" />
+              <Activity className="w-5 h-5 text-blue-400" />
               <div>
-                <div className="text-lg font-bold text-white">{scanStats.vulnerabilities}</div>
-                <div className="text-xs text-gray-400">Vulnerabilities</div>
+                <div className="text-lg font-bold text-white">{metrics.processing_rate.toFixed(1)}/s</div>
+                <div className="text-xs text-gray-400">Processing Rate</div>
               </div>
             </div>
           </div>
@@ -255,10 +208,20 @@ const EnhancedScannerPanel = () => {
           </div>
         </div>
 
-        {/* Enhanced Progress Bar (when scanning) */}
-        {currentScan && isScanning && (
+        {/* Simple Progress Indicator (when scanning) */}
+        {scanInProgress && (
           <div className="px-4 pb-4">
-            <ScanProgress showDetails={true} />
+            <div className="bg-gray-700 rounded-full h-2">
+              <div 
+                className="bg-blue-500 h-2 rounded-full transition-all duration-500"
+                style={{ width: '100%' }}
+              >
+                <div className="h-full bg-gradient-to-r from-blue-500 to-blue-400 rounded-full animate-pulse" />
+              </div>
+            </div>
+            <div className="text-xs text-gray-400 mt-1">
+              Processing rate: {metrics.processing_rate.toFixed(1)} obs/sec
+            </div>
           </div>
         )}
       </div>
@@ -279,7 +242,7 @@ const EnhancedScannerPanel = () => {
               <div className="flex-1 p-4 overflow-y-auto">
                 <ScanForm 
                   onStartScan={handleStartScan}
-                  isScanning={isScanning}
+                  isScanning={scanInProgress}
                   className="h-full"
                 />
               </div>
@@ -293,7 +256,7 @@ const EnhancedScannerPanel = () => {
                   Network Topology
                 </h2>
                 <p className="text-sm text-gray-400 mt-1">
-                  {scanStats.hostsDiscovered} hosts discovered
+                  {metrics.hosts_discovered} hosts discovered
                 </p>
               </div>
               <div className="flex-1 p-4 overflow-hidden">
@@ -331,7 +294,7 @@ const EnhancedScannerPanel = () => {
                           {line}
                         </div>
                       ))}
-                      {isScanning && (
+                      {scanInProgress && (
                         <div className="text-yellow-400 animate-pulse">
                           <span className="inline-block w-2 h-4 bg-yellow-400 ml-1"></span>
                         </div>

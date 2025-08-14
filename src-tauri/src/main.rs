@@ -18,27 +18,23 @@
     windows_subsystem = "windows"
 )]
 
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tauri::Manager;
+use crate::database::{DatabaseOperations, Db};
+use crate::scanning::coordinator::ScanCoordinator;
+use crate::shared::EventStreamer;
 use anyhow::Result;
 use rusqlite;
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
-mod database;
-use database as db;
-mod scanning;
-mod commands;
-mod shared;
-mod core;
-mod modules;
 mod analysis;
+mod commands;
+mod core;
+mod database;
+mod modules;
+mod plan;
+mod scanning;
+mod shared;
 mod utils;
-
-use crate::core::{engine::Engine, bootstrap::make_registry, types::Plan};
-use crate::scanning::coordinator::ScanCoordinator;
-use crate::database::Db;
-use crate::core::registry::Registry;
-use crate::shared::EventStreamer;
 
 fn app_data_dir() -> std::path::PathBuf {
     std::env::current_dir().unwrap().join("data")
@@ -59,16 +55,28 @@ async fn main() {
     // Initialize logging
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     println!("LEGION2 starting up...");
-    
+
     // Initialize database
     let db = Arc::new(open_db().expect("Failed to open database"));
-    
+
     // Initialize event handling
     let (event_tx, mut event_rx) = mpsc::channel::<crate::shared::ScanEvent>(1000);
     let event_streamer = Arc::new(EventStreamer::new());
-    
-    // Initialize scanner coordinator  
-    // TODO: Update ScanCoordinator to use Arc<Db> instead of DatabaseOperations
+
+    // Initialize database operations for scanning
+    use crate::database::DatabaseOperations;
+    // ...
+    let db_path = app_data_dir().join("LEGION2").join("network.db");
+    let database_ops = Arc::new(
+        DatabaseOperations::open(db_path.to_str().unwrap())
+            .await
+            .expect("Failed to open database operations"),
+    );
+    // Initialize scanner coordinator
+    let coordinator = Arc::new(ScanCoordinator::borrow(
+        database_ops.clone(),
+        event_tx.clone(),
+    ));
 
     // Bridge events to streamer
     let streamer_clone = event_streamer.clone();
@@ -80,13 +88,17 @@ async fn main() {
         }
         log::error!("Event bridge task ended - this should not happen");
     });
-    
+
     tauri::Builder::default()
         .manage(db.clone())
-        // .manage(coordinator) // TODO: Update ScanCoordinator to use Arc<Db>
+        .manage(coordinator)
         .manage(event_streamer)
+        .manage(database_ops.clone())
         .invoke_handler(tauri::generate_handler![
             commands::engine_commands::engine_execute,
+            commands::engine_commands::start_scan_with_config,
+            commands::engine_commands::start_advanced_scan,
+            commands::engine_commands::start_os_detection_scan,
             commands::host_commands::get_all_hosts,
             commands::host_commands::get_host_details,
             commands::host_commands::delete_host,
@@ -101,6 +113,11 @@ async fn main() {
             commands::scanner_commands::get_scan_statistics,
             commands::scanner_commands::get_scan_progress,
             commands::scanner_commands::get_scanner_status,
+            commands::operations::db_batch_upsert_hosts,
+            commands::operations::db_search_hosts,
+            commands::operations::db_update_host_tags,
+            commands::operations::db_update_host_notes,
+            commands::operations::db_get_host_by_ip,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

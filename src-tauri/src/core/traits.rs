@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use anyhow::Result;
-use super::types::{ObsStream, Plan};
+use crate::shared::ObsStream;
+use crate::plan::Plan;
 
 #[async_trait]
 pub trait Source: Send + Sync {

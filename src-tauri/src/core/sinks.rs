@@ -10,7 +10,7 @@ use tokio::time::{Duration, interval};
 use tokio::sync::Mutex;
 
 use crate::core::traits::Sink;
-use crate::core::types::{ObservationKind, ObsStream};
+use crate::shared::{ObservationKind, ObsStream};
 use crate::database::Db;
 
 // Event structures for frontend communication

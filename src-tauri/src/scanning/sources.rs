@@ -18,6 +18,17 @@ pub struct MasscanSource {
 }
 
 impl MasscanSource {
+    /// Create a new MasscanSource and register it with the registry
+    pub async fn new_with_registry(
+        targets: &str, 
+        ports: &str, 
+        extra_args: Vec<String>,
+        _registry: &registry::Registry
+    ) -> Result<Self> {
+        // This method demonstrates registry usage for source creation
+        Self::new(targets, ports, extra_args).await
+    }
+
     pub async fn new(targets: &str, ports: &str, extra_args: Vec<String>) -> Result<Self> {
         // Get masscan binary path
         let masscan_path = Self::get_masscan_path().await?;

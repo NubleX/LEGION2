@@ -18,57 +18,65 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::fmt;
 use anyhow;
+use uuid::Uuid;
 
-/// Plan defines what the engine should execute
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Plan defines what the engine should execute - moved from core/types.rs
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Plan {
-    /// The source type (e.g., "masscan", "nmap", "custom")
+    pub scan_id: Uuid,
+    pub targets: String,
+    pub ports: String,
+    pub rate: Option<u64>,
+    pub extra: Vec<String>,
+    pub modules: Vec<String>,
     pub source_type: String,
-    /// Source configuration parameters
-    pub source_config: HashMap<String, serde_json::Value>,
-    /// List of sink types to use (e.g., ["ui", "db", "file"])
     pub sink_types: Vec<String>,
-    /// Optional sink configurations
-    pub sink_configs: HashMap<String, HashMap<String, serde_json::Value>>,
 }
 
 impl Plan {
     /// Create a masscan plan
-    pub fn masscan(targets: String, ports: String, extra_args: Vec<String>) -> Self {
-        let mut source_config = HashMap::new();
-        source_config.insert("targets".to_string(), serde_json::Value::String(targets));
-        source_config.insert("ports".to_string(), serde_json::Value::String(ports));
-        source_config.insert("extra_args".to_string(), serde_json::Value::Array(
-            extra_args.into_iter().map(serde_json::Value::String).collect()
-        ));
-
+    pub fn masscan(scan_id: Uuid, targets: String, ports: String, rate: Option<u64>) -> Self {
         Self {
+            scan_id,
+            targets,
+            ports,
+            rate,
+            extra: vec![],
+            modules: vec![],
             source_type: "masscan".to_string(),
-            source_config,
             sink_types: vec!["ui".to_string(), "db".to_string()],
-            sink_configs: HashMap::new(),
         }
     }
 
     /// Create an nmap plan  
-    pub fn nmap(target: String, args: Vec<String>) -> Self {
-        let mut source_config = HashMap::new();
-        source_config.insert("target".to_string(), serde_json::Value::String(target));
-        source_config.insert("args".to_string(), serde_json::Value::Array(
-            args.into_iter().map(serde_json::Value::String).collect()
-        ));
-
+    pub fn nmap(scan_id: Uuid, targets: String, ports: String, extra_args: Vec<String>) -> Self {
         Self {
+            scan_id,
+            targets,
+            ports,
+            rate: None,
+            extra: extra_args,
+            modules: vec![],
             source_type: "nmap".to_string(),
-            source_config,
             sink_types: vec!["ui".to_string(), "db".to_string()],
-            sink_configs: HashMap::new(),
         }
     }
 
-    /// Add a sink configuration
-    pub fn with_sink_config(mut self, sink_type: String, config: HashMap<String, serde_json::Value>) -> Self {
-        self.sink_configs.insert(sink_type, config);
+    /// Add extra arguments
+    pub fn with_extra_args(mut self, args: Vec<String>) -> Self {
+        self.extra.extend(args);
+        self
+    }
+
+    /// Add modules to the processing pipeline
+    pub fn with_modules(mut self, modules: Vec<String>) -> Self {
+        self.modules.extend(modules);
+        self
+    }
+
+    /// Set scan rate (for masscan)
+    pub fn with_rate(mut self, rate: u64) -> Self {
+        self.rate = Some(rate);
         self
     }
 
@@ -78,6 +86,44 @@ impl Plan {
             self.sink_types.push(sink_type);
         }
         self
+    }
+
+    /// Enable OS detection (adds -O flag for nmap)
+    pub fn with_os_detection(mut self) -> Self {
+        if self.source_type == "nmap" {
+            if !self.extra.contains(&"-O".to_string()) {
+                self.extra.push("-O".to_string());
+            }
+        }
+        self
+    }
+
+    /// Enable comprehensive scan with OS detection, service detection, and aggressive options
+    pub fn comprehensive(scan_id: Uuid, targets: String, ports: String) -> Self {
+        Self {
+            scan_id,
+            targets,
+            ports,
+            rate: None,
+            extra: vec!["-sS".to_string(), "-sV".to_string(), "-O".to_string(), "-A".to_string(), "-T4".to_string()],
+            modules: vec![],
+            source_type: "nmap".to_string(),
+            sink_types: vec!["ui".to_string(), "db".to_string()],
+        }
+    }
+
+    /// Create OS detection specific scan
+    pub fn os_detection(scan_id: Uuid, targets: String) -> Self {
+        Self {
+            scan_id,
+            targets,
+            ports: "1-1000".to_string(), // Common ports for OS detection
+            rate: None,
+            extra: vec!["-O".to_string(), "-sS".to_string(), "-T4".to_string()],
+            modules: vec![],
+            source_type: "nmap".to_string(),
+            sink_types: vec!["ui".to_string(), "db".to_string()],
+        }
     }
 }
 

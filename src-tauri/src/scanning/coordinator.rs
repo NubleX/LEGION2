@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::commands::operations::DatabaseOperations;
+use crate::database::DatabaseOperations;
 use crate::commands::scanner_commands::ScanTarget;
 use crate::scanning::{
     events::{EventType, ScanEvent},
@@ -32,7 +32,7 @@ use crate::scanning::{
     models::{ScanProgress, ScanResult, ScanStatistics, ScanType},
     nmap::{NmapScanner, ScanResult as NmapScanResult},
 };
-use crate::shared::{Host, HostStatus, StoredPort, StoredVulnerability};
+use crate::shared::{Host, HostStatus};
 
 #[derive(Debug, Clone)]
 pub struct ScanHandle {
@@ -56,7 +56,7 @@ pub struct ScanCoordinator {
 }
 
 impl ScanCoordinator {
-    pub fn new(database: Arc<DatabaseOperations>, results_tx: mpsc::Sender<ScanEvent>) -> Self {
+    pub fn borrow(database: Arc<DatabaseOperations>, results_tx: mpsc::Sender<ScanEvent>) -> Self {
         Self {
             database,
             active_scans: Arc::new(RwLock::new(HashMap::new())),
@@ -331,9 +331,9 @@ impl ScanCoordinator {
                 self.database
                     .update_host_os(
                         &host.id,
-                        os,
-                        os,
-                        first_host.os_confidence.unwrap_or(0.0) * 100.0,
+                        Some(os),
+                        Some(os),
+                        Some(first_host.os_confidence.unwrap_or(0.0) * 100.0),
                     )
                     .await?;
             }
@@ -354,22 +354,29 @@ impl ScanCoordinator {
                 .parse::<crate::shared::PortState>()
                 .unwrap_or(crate::shared::PortState::Unknown);
 
-            let stored_port = crate::shared::StoredPort {
-                id: uuid::Uuid::new_v4().to_string(),
-                host_id: host.id.clone(),
-                number: service.port as i32,
-                protocol: shared_protocol,
-                state: port_state,
-                service: service.service.clone(),
-                version: service.version.clone(),
-                banner: service.banner.clone(),
-                confidence: None, // DiscoveredService doesn't have confidence field
-                cpe: Vec::new(),  // DiscoveredService doesn't have cpe field
-                discovered_at: chrono::Utc::now(),
-                last_seen: chrono::Utc::now(),
-            };
-
-            if let Err(e) = self.database.add_port(&stored_port).await {
+            if let Err(e) = self
+                .database
+                .add_port(
+                    &host.id,
+                    service.port,
+                    match shared_protocol {
+                        crate::shared::Protocol::Tcp => "tcp",
+                        crate::shared::Protocol::Udp => "udp",
+                    },
+                    Some(match port_state {
+                        crate::shared::PortState::Open => "open",
+                        crate::shared::PortState::Closed => "closed",
+                        crate::shared::PortState::Filtered => "filtered",
+                        _ => "unknown",
+                    }),
+                    service.service.as_deref(),
+                    None, // product not available in DiscoveredService
+                    service.version.as_deref(),
+                    None, // reason not available in DiscoveredService
+                    service.banner.as_deref(),
+                )
+                .await
+            {
                 log::error!("Failed to store port {}: {}", service.port, e);
             }
         }
@@ -383,65 +390,94 @@ impl ScanCoordinator {
                 .and_then(|v| v.as_str())
                 .ok_or("No name")
             {
-                let stored_vuln = crate::shared::StoredVulnerability {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    host_id: host.id.clone(),
-                    port_id: None, // Could associate with specific port if available
-                    name: vuln_name.to_string(),
-                    severity: vuln_data
-                        .get("severity")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("info")
-                        .parse::<crate::shared::Severity>()
-                        .unwrap_or(crate::shared::Severity::Info),
-                    description: vuln_data
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    cvss_score: vuln_data
-                        .get("cvss_score")
-                        .and_then(|v| v.as_f64())
-                        .map(|f| f as f32),
-                    cvss_vector: vuln_data
-                        .get("cvss_vector")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    cve_id: vuln_data
-                        .get("cve_id")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    reference_links: vuln_data
-                        .get("reference_links")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    exploitable: vuln_data
-                        .get("exploitable")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                    discovered_at: chrono::Utc::now(),
-                    verified: vuln_data
-                        .get("verified")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                    false_positive: vuln_data
-                        .get("false_positive")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                };
+                let severity_str = vuln_data
+                    .get("severity")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("info");
 
-                if let Err(e) = self.database.add_vulnerability(&stored_vuln).await {
+                let description = vuln_data
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let cve = vuln_data.get("cve_id").and_then(|v| v.as_str());
+
+                let cvss_score = vuln_data
+                    .get("cvss_score")
+                    .and_then(|v| v.as_f64())
+                    .map(|f| f as f32);
+
+                if let Err(e) = self
+                    .database
+                    .add_vulnerability(
+                        &host.id,
+                        None, // port_id - could associate with specific port if available
+                        vuln_name,
+                        severity_str,
+                        Some(description),
+                        cve,
+                        cvss_score,
+                    )
+                    .await
+                {
                     log::error!("Failed to store vulnerability {}: {}", vuln_name, e);
                 }
             }
         }
 
         Ok(host)
+    }
+
+    /// Store scan results in database using StoredPort and StoredVulnerability
+    async fn store_scan_results(
+        database: &DatabaseOperations,
+        scan_result: &NmapScanResult,
+    ) -> Result<()> {
+        // Store host information
+        let host_id = uuid::Uuid::new_v4().to_string();
+        let host_ip = scan_result.target_id.clone();
+
+        let _stored_host = database.upsert_host(&host_ip, None).await?;
+
+        // Store ports using simplified API
+        for port in &scan_result.open_ports {
+            if let Err(e) = database
+                .add_port(
+                    &host_id,
+                    port.number,
+                    "tcp", // Default to TCP for now
+                    Some("open"),
+                    port.service.as_deref(),
+                    None, // product not available in ScanPort
+                    port.version.as_deref(),
+                    None, // reason not available in ScanPort
+                    port.banner.as_deref(),
+                )
+                .await
+            {
+                log::error!("Failed to store port {}: {}", port.number, e);
+            }
+        }
+
+        // Store vulnerabilities using simplified API (if any found)
+        for vuln in &scan_result.vulnerabilities {
+            if let Err(e) = database
+                .add_vulnerability(
+                    &host_id,
+                    None, // port_id not available in this context
+                    &vuln.name,
+                    &vuln.severity.to_string(),
+                    Some(&vuln.description),
+                    vuln.cve_id.as_deref(),
+                    vuln.cvss_score,
+                )
+                .await
+            {
+                log::error!("Failed to store vulnerability {}: {}", vuln.name, e);
+            }
+        }
+
+        Ok(())
     }
 
     async fn handle_scan_result(
@@ -453,6 +489,12 @@ impl ScanCoordinator {
         match result {
             Ok(scan_result) => {
                 log::info!("Scan {} completed successfully", scan_id);
+
+                // Process and store scan results in database
+                if let Err(e) = Self::store_scan_results(&database, &scan_result).await {
+                    log::error!("Failed to store scan results for {}: {}", scan_id, e);
+                }
+
                 // Send success event
                 let _ = results_tx
                     .send(ScanEvent {
@@ -495,7 +537,7 @@ impl ScanCoordinator {
         // Process and store results
         let host = self.process_scan_result(&mut scan_result).await?;
         self.database
-            .update_host_status(&host.id, HostStatus::Up, Some(100.0))
+            .update_host_status(&host.id, HostStatus::Up)
             .await?;
 
         // Emit completion event

@@ -15,7 +15,8 @@
 
 use crate::commands::scanner_commands::ScanTarget;
 use crate::core::traits::Source;
-use crate::core::types::{ObsStream, Observation, Plan};
+use crate::shared::{ObsStream, Observation};
+use crate::plan::Plan;
 use crate::scanning::events::{EventType, ScanEvent};
 use crate::scanning::models::{OSDetection, ScanProgress, ScanType};
 use crate::shared::{PortState, Protocol, ScanPort, ScanVulnerability};
@@ -47,7 +48,7 @@ pub enum ScanStatus {
     Failed,
     Cancelled,
 }
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
@@ -434,6 +435,7 @@ impl NmapScanner {
                                 }
                             }
 
+                            // Only update if this match has higher accuracy or no detection yet
                             if result.os_detection.is_none()
                                 || result.os_detection.as_ref().unwrap().accuracy < accuracy
                             {
@@ -442,10 +444,10 @@ impl NmapScanner {
                                     accuracy,
                                     family: extract_os_family(&os_name),
                                     vendor: Some(extract_os_vendor(&os_name)),
-                                    version: None,
-                                    generation: None,
-                                    fingerprint: None,
-                                    cpe: Vec::new(),
+                                    version: extract_os_version(&os_name),
+                                    generation: extract_os_generation(&os_name),
+                                    fingerprint: None, // Could be enhanced later
+                                    cpe: Vec::new(), // Could be enhanced later
                                 });
                             }
                         }
@@ -580,16 +582,153 @@ fn extract_os_vendor(os_name: &str) -> String {
     }
 }
 
+fn extract_os_version(os_name: &str) -> Option<String> {
+    // Try to extract version numbers from common OS patterns
+    if let Some(caps) = regex::Regex::new(r"(\d+(?:\.\d+)*)").unwrap().find(os_name) {
+        Some(caps.as_str().to_string())
+    } else {
+        None
+    }
+}
+
+fn extract_os_generation(os_name: &str) -> Option<String> {
+    let lower = os_name.to_lowercase();
+    
+    // Windows generations
+    if lower.contains("windows 11") {
+        Some("11".to_string())
+    } else if lower.contains("windows 10") {
+        Some("10".to_string())
+    } else if lower.contains("windows 8") {
+        Some("8".to_string())
+    } else if lower.contains("windows 7") {
+        Some("7".to_string())
+    } else if lower.contains("windows vista") {
+        Some("Vista".to_string())
+    } else if lower.contains("windows xp") {
+        Some("XP".to_string())
+    } else if lower.contains("lts") {
+        Some("LTS".to_string())
+    } else {
+        extract_os_version(os_name)
+    }
+}
+
 #[async_trait::async_trait]
 impl Source for NmapScanner {
     fn name(&self) -> &'static str {
         "nmap"
     }
 
-    async fn start(&self, _plan: &Plan) -> anyhow::Result<ObsStream> {
-        // For now, return an empty stream
-        // This would need to be implemented to integrate with the streaming architecture
-        use futures::stream;
-        Ok(Box::pin(stream::empty()))
+    async fn start(&self, plan: &Plan) -> anyhow::Result<ObsStream> {
+        // Create a stream of observations from nmap scan
+        use futures::stream::{self, StreamExt};
+        use tokio::process::Command;
+        use tokio::io::{BufReader, AsyncBufReadExt};
+        
+        let nmap_path = get_nmap_binary_path();
+        let mut cmd = Command::new(&nmap_path);
+        cmd.args(&plan.extra);
+        cmd.arg(&plan.targets);
+        
+        if !plan.ports.is_empty() {
+            cmd.arg("-p").arg(&plan.ports);
+        }
+        
+        // Enable verbose output for observation parsing
+        cmd.arg("-v");
+        
+        let mut child = cmd
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+
+        let stdout = child.stdout.take().ok_or_else(|| anyhow!("Failed to get stdout"))?;
+        let reader = BufReader::new(stdout);
+        let mut lines = reader.lines();
+        
+        let scan_id = plan.scan_id;
+        let stream = stream::unfold(lines, move |mut lines| async move {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    if let Some(obs) = parse_nmap_line(&line, scan_id) {
+                        Some((obs, lines))
+                    } else {
+                        // Continue reading until we find a parseable line
+                        Some((
+                            Observation {
+                                scan_id,
+                                kind: crate::shared::ObservationKind::Metric,
+                                fields: {
+                                    let mut fields = serde_json::Map::new();
+                                    fields.insert("nmap_output".to_string(), line.clone().into());
+                                    fields
+                                },
+                                ts: chrono::Utc::now(),
+                                key: "nmap-output".to_string(),
+                                raw: Some(line),
+                            },
+                            lines
+                        ))
+                    }
+                }
+                _ => None,
+            }
+        });
+
+        Ok(Box::pin(stream))
     }
+}
+
+/// Parse nmap output line into Observation
+fn parse_nmap_line(line: &str, scan_id: uuid::Uuid) -> Option<Observation> {
+    use crate::shared::ObservationKind;
+    
+    if line.contains("open") && line.contains("/tcp") {
+        // Parse port discovery: "22/tcp   open  ssh     OpenSSH 7.4 (protocol 2.0)"
+        let parts: Vec<&str> = line.trim().split_whitespace().collect();
+        if parts.len() >= 2 {
+            if let Some(port_proto) = parts.get(0) {
+                if let Some(port_str) = port_proto.split('/').next() {
+                    return Some(Observation {
+                        scan_id,
+                        kind: ObservationKind::Service,
+                        fields: {
+                            let mut fields = serde_json::Map::new();
+                            fields.insert("port".to_string(), port_str.into());
+                            fields.insert("protocol".to_string(), "tcp".into());
+                            fields.insert("state".to_string(), "open".into());
+                            if parts.len() > 2 {
+                                fields.insert("service".to_string(), parts[2].to_string().into());
+                            }
+                            fields
+                        },
+                        ts: chrono::Utc::now(),
+                        key: format!("port-{}", port_str),
+                        raw: Some(line.to_string()),
+                    });
+                }
+            }
+        }
+    } else if line.contains("Nmap scan report for") {
+        // Parse host discovery: "Nmap scan report for 192.168.1.1"
+        if let Some(ip) = line.split("for ").nth(1) {
+            let clean_ip = ip.trim();
+            return Some(Observation {
+                scan_id,
+                kind: ObservationKind::Host,
+                fields: {
+                    let mut fields = serde_json::Map::new();
+                    fields.insert("ip".to_string(), clean_ip.into());
+                    fields.insert("status".to_string(), "up".into());
+                    fields
+                },
+                ts: chrono::Utc::now(),
+                key: format!("host-{}", clean_ip),
+                raw: Some(line.to_string()),
+            });
+        }
+    }
+    
+    None
 }

@@ -2,7 +2,8 @@ use anyhow::Result;
 use futures::{stream, StreamExt};
 use tokio::sync::broadcast;
 use crate::core::registry::Registry;
-use super::types::{Observation, ObsStream, Plan};
+use crate::shared::{Observation, ObsStream};
+use crate::plan::Plan;
 // Traits are used indirectly through the registry
 
 pub struct Engine { 
