@@ -53,6 +53,7 @@ async fn main() {
     println!("LEGION2 starting up...");
 
     // Initialize database
+
     let db = Arc::new(open_db().expect("Failed to open database"));
 
     tauri::Builder::default()
@@ -69,4 +70,3 @@ async fn main() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-
