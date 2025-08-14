@@ -67,7 +67,7 @@ impl ScanCoordinator {
         }
     }
 
-    pub async fn start_scan(&self, target: ScanTarget) -> Result<Uuid> {
+    pub async fn start_scan(&self, target: ScanTarget, use_masscan: bool) -> Result<Uuid> {
         let scan_id = Uuid::new_v4();
         log::info!(
             "Starting scan for target: {:?} with ID: {}",
@@ -82,7 +82,8 @@ impl ScanCoordinator {
         self.initialize_scan(scan_id, &target, cancel_tx).await?;
 
         // Spawn scan task
-        self.spawn_scan_task(scan_id, target.clone(), cancel_rx, progress_tx)
+        self
+            .spawn_scan_task(scan_id, target.clone(), cancel_rx, progress_tx, use_masscan)
             .await;
 
         // Monitor progress
@@ -117,8 +118,10 @@ impl ScanCoordinator {
         target: ScanTarget,
         mut cancel_rx: mpsc::Receiver<()>,
         progress_tx: mpsc::Sender<ScanProgress>,
+        use_masscan: bool,
     ) {
-        let scanner = self.nmap_scanner.clone();
+        let nmap_scanner = self.nmap_scanner.clone();
+        let masscan_scanner = self.masscan_scanner.clone();
         let active_scans = self.active_scans.clone();
         let results_tx = self.results_tx.clone();
         let database = self.database.clone();
@@ -129,7 +132,28 @@ impl ScanCoordinator {
                     log::info!("Scan {} cancelled", scan_id);
                     Err(anyhow::anyhow!("Scan cancelled"))
                 }
-                scan_result = scanner.scan_target(&target, progress_tx, Some(results_tx.clone())) => {
+                scan_result = async {
+                    let mut target = target;
+                    if use_masscan {
+                        let progress_clone = progress_tx.clone();
+                        match masscan_scanner
+                            .scan_target(&target, progress_clone, results_tx.clone())
+                            .await
+                        {
+                            Ok(ports) => {
+                                if !ports.is_empty() {
+                                    target.ports = Some(ports);
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Masscan failed for {}: {}", target.ip, e);
+                            }
+                        }
+                    }
+                    nmap_scanner
+                        .scan_target(&target, progress_tx, Some(results_tx.clone()))
+                        .await
+                } => {
                     scan_result
                 }
             };
@@ -202,7 +226,7 @@ impl ScanCoordinator {
                 scan_type: scan_type.clone(),
             };
 
-            match self.start_scan(target).await {
+            match self.start_scan(target, false).await {
                 Ok(scan_id) => {
                     scan_ids.push(scan_id);
 
