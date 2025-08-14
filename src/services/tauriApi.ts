@@ -21,6 +21,24 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
+export async function startScan(targets: string, ports: string, rate = 5000) {
+  const plan = {
+    scan_id: crypto.randomUUID(),
+    targets, ports, rate,
+    extra: [],
+    modules: [] // add transforms later
+  };
+  await invoke("engine_execute", { plan });
+}
+
+export async function subscribeObs(onHost: (o:any)=>void, onService:(o:any)=>void, onLog:(o:any)=>void) {
+  const unsubs: Array<() => void> = [];
+  unsubs.push(await listen("obs:service", e => onService(e.payload)));
+  unsubs.push(await listen("obs:host", e => onHost(e.payload)));
+  unsubs.push(await listen("obs:metric", e => onLog(e.payload)));
+  return () => unsubs.forEach(u => u());
+}
+
 export interface ScanTarget {
   id: string;
   ip: string;

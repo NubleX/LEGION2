@@ -1,67 +1,83 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-
 // Forked from an earlier version of LEGION, which was originally created by Gotham Security.
 // It was archived in 2024.
-
 // LEGION (https://gotham-security.com)
 // Copyright (c) 2023 Gotham Security
-
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
+// This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
+// License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
+// version.
+// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
+// warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+//details.
+// You should have received a copy of the GNU General Public License along with this program.
+// If not, see <http://www.gnu.org/licenses/>.
 
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
 
+use crate::database::{DatabaseOperations, Db};
+use crate::scanning::coordinator::ScanCoordinator;
+use crate::shared::EventStreamer;
+use anyhow::Result;
+use rusqlite;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use sqlx::SqlitePool;
 
-mod database;
-mod scanning;
+mod analysis;
 mod commands;
+mod core;
+mod database;
+mod modules;
+mod plan;
+mod scanning;
 mod shared;
+mod utils;
 
-use database::DatabaseOperations;
-use scanning::{coordinator::ScanCoordinator, events::EventStreamer};
-use commands::{scan_commands::*, host_commands::*, event_commands::*};
+fn app_data_dir() -> std::path::PathBuf {
+    std::env::current_dir().unwrap().join("data")
+}
+
+fn open_db() -> Result<Db> {
+    let db_dir = app_data_dir().join("LEGION2");
+    std::fs::create_dir_all(&db_dir)?;
+    let db_path = db_dir.join("network.db");
+    let db = Db::open(db_path.to_str().unwrap())?;
+    Ok(db)
+}
+
+// engine_execute is now handled in commands::engine_commands
 
 #[tokio::main]
 async fn main() {
     // Initialize logging
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     println!("LEGION2 starting up...");
-    
+
     // Initialize database
-    let db_pool = SqlitePool::connect("sqlite:legion2.db").await
-        .expect("Failed to connect to database");
-    
-    // Run migrations
-    sqlx::migrate!("./migrations").run(&db_pool).await
-        .expect("Failed to run migrations");
-    
-    let db_ops = Arc::new(DatabaseOperations::new(db_pool));
-    
-    // Initialize event streamer
+    let db = Arc::new(open_db().expect("Failed to open database"));
+
+    // Initialize event handling
+    let (event_tx, mut event_rx) = mpsc::channel::<crate::shared::ScanEvent>(1000);
     let event_streamer = Arc::new(EventStreamer::new());
-    
+
+    // Initialize database operations for scanning
+    use crate::database::DatabaseOperations;
+    // ...
+    let db_path = app_data_dir().join("LEGION2").join("network.db");
+    let database_ops = Arc::new(
+        DatabaseOperations::open(db_path.to_str().unwrap())
+            .await
+            .expect("Failed to open database operations"),
+    );
     // Initialize scanner coordinator
-    let (event_tx, mut event_rx) = mpsc::channel(1000);
-    let coordinator = Arc::new(ScanCoordinator::new(
-        db_ops.clone(),
-        event_tx,
+    let coordinator = Arc::new(ScanCoordinator::borrow(
+        database_ops.clone(),
+        event_tx.clone(),
     ));
-    
+
     // Bridge events to streamer
     let streamer_clone = event_streamer.clone();
     tokio::spawn(async move {
@@ -72,25 +88,36 @@ async fn main() {
         }
         log::error!("Event bridge task ended - this should not happen");
     });
-    
+
     tauri::Builder::default()
-        .manage(db_ops)
+        .manage(db.clone())
         .manage(coordinator)
         .manage(event_streamer)
+        .manage(database_ops.clone())
         .invoke_handler(tauri::generate_handler![
-            get_all_hosts,
-            get_host_details,
-            delete_host,
-            batch_import_hosts,
-            setup_event_stream,
-            commands::scan_commands::start_network_scan,
-            commands::scan_commands::cancel_network_scan,
-            commands::scan_commands::get_scan_progress,
-            commands::scan_commands::is_scanning,
-            commands::scan_commands::get_scan_statistics,
-            commands::scan_commands::scan_network_range,
+            commands::engine_commands::engine_execute,
+            commands::engine_commands::start_scan_with_config,
+            commands::engine_commands::start_advanced_scan,
+            commands::engine_commands::start_os_detection_scan,
+            commands::host_commands::get_all_hosts,
+            commands::host_commands::get_host_details,
+            commands::host_commands::delete_host,
+            commands::host_commands::batch_import_hosts,
             commands::host_commands::update_host_os_detection,
             commands::host_commands::get_host_by_ip,
+            commands::scanner_commands::start_scan,
+            commands::scanner_commands::cancel_scan,
+            commands::scanner_commands::get_active_scans,
+            commands::scanner_commands::get_scan_status,
+            commands::scanner_commands::get_scan_results,
+            commands::scanner_commands::get_scan_statistics,
+            commands::scanner_commands::get_scan_progress,
+            commands::scanner_commands::get_scanner_status,
+            commands::operations::db_batch_upsert_hosts,
+            commands::operations::db_search_hosts,
+            commands::operations::db_update_host_tags,
+            commands::operations::db_update_host_notes,
+            commands::operations::db_get_host_by_ip,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

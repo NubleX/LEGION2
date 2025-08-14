@@ -20,7 +20,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Activity, Clock, Target, Shield, AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
-import { useLegionStore } from '../stores/legionStore';
+import useAppStore from '../stores/appStore';
 import { scanAPI } from '../services/tauriApi';
 import type { ScanResult, ScanStatistics } from '../types/scanning';
 
@@ -62,18 +62,26 @@ interface BackendScanStatistics {
 
 const ScanProgress: React.FC<ScanProgressProps> = ({ 
   showDetails = true, 
-  onScanComplete, 
+  onScanComplete: _onScanComplete, 
   onError 
 }) => {
   // Your existing store data (always available)
   const {
-    isScanning: storeIsScanning,
+    scanInProgress: storeIsScanning,
     activeScans: storeActiveScans,
-    currentProgress: storeProgress,
-    statistics: storeStatistics,
-    cancelScan: storeCancelScan,
-    cancelAllScans: storeCancelAllScans
-  } = useLegionStore();
+    metrics: storeMetrics,
+    cancelScan: storeCancelScan
+  } = useAppStore();
+  
+  // Mock data for compatibility
+  const storeProgress = new Map();
+  const storeStatistics = {
+    total_scans: 0,
+    active_scans: storeActiveScans.size,
+    total_hosts_discovered: storeMetrics.hosts_discovered,
+    total_vulnerabilities: 0
+  };
+  const storeCancelAllScans = () => {};
 
   // Backend data (may not be available initially)
   const [backendProgress, setBackendProgress] = useState<Map<string, BackendScanProgress>>(new Map());
@@ -355,7 +363,7 @@ const ScanProgress: React.FC<ScanProgressProps> = ({
         </div>
       ) : (
         <div className="space-y-4">
-          {activeScans.map((scan: ScanResult) => {
+          {(activeScans as ScanResult[]).map((scan: ScanResult) => {
             // Get progress data - try backend first, then store
             const backendProgressData = backendProgress.get(scan.id);
             const storeProgressData = progress.get(scan.id);

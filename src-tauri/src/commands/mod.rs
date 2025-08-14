@@ -1,3 +1,5 @@
-pub mod scan_commands;
+pub mod scanner_commands;
+pub mod engine_commands;
+pub mod operations;
 pub mod host_commands;
-pub mod event_commands;
+// pub mod simple_db_ops;

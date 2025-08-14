@@ -18,46 +18,44 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use crate::database::{DatabaseOperations, Host};
-use crate::shared::{StoredPort, StoredVulnerability};
+use crate::shared::Host;
+use crate::database::Db;
 use tauri::State;
 use std::sync::Arc;
-use anyhow::Result;
 
 #[tauri::command]
 pub async fn get_all_hosts(
-    db: State<'_, Arc<DatabaseOperations>>,
-    status_filter: Option<String>,
+    db: State<'_, Arc<Db>>,
+    _status_filter: Option<String>,
 ) -> Result<Vec<Host>, String> {
-    let status = status_filter.and_then(|s| s.parse().ok());
-    db.get_hosts(status).await.map_err(|e| e.to_string())
+    db.get_all_hosts().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn get_host_details(
-    host_id: String,
-    db: State<'_, Arc<DatabaseOperations>>,
-) -> Result<(Vec<StoredPort>, Vec<StoredVulnerability>), String> {
-    let ports = db.get_host_ports(&host_id).await.map_err(|e| e.to_string())?;
-    let vulnerabilities = db.get_host_vulnerabilities(&host_id).await.map_err(|e| e.to_string())?;
-    Ok((ports, vulnerabilities))
+    _host_id: String,
+    _db: State<'_, Arc<Db>>,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    // TODO: Implement when port/vulnerability schema is added to Db
+    Ok((Vec::new(), Vec::new()))
 }
 
 #[tauri::command]
 pub async fn delete_host(
-    host_id: String,
-    db: State<'_, Arc<DatabaseOperations>>,
+    _host_id: String,
+    _db: State<'_, Arc<Db>>,
 ) -> Result<(), String> {
-    db.delete_host(&host_id).await.map_err(|e| e.to_string())
+    // TODO: Implement host deletion in Db
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn batch_import_hosts(
     hosts: Vec<String>,
-    db: State<'_, Arc<DatabaseOperations>>,
+    db: State<'_, Arc<Db>>,
 ) -> Result<(), String> {
     for ip in hosts {
-        if let Err(e) = db.upsert_host(&ip, None).await {
+        if let Err(e) = db.upsert_host(&ip, chrono::Utc::now()) {
             return Err(format!("Failed to import host {}: {}", ip, e));
         }
     }
@@ -66,28 +64,20 @@ pub async fn batch_import_hosts(
 
 #[tauri::command]
 pub async fn update_host_os_detection(
-    host_id: String,
+    host_ip: String,
     os_detection: crate::scanning::models::OSDetection,
-    database: State<'_, Arc<DatabaseOperations>>,
+    db: State<'_, Arc<Db>>,
 ) -> Result<(), String> {
-    database.update_host_os(
-        &host_id, 
-        &os_detection.name, 
-        &os_detection.family, 
-        os_detection.accuracy
-    ).await
-    .map_err(|e| format!("Failed to update host OS detection: {}", e))?;
-    
-    Ok(())
+    db.update_host_os(
+        &host_ip,
+        Some(&os_detection.name),
+        Some(&os_detection.family),
+        Some(os_detection.accuracy),
+    ).map_err(|e| format!("Failed to update OS detection for {}: {}", host_ip, e))
 }
 
 #[tauri::command]
-pub async fn get_host_by_ip(
-    ip: String,
-    database: State<'_, Arc<DatabaseOperations>>,
-) -> Result<crate::database::Host, String> {
-    let host = database.get_host_by_ip(&ip).await
-        .map_err(|e| format!("Failed to get host: {}", e))?;
-    
-    Ok(host)
+pub async fn get_host_by_ip(_db: State<'_, Arc<Db>>, _ip: String) -> Result<Host, String> {
+    // TODO: Implement get_host_by_ip in Db
+    Err("Not implemented".to_string())
 }

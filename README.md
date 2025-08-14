@@ -4,14 +4,14 @@
 # LEGION2 - Advanced Network Security Scanner
 
 ![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)
-![Version](https://img.shields.io/badge/version-0.2.3--alpha-red.svg)
+![Version](https://img.shields.io/badge/version-0.3.0--alpha-red.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)
 ![Language](https://img.shields.io/badge/language-Rust%20%2B%20TypeScript-orange.svg)
 ![Status](https://img.shields.io/badge/status-alpha--development-orange.svg)
 
 ## ⚠️ ALPHA VERSION WARNING ⚠️
 
-### Version: 0.2.3-alpha
+### Version: 0.3.0-alpha
 
 **A modern, high-performance network penetration testing platform built with Tauri, React, and Rust**
 
@@ -19,7 +19,7 @@
 
 ## Project Status
 
-LEGION2 v0.2.3-alpha represents a major milestone in the complete architectural modernization of the LEGION penetration testing framework. After addressing the critical GUI freezing and stability issues that led to the original LEGION being archived, we have successfully migrated to a modern Tauri-based architecture with significant improvements in performance, stability, and user experience.
+LEGION2 v0.3.0-alpha represents a major milestone in the complete architectural modernization of the LEGION penetration testing framework. After addressing the critical GUI freezing and stability issues that led to the original LEGION being archived, we have successfully migrated to a modern Tauri-based architecture with significant improvements in performance, stability, and user experience.
 
 **Recent Achievements:**
 
