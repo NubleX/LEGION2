@@ -18,15 +18,20 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
+
 import React, { useState, useMemo } from 'react';
 import { Shield, AlertTriangle, Download, Search } from 'lucide-react';
+import type { Host } from '../stores/hostStore';
+
 
 interface ResultViewerProps {
   selectedScanId?: string;
+  selectedHost?: Host;
   className?: string;
 }
 
 const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
+  
   // Mock scan data for now since we're using a simplified store
   const scanHistory: any[] = [];
   const getScanById = (_id: string) => null;

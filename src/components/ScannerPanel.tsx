@@ -18,9 +18,11 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
+
 import { useState, useEffect, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import useAppStore from '../stores/appStore';
-import useHostStore, { Host } from '../stores/hostStore';
+import type { Host } from '../stores/hostStore';
 import ScanForm from './ScanForm';
 import NetworkMap from './NetworkMap';
 import HostTable from './HostTable';
