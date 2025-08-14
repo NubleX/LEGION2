@@ -1,3 +1,5 @@
+pub mod coordinator;
+pub mod engine;
 pub mod masscan;
 pub mod models;
 pub mod nmap;
