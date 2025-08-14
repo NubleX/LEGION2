@@ -19,12 +19,9 @@
 )]
 
 use crate::database::{DatabaseOperations, Db};
-use crate::scanning::coordinator::ScanCoordinator;
-use crate::shared::EventStreamer;
 use anyhow::Result;
 use rusqlite;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 mod analysis;
 mod commands;
@@ -59,40 +56,16 @@ async fn main() {
     // Initialize database
     let db = Arc::new(open_db().expect("Failed to open database"));
 
-    // Initialize event handling
-    let (event_tx, mut event_rx) = mpsc::channel::<crate::shared::ScanEvent>(1000);
-    let event_streamer = Arc::new(EventStreamer::new());
-
     // Initialize database operations for scanning
-    use crate::database::DatabaseOperations;
-    // ...
     let db_path = app_data_dir().join("LEGION2").join("network.db");
     let database_ops = Arc::new(
         DatabaseOperations::open(db_path.to_str().unwrap())
             .await
             .expect("Failed to open database operations"),
     );
-    // Initialize scanner coordinator
-    let coordinator = Arc::new(ScanCoordinator::borrow(
-        database_ops.clone(),
-        event_tx.clone(),
-    ));
-
-    // Bridge events to streamer
-    let streamer_clone = event_streamer.clone();
-    tokio::spawn(async move {
-        log::info!("Event bridge task started");
-        while let Some(event) = event_rx.recv().await {
-            log::info!("Bridging event: {:?}", event.event_type);
-            streamer_clone.send_event(event).await;
-        }
-        log::error!("Event bridge task ended - this should not happen");
-    });
 
     tauri::Builder::default()
         .manage(db.clone())
-        .manage(coordinator)
-        .manage(event_streamer)
         .manage(database_ops.clone())
         .invoke_handler(tauri::generate_handler![
             commands::engine_commands::engine_execute,
@@ -106,12 +79,6 @@ async fn main() {
             commands::host_commands::update_host_os_detection,
             commands::host_commands::get_host_by_ip,
             commands::scanner_commands::start_scan,
-            commands::scanner_commands::cancel_scan,
-            commands::scanner_commands::get_active_scans,
-            commands::scanner_commands::get_scan_status,
-            commands::scanner_commands::get_scan_results,
-            commands::scanner_commands::get_scan_statistics,
-            commands::scanner_commands::get_scan_progress,
             commands::scanner_commands::get_scanner_status,
             commands::operations::db_batch_upsert_hosts,
             commands::operations::db_search_hosts,
