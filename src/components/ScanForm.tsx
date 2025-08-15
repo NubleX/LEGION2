@@ -18,17 +18,18 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-import { AlertCircle, Network, Play, Settings, Shield, Target, Zap } from 'lucide-react';
+import { AlertCircle, Network, Play, Settings, Shield, Target, Zap, Square } from 'lucide-react';
 import React, { useState } from 'react';
 import { ScanConfig } from '../types/scanning';
 
 interface ScanFormProps {
   onStartScan: (config: ScanConfig) => Promise<void>;
+  onCancelScan?: () => Promise<void>;
   isScanning: boolean;
   className?: string;
 }
 
-const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, isScanning }) => {
+const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, onCancelScan, isScanning }) => {
   const [config, setConfig] = useState<ScanConfig>({
     targets: '',
     scanType: 'quick',
@@ -301,24 +302,37 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, isScanning }) => {
           )}
         </div>
 
-        {/* Submit Button */}
-        <button
-          type="submit"
-          disabled={isScanning || !config.targets.trim()}
-          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded transition-colors"
-        >
-          {isScanning ? (
-            <>
-              <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              Scanning...
-            </>
-          ) : (
-            <>
-              <Play className="w-4 h-4" />
-              Start Scan
-            </>
+        {/* Submit/Cancel Buttons */}
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            disabled={isScanning || !config.targets.trim()}
+            className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded transition-colors"
+          >
+            {isScanning ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                Scanning...
+              </>
+            ) : (
+              <>
+                <Play className="w-4 h-4" />
+                Start Scan
+              </>
+            )}
+          </button>
+          
+          {isScanning && onCancelScan && (
+            <button
+              type="button"
+              onClick={onCancelScan}
+              className="bg-red-600 hover:bg-red-700 text-white font-medium py-3 px-4 rounded transition-colors flex items-center justify-center gap-2"
+            >
+              <Square className="w-4 h-4" />
+              Stop
+            </button>
           )}
-        </button>
+        </div>
       </form>
     </div>
   );

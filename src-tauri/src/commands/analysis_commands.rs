@@ -26,7 +26,7 @@ use crate::analysis::{AnalysisEngine, AnalysisResult};
 /// Run analysis for a specific host
 #[tauri::command]
 pub async fn analyze_host(
-    engine: State<'_, Arc<AnalysisEngine>>,
+    engine: State<'_, AnalysisEngine>,
     host_ip: String,
 ) -> Result<AnalysisResult, String> {
     engine
@@ -38,7 +38,7 @@ pub async fn analyze_host(
 /// Run full network analysis
 #[tauri::command]
 pub async fn analyze_network(
-    engine: State<'_, Arc<AnalysisEngine>>,
+    engine: State<'_, AnalysisEngine>,
 ) -> Result<AnalysisResult, String> {
     engine.analyze_network().await.map_err(|e| e.to_string())
 }
@@ -46,7 +46,7 @@ pub async fn analyze_network(
 /// Get currently running analyses
 #[tauri::command]
 pub async fn get_active_analyses(
-    engine: State<'_, Arc<AnalysisEngine>>,
+    engine: State<'_, AnalysisEngine>,
 ) -> Result<Vec<String>, String> {
     Ok(engine.get_active_analyses().await)
 }

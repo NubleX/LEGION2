@@ -11,10 +11,10 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 
-use crate::analysis::AnalysisEngine;
 use crate::core::traits::Sink;
 use crate::database::Db;
 use crate::shared::{ObsStream, ObservationKind};
+use crate::analysis::vulnerability::VulnerabilityEngine;
 
 // Event structures for frontend communication
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,10 +144,12 @@ impl UiSink {
                 timestamp: Utc::now().to_rfc3339(),
             };
 
+            log::info!("Emitting obs:host event for: {}", host_event.ip);
             if let Err(e) = self.app.emit("obs:host", &host_event) {
                 log::error!("Failed to emit obs:host event: {}", e);
                 self.metrics.increment_errors().await;
             } else {
+                log::debug!("Successfully emitted obs:host event for {}", host_event.ip);
                 cache.insert(ip.to_string(), true);
                 self.metrics.increment_hosts().await;
             }
@@ -165,10 +167,12 @@ impl UiSink {
             timestamp: Utc::now().to_rfc3339(),
         };
 
+        log::info!("Emitting obs:service event for: {}:{}/{}", service_event.ip, service_event.port, service_event.protocol);
         if let Err(e) = self.app.emit("obs:service", &service_event) {
             log::error!("Failed to emit obs:service event: {}", e);
             self.metrics.increment_errors().await;
         } else {
+            log::debug!("Successfully emitted obs:service event for {}:{}", service_event.ip, service_event.port);
             self.metrics.increment_services().await;
         }
         Ok(())
@@ -182,9 +186,12 @@ impl UiSink {
             timestamp: Utc::now().to_rfc3339(),
         };
 
+        log::info!("Emitting obs:progress event: {}", progress_event.message);
         if let Err(e) = self.app.emit("obs:progress", &progress_event) {
             log::error!("Failed to emit obs:progress event: {}", e);
             self.metrics.increment_errors().await;
+        } else {
+            log::debug!("Successfully emitted obs:progress event");
         }
         Ok(())
     }
@@ -263,17 +270,35 @@ impl Sink for UiSink {
                         .get("protocol")
                         .and_then(|v| v.as_str())
                         .unwrap_or("tcp");
-                    let reason = obs
+                    let _reason = obs
                         .fields
                         .get("reason")
                         .and_then(|v| v.as_str())
+                        .or_else(|| obs.fields.get("state").and_then(|v| v.as_str()))
                         .unwrap_or("open");
+                    
+                    // Get service name and version for enhanced display
+                    let service = obs.fields.get("service").and_then(|v| v.as_str()).unwrap_or("");
+                    let version = obs.fields.get("version").and_then(|v| v.as_str()).unwrap_or("");
+                    
+                    // Create detailed service description
+                    let service_desc = if !service.is_empty() && !version.is_empty() {
+                        format!("{} {}", service, version)
+                    } else if !service.is_empty() {
+                        service.to_string()
+                    } else {
+                        "unknown".to_string()
+                    };
 
                     // Emit host first if new
                     self.emit_host_if_new(ip, None).await?;
 
-                    // Emit service
-                    self.emit_service(ip, port, protocol, reason).await?;
+                    // Emit service with enhanced info
+                    self.emit_service(ip, port, protocol, &service_desc).await?;
+                    
+                    // Also emit as progress to show in live output
+                    let progress_msg = format!("Found service: {}:{}/{} - {}", ip, port, protocol, service_desc);
+                    self.emit_progress(&progress_msg, None).await?;
                 }
                 ObservationKind::Host => {
                     let ip = obs
@@ -286,16 +311,32 @@ impl Sink for UiSink {
                         .get("hostname")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
+                    let status = obs
+                        .fields
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("up");
 
-                    self.emit_host_if_new(ip, hostname).await?;
+                    self.emit_host_if_new(ip, hostname.clone()).await?;
+                    
+                    // Also emit as progress to show in live output
+                    let progress_msg = if let Some(ref hn) = hostname {
+                        format!("Host discovered: {} ({}) - {}", ip, hn, status)
+                    } else {
+                        format!("Host discovered: {} - {}", ip, status)
+                    };
+                    self.emit_progress(&progress_msg, None).await?;
                 }
                 ObservationKind::Metric => {
-                    // Handle progress/metrics
+                    // Handle progress/metrics - check for nmap_output first, then message
                     let message = obs
                         .fields
-                        .get("message")
+                        .get("nmap_output")
                         .and_then(|v| v.as_str())
+                        .or_else(|| obs.fields.get("message").and_then(|v| v.as_str()))
+                        .or_else(|| obs.raw.as_deref())
                         .unwrap_or("Progress update");
+                    
                     let percentage = obs
                         .fields
                         .get("percentage")
@@ -378,16 +419,150 @@ impl DbSink {
             metrics: SinkMetrics::new(),
         }
     }
+}
 
-    async fn store_host(&self, ip: &str, hostname: Option<&str>) -> Result<()> {
-        self.db.upsert_host(ip, hostname).await?;
+/// Vulnerability Analysis Sink - analyzes services and emits vulnerability events
+pub struct VulnerabilityAnalysisSink {
+    vulnerability_engine: VulnerabilityEngine,
+    app: AppHandle,
+    metrics: SinkMetrics,
+    db: Arc<Db>,
+}
+
+impl VulnerabilityAnalysisSink {
+    pub fn new(db: Arc<Db>, app: AppHandle) -> Self {
+        Self {
+            vulnerability_engine: VulnerabilityEngine::new(db.clone()),
+            app,
+            metrics: SinkMetrics::new(),
+            db,
+        }
+    }
+    
+    async fn emit_vulnerability(&self, vulnerability: &crate::analysis::types::Vulnerability) -> Result<()> {
+        #[derive(Serialize)]
+        struct VulnerabilityEvent {
+            id: String,
+            host_ip: String,
+            port: u16,
+            service: String,
+            name: String,
+            severity: String,
+            description: String,
+            cvss_score: Option<f32>,
+            timestamp: String,
+        }
+        
+        let vuln_event = VulnerabilityEvent {
+            id: vulnerability.finding.id.clone(),
+            host_ip: vulnerability.finding.host.clone(),
+            port: vulnerability.finding.port.unwrap_or(0),
+            service: vulnerability.finding.service.clone().unwrap_or_else(|| "unknown".to_string()),
+            name: vulnerability.finding.title.clone(),
+            severity: format!("{:?}", vulnerability.finding.severity),
+            description: vulnerability.finding.description.clone(),
+            cvss_score: vulnerability.cvss_score,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        };
+        
+        if let Err(e) = self.app.emit("obs:vulnerability", &vuln_event) {
+            log::error!("Failed to emit vulnerability event: {}", e);
+        } else {
+            // Update database vulnerability count
+            if let Err(e) = self.db.increment_host_vulnerability_count(&vulnerability.finding.host).await {
+                log::error!("Failed to increment vulnerability count for host {}: {}", vulnerability.finding.host, e);
+            }
+            
+            // Also emit as progress message for live output
+            let progress_msg = format!(
+                "🔍 Vulnerability found: {} on {}:{} - {} ({})",
+                vulnerability.finding.title,
+                vulnerability.finding.host,
+                vulnerability.finding.port.unwrap_or(0),
+                vulnerability.finding.service.as_deref().unwrap_or("unknown"),
+                format!("{:?}", vulnerability.finding.severity)
+            );
+            
+            if let Err(e) = self.app.emit("obs:progress", &ProgressEvent {
+                message: progress_msg,
+                percentage: None,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            }) {
+                log::error!("Failed to emit vulnerability progress event: {}", e);
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Sink for VulnerabilityAnalysisSink {
+    fn name(&self) -> &'static str {
+        "vulnerability_analysis"
+    }
+    
+    async fn run(&self, mut input: ObsStream) -> anyhow::Result<()> {
+        while let Some(obs) = input.next().await {
+            self.metrics.increment_observations().await;
+            
+            match obs.kind {
+                ObservationKind::Service => {
+                    // Extract service information
+                    if let (Some(ip), Some(port), Some(service)) = (
+                        obs.fields.get("ip").and_then(|v| v.as_str()),
+                        obs.fields.get("port").and_then(|v| v.as_u64()).map(|p| p as u16),
+                        obs.fields.get("service").and_then(|v| v.as_str()),
+                    ) {
+                        // Run vulnerability analysis on this service
+                        match self.vulnerability_engine.analyze_service(ip, port, service).await {
+                            Ok(vulnerabilities) => {
+                                for vuln in vulnerabilities {
+                                    if let Err(e) = self.emit_vulnerability(&vuln).await {
+                                        log::error!("Failed to emit vulnerability: {}", e);
+                                        self.metrics.increment_errors().await;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Vulnerability analysis failed for {}:{} ({}): {}", ip, port, service, e);
+                                self.metrics.increment_errors().await;
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // Don't process other observation types for vulnerability analysis
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl DbSink {
+    async fn store_host(&self, ip: &str, hostname: Option<&str>, status: Option<&str>) -> Result<()> {
+        self.db.upsert_host(ip, hostname, status).await?;
         self.metrics.increment_hosts().await;
+        Ok(())
+    }
+
+    async fn store_host_network_info(&self, ip: &str, mac_address: Option<&str>, vendor: Option<&str>) -> Result<()> {
+        self.db.update_host_network_info(ip, mac_address, vendor).await?;
         Ok(())
     }
 
     async fn store_service(&self, ip: &str, port: u16, protocol: &str, state: &str) -> Result<()> {
         self.db
             .upsert_service(ip, port, protocol, Some(state))
+            .await?;
+        self.metrics.increment_services().await;
+        Ok(())
+    }
+
+    async fn store_service_detailed(&self, ip: &str, port: u16, protocol: &str, state: &str, service: Option<&str>, version: Option<&str>, banner: Option<&str>) -> Result<()> {
+        self.db
+            .upsert_service_detailed(ip, port, protocol, Some(state), service, version, banner)
             .await?;
         self.metrics.increment_services().await;
         Ok(())
@@ -406,9 +581,21 @@ impl Sink for DbSink {
                 ObservationKind::Host => {
                     if let Some(ip) = observation.fields.get("ip").and_then(|v| v.as_str()) {
                         let hostname = observation.fields.get("hostname").and_then(|v| v.as_str());
-                        if let Err(e) = self.store_host(ip, hostname).await {
+                        let status = observation.fields.get("status").and_then(|v| v.as_str());
+                        let mac_address = observation.fields.get("mac_address").and_then(|v| v.as_str());
+                        let vendor = observation.fields.get("vendor").and_then(|v| v.as_str());
+                        
+                        if let Err(e) = self.store_host(ip, hostname, status).await {
                             eprintln!("Failed to store host {}: {}", ip, e);
                             self.metrics.increment_errors().await;
+                        }
+                        
+                        // Store MAC address and vendor information if available
+                        if mac_address.is_some() || vendor.is_some() {
+                            if let Err(e) = self.store_host_network_info(ip, mac_address, vendor).await {
+                                eprintln!("Failed to store network info for host {}: {}", ip, e);
+                                self.metrics.increment_errors().await;
+                            }
                         }
                     }
                 }
@@ -427,7 +614,11 @@ impl Sink for DbSink {
                             .get("state")
                             .and_then(|v| v.as_str())
                             .unwrap_or("open");
-                        if let Err(e) = self.store_service(ip, port, protocol, state).await {
+                        let service = observation.fields.get("service").and_then(|v| v.as_str());
+                        let version = observation.fields.get("version").and_then(|v| v.as_str());
+                        let banner = observation.fields.get("banner").and_then(|v| v.as_str());
+                        
+                        if let Err(e) = self.store_service_detailed(ip, port, protocol, state, service, version, banner).await {
                             eprintln!(
                                 "Failed to store service {}:{}/{}: {}",
                                 ip, port, protocol, e

@@ -27,6 +27,8 @@ MANIFEST
 node_modules/
 CLAUDE.*
 CLAUDE.md
+/src-tauri/.claude
+
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -149,3 +151,4 @@ legion2.db
 target/*
 src-tauri/target/*
 # Cargo
+

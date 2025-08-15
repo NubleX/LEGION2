@@ -69,22 +69,126 @@
 //   4. Testing: Mock modules for unit tests
 //   5. Performance: Parallel transform chains
 
-// Import from scanning directory
-pub use crate::scanning::masscan::MasscanScanner;
-pub use crate::scanning::nmap::NmapScanner;
+// These re-exports are for future modular architecture
+// Keeping them for when the plugin system is fully implemented
 
-// Import from core directory
-pub use crate::core::sinks::{UiSink, DbSink};
+use crate::core::traits::Transform;
+use crate::core::transforms::{
+    IpEnrichmentTransform, ProgressTrackingTransform, ServiceParsingTransform,
+};
+use anyhow::Result;
+use std::collections::HashMap;
 
-// Import shared observation types
-pub use crate::shared::{Observation, ObservationKind, ObsStream};
+/// Factory function type for creating transforms
+pub type TransformFactory = Box<dyn Fn() -> Box<dyn Transform> + Send + Sync>;
 
-// Import plan types and builders
-pub use crate::plan::{Plan, ScanType, ScanTiming, PortRange, Protocol, PortState};
+/// Module Registry for dynamic transform pipeline construction
+pub struct ModuleRegistry {
+    transforms: HashMap<String, TransformFactory>,
+}
+
+impl ModuleRegistry {
+    pub fn new() -> Self {
+        let mut registry = Self {
+            transforms: HashMap::new(),
+        };
+
+        // Register standard transforms
+        registry.register_standard_transforms();
+        registry
+    }
+
+    fn register_standard_transforms(&mut self) {
+        // Register built-in transforms
+        self.register_transform(
+            "ip-enrichment",
+            Box::new(|| Box::new(IpEnrichmentTransform::new())),
+        );
+
+        self.register_transform(
+            "service-parsing",
+            Box::new(|| Box::new(ServiceParsingTransform::new())),
+        );
+
+        self.register_transform(
+            "progress-tracking",
+            Box::new(|| Box::new(ProgressTrackingTransform::new())),
+        );
+
+        // Additional semantic aliases
+        self.register_transform(
+            "port-classifier",
+            Box::new(|| {
+                Box::new(ServiceParsingTransform::new()) // Alias for service parsing
+            }),
+        );
+
+        self.register_transform(
+            "service-identifier",
+            Box::new(|| {
+                Box::new(ServiceParsingTransform::new()) // Alias for service parsing
+            }),
+        );
+
+        log::info!("Registered {} transform modules", self.transforms.len());
+    }
+
+    pub fn register_transform(&mut self, name: &str, factory: TransformFactory) {
+        self.transforms.insert(name.to_string(), factory);
+        log::debug!("Registered transform module: {}", name);
+    }
+
+    pub fn create_transform(&self, name: &str) -> Option<Box<dyn Transform>> {
+        self.transforms.get(name).map(|factory| factory())
+    }
+
+    pub fn list_available_transforms(&self) -> Vec<String> {
+        self.transforms.keys().cloned().collect()
+    }
+
+    /// Build a transform pipeline from module names
+    pub fn build_transform_pipeline(
+        &self,
+        module_names: &[String],
+    ) -> Result<Vec<Box<dyn Transform>>> {
+        let mut transforms = Vec::new();
+
+        for name in module_names {
+            if let Some(transform) = self.create_transform(name) {
+                log::debug!("Added transform to pipeline: {}", name);
+                transforms.push(transform);
+            } else {
+                log::warn!("Unknown transform module: {}", name);
+                return Err(anyhow::anyhow!("Unknown transform module: {}", name));
+            }
+        }
+
+        Ok(transforms)
+    }
+}
+
+// Global module registry instance
+static mut MODULE_REGISTRY: Option<ModuleRegistry> = None;
+static INIT: std::sync::Once = std::sync::Once::new();
+
+/// Get the global module registry instance
+pub fn get_registry() -> &'static ModuleRegistry {
+    unsafe {
+        INIT.call_once(|| {
+            MODULE_REGISTRY = Some(ModuleRegistry::new());
+        });
+        MODULE_REGISTRY.as_ref().unwrap()
+    }
+}
 
 /// Module configuration and initialization
 pub fn init() -> anyhow::Result<()> {
     log::info!("Initializing LEGION2 modules...");
+
+    // Initialize the global registry
+    let registry = get_registry();
+    let available = registry.list_available_transforms();
+    log::info!("Available transform modules: {:?}", available);
 
     // Perform any one-time module initialization here
     // For example: checking binary dependencies, setting up paths

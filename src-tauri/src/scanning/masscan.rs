@@ -55,6 +55,7 @@ pub struct MasscanScanner {
 impl MasscanScanner {
     pub fn new() -> Result<Self> {
         let bin = get_masscan_binary_path()?;
+        log::info!("MasscanScanner initialized with binary path: {:?}", bin);
         Ok(Self {
             bin,
             options: MasscanOptions::default(),
@@ -67,12 +68,29 @@ impl MasscanScanner {
     }
 
     async fn check_masscan_available(&self) -> bool {
-        Command::new(&self.bin)
-            .arg("--version")
+        log::info!("Checking masscan availability at path: {:?}", self.bin);
+        let result = Command::new(&self.bin)
+            .arg("--help")  // Use --help instead of --version
             .output()
-            .await
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+            .await;
+        
+        match result {
+            Ok(output) => {
+                // For masscan, check if the output contains "usage:" which indicates it's working
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let contains_usage = stdout.contains("usage:") || stderr.contains("usage:");
+                
+                log::info!("Masscan availability check result: contains_usage={}, stdout_len={}, stderr_len={}", 
+                    contains_usage, stdout.len(), stderr.len());
+                
+                contains_usage
+            }
+            Err(e) => {
+                log::error!("Failed to execute masscan binary: {}", e);
+                false
+            }
+        }
     }
 
     pub async fn scan_target(
@@ -234,7 +252,7 @@ impl Source for MasscanScanner {
         let lines = reader.lines();
 
         let scan_id = plan.scan_id;
-        let mut discovered_count = 0u64;
+        let discovered_count = 0u64;
 
         let stream = stream::unfold(
             (lines, discovered_count),
@@ -260,8 +278,8 @@ impl Source for MasscanScanner {
                                     fields: {
                                         let mut fields = serde_json::Map::new();
                                         fields.insert(
-                                            "message".to_string(),
-                                            format!("Masscan output: {}", line).into(),
+                                            "nmap_output".to_string(),
+                                            line.clone().into(),
                                         );
                                         fields
                                     },
@@ -343,7 +361,20 @@ fn create_progress_observation(
 fn parse_masscan_line(line: &str, scan_id: uuid::Uuid) -> Option<Observation> {
     // Parse masscan output format: "Discovered open port 22/tcp on 192.168.1.1"
     if !line.starts_with("Discovered open port ") {
-        return None;
+        // If not a discovered port line, return as a metric observation for display
+        return Some(Observation {
+            scan_id,
+            kind: ObservationKind::Metric,
+            fields: {
+                let mut fields = serde_json::Map::new();
+                fields.insert("nmap_output".to_string(), line.trim().into());
+                fields.insert("type".to_string(), "masscan_output".into());
+                fields
+            },
+            ts: chrono::Utc::now(),
+            key: "masscan-output".to_string(),
+            raw: Some(line.to_string()),
+        });
     }
 
     let rest = line.trim_start_matches("Discovered open port ");

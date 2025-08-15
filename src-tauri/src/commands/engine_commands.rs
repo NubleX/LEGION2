@@ -18,7 +18,11 @@ use crate::core::{engine::Engine, registry::Registry};
 use crate::database::Db;
 use crate::plan::Plan;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, State};
+
+// Global scan cancellation flag
+static SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 /// One command to rule them all - unified engine execution
 #[tauri::command]
@@ -30,7 +34,19 @@ pub async fn engine_execute(
     log::info!("Engine execute called with plan: {:?}", plan);
 
     // Build engine from registry, wire Arc<Db> into DbSink
-    let registry = Registry::new(state_db.inner().clone(), app);
+    let mut registry = Registry::new(state_db.inner().clone(), app);
+    
+    // Initialize all standard components in registry
+    if let Err(e) = registry.initialize_standard_components().await {
+        log::error!("Failed to initialize registry components: {}", e);
+        return Err(format!("Registry initialization failed: {}", e));
+    }
+    
+    // Log available components
+    let (sources, sinks, transforms) = registry.list_components();
+    log::info!("Available sources: {:?}", sources);
+    log::info!("Available sinks: {:?}", sinks);
+    log::info!("Available transforms: {:?}", transforms);
 
     // Build engine from plan
     let engine = Engine { registry };
@@ -48,5 +64,28 @@ pub async fn engine_execute(
             }
         }
     });
+    Ok(())
+}
+
+/// Check if scan has been cancelled
+pub fn is_scan_cancelled() -> bool {
+    SCAN_CANCELLED.load(Ordering::Relaxed)
+}
+
+/// Reset cancellation flag for new scans
+pub fn reset_scan_cancellation() {
+    SCAN_CANCELLED.store(false, Ordering::Relaxed);
+}
+
+/// Set scan cancellation flag
+pub fn cancel_current_scan() {
+    SCAN_CANCELLED.store(true, Ordering::Relaxed);
+}
+
+/// Simple cancel scan command for the unified engine
+#[tauri::command]
+pub async fn engine_cancel_scan() -> Result<(), String> {
+    log::info!("Engine scan cancellation requested");
+    cancel_current_scan();
     Ok(())
 }

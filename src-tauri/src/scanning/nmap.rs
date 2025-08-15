@@ -21,6 +21,7 @@ use crate::scanning::models::{OSDetection, ScanProgress, ScanType};
 use crate::shared::{ObsStream, Observation};
 use crate::shared::{PortState, Protocol, ScanPort, ScanVulnerability};
 use crate::utils::os::{get_nmap_binary_path, is_nmap_available};
+use crate::utils::parsing::NmapParser;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -645,16 +646,27 @@ impl Source for NmapScanner {
 
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("Failed to get stdout"))?;
         let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
+        let lines = reader.lines();
         
         let scan_id = plan.scan_id;
-        let stream = stream::unfold(lines, move |mut lines| async move {
+        
+        // Use stateful parser with Arc<Mutex<>> to allow sharing across async closure
+        use std::sync::{Arc, Mutex};
+        let parser = Arc::new(Mutex::new(NmapParser::new(scan_id)));
+        
+        let stream = stream::unfold((lines, parser), move |(mut lines, parser)| async move {
             match lines.next_line().await {
                 Ok(Some(line)) => {
-                    if let Some(obs) = parse_nmap_line(&line, scan_id) {
-                        Some((obs, lines))
+                    let obs = {
+                        let mut parser_guard = parser.lock().unwrap();
+                        parser_guard.parse_line(&line)
+                    };
+                    
+                    if let Some(observation) = obs {
+                        Some((observation, (lines, parser)))
                     } else {
-                        // Continue reading until we find a parseable line
+                        // Even if no observation was created, continue parsing
+                        // This happens for lines that set context but don't create observations
                         Some((
                             Observation {
                                 scan_id,
@@ -668,7 +680,7 @@ impl Source for NmapScanner {
                                 key: "nmap-output".to_string(),
                                 raw: Some(line),
                             },
-                            lines
+                            (lines, parser)
                         ))
                     }
                 }
@@ -680,31 +692,48 @@ impl Source for NmapScanner {
     }
 }
 
-/// Parse nmap output line into Observation
-fn parse_nmap_line(line: &str, scan_id: uuid::Uuid) -> Option<Observation> {
+// Old parsing functions removed - now using stateful NmapParser from utils/parsing.rs
+// Removed old parse_nmap_line function - using stateful NmapParser
+/*fn parse_nmap_line(line: &str, scan_id: uuid::Uuid) -> Option<Observation> {
     use crate::shared::ObservationKind;
     
-    if line.contains("open") && line.contains("/tcp") {
+    if line.contains("open") && (line.contains("/tcp") || line.contains("/udp")) {
         // Parse port discovery: "22/tcp   open  ssh     OpenSSH 7.4 (protocol 2.0)"
         let parts: Vec<&str> = line.trim().split_whitespace().collect();
-        if parts.len() >= 2 {
+        if parts.len() >= 3 {
             if let Some(port_proto) = parts.get(0) {
-                if let Some(port_str) = port_proto.split('/').next() {
+                let port_parts: Vec<&str> = port_proto.split('/').collect();
+                if port_parts.len() == 2 {
+                    let port_str = port_parts[0];
+                    let protocol = port_parts[1];
+                    let state = parts[1];
+                    let service = if parts.len() > 2 { parts[2] } else { "unknown" };
+                    
+                    // Extract IP from previous context or use placeholder
+                    // In real implementation, we'd track current target IP
+                    let ip = extract_current_ip_from_context(line).unwrap_or("unknown".to_string());
+                    let key = format!("service-{}-{}-{}", ip, port_str, protocol);
+                    
                     return Some(Observation {
                         scan_id,
                         kind: ObservationKind::Service,
                         fields: {
                             let mut fields = serde_json::Map::new();
+                            fields.insert("ip".to_string(), ip.into());
                             fields.insert("port".to_string(), port_str.into());
-                            fields.insert("protocol".to_string(), "tcp".into());
-                            fields.insert("state".to_string(), "open".into());
-                            if parts.len() > 2 {
-                                fields.insert("service".to_string(), parts[2].to_string().into());
+                            fields.insert("protocol".to_string(), protocol.into());
+                            fields.insert("state".to_string(), state.into());
+                            fields.insert("service".to_string(), service.into());
+                            
+                            // Add version info if available
+                            if parts.len() > 3 {
+                                let version_info: Vec<&str> = parts[3..].to_vec();
+                                fields.insert("version".to_string(), version_info.join(" ").into());
                             }
                             fields
                         },
                         ts: chrono::Utc::now(),
-                        key: format!("port-{}", port_str),
+                        key,
                         raw: Some(line.to_string()),
                     });
                 }
@@ -712,23 +741,102 @@ fn parse_nmap_line(line: &str, scan_id: uuid::Uuid) -> Option<Observation> {
         }
     } else if line.contains("Nmap scan report for") {
         // Parse host discovery: "Nmap scan report for 192.168.1.1"
-        if let Some(ip) = line.split("for ").nth(1) {
-            let clean_ip = ip.trim();
+        // Note: Don't create host observation here - wait for actual status information
+        // This line just indicates nmap is starting to report on a host
+        return None;
+    } else if line.contains("Discovered open port") {
+        // Parse masscan-style output: "Discovered open port 80/tcp on 192.168.1.1"
+        if let Some(parts) = parse_discovered_port_line(line) {
+            let key = format!("service-{}-{}-{}", parts.ip, parts.port, parts.protocol);
             return Some(Observation {
                 scan_id,
-                kind: ObservationKind::Host,
+                kind: ObservationKind::Service,
                 fields: {
                     let mut fields = serde_json::Map::new();
-                    fields.insert("ip".to_string(), clean_ip.into());
-                    fields.insert("status".to_string(), "up".into());
+                    fields.insert("ip".to_string(), parts.ip.into());
+                    fields.insert("port".to_string(), parts.port.into());
+                    fields.insert("protocol".to_string(), parts.protocol.into());
+                    fields.insert("state".to_string(), "open".into());
+                    fields.insert("reason".to_string(), "discovered".into());
                     fields
                 },
                 ts: chrono::Utc::now(),
-                key: format!("host-{}", clean_ip),
+                key,
                 raw: Some(line.to_string()),
             });
         }
+    } else if line.contains("Host is up") {
+        // Parse host status: "Host is up (0.0010s latency)."
+        return Some(Observation {
+            scan_id,
+            kind: ObservationKind::Metric,
+            fields: {
+                let mut fields = serde_json::Map::new();
+                fields.insert("message".to_string(), line.trim().into());
+                fields.insert("type".to_string(), "host_status".into());
+                fields
+            },
+            ts: chrono::Utc::now(),
+            key: "host-status".to_string(),
+            raw: Some(line.to_string()),
+        });
+    } else if line.contains("Scanning") || line.contains("Completed") || line.contains("Initiating") {
+        // Parse progress info: "Scanning 192.168.1.1 [1000 ports]"
+        return Some(Observation {
+            scan_id,
+            kind: ObservationKind::Metric,
+            fields: {
+                let mut fields = serde_json::Map::new();
+                fields.insert("message".to_string(), line.trim().into());
+                fields.insert("type".to_string(), "scan_progress".into());
+                fields
+            },
+            ts: chrono::Utc::now(),
+            key: "scan-progress".to_string(),
+            raw: Some(line.to_string()),
+        });
     }
     
+    // Return the line as a metric observation for display even if not parsed
+    Some(Observation {
+        scan_id,
+        kind: ObservationKind::Metric,
+        fields: {
+            let mut fields = serde_json::Map::new();
+            fields.insert("message".to_string(), line.trim().into());
+            fields.insert("type".to_string(), "raw_output".into());
+            fields
+        },
+        ts: chrono::Utc::now(),
+        key: "raw-output".to_string(),
+        raw: Some(line.to_string()),
+    })
+}
+
+struct PortInfo {
+    ip: String,
+    port: String,
+    protocol: String,
+}
+
+fn parse_discovered_port_line(line: &str) -> Option<PortInfo> {
+    // Parse "Discovered open port 80/tcp on 192.168.1.1"
+    if let Some(rest) = line.strip_prefix("Discovered open port ") {
+        let parts: Vec<&str> = rest.split(" on ").collect();
+        if parts.len() == 2 {
+            let port_proto: Vec<&str> = parts[0].split('/').collect();
+            if port_proto.len() == 2 {
+                return Some(PortInfo {
+                    port: port_proto[0].to_string(),
+                    protocol: port_proto[1].to_string(),
+                    ip: parts[1].trim().to_string(),
+                });
+            }
+        }
+    }
     None
 }
+
+// Removed extract_current_ip_from_context - using stateful NmapParser
+*/
+

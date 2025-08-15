@@ -56,10 +56,16 @@ pub fn get_os() -> OperatingSystem {
 /// Get the full path to masscan binary (checks local /bin first, then system PATH)
 pub fn get_masscan_binary_path() -> PathBuf {
     let local_path = get_local_masscan_path();
+    log::debug!("Checking local masscan path: {:?}", local_path);
+    log::debug!("Local masscan path exists: {}", local_path.exists());
+    
     if local_path.exists() {
+        log::info!("Using local masscan binary: {:?}", local_path);
         local_path
     } else {
-        PathBuf::from(get_masscan_binary_name())
+        let system_path = PathBuf::from(get_masscan_binary_name());
+        log::info!("Local masscan not found, falling back to system PATH: {:?}", system_path);
+        system_path
     }
 }
 
@@ -77,9 +83,14 @@ pub fn get_nmap_binary_path() -> PathBuf {
 pub fn get_local_masscan_path() -> PathBuf {
     let mut path = get_bin_directory();
     if cfg!(target_os = "windows") {
-        path.push("engines/windows/masscan-1.3.2/masscan.exe");
+        path.push("engines");
+        path.push("windows");
+        path.push("masscan-1.3.2");
+        path.push("masscan.exe");
     } else {
-        path.push("engines/linux/masscan");
+        path.push("engines");
+        path.push("linux");
+        path.push("masscan");
     }
     path
 }
@@ -88,18 +99,44 @@ pub fn get_local_masscan_path() -> PathBuf {
 pub fn get_local_nmap_path() -> PathBuf {
     let mut path = get_bin_directory();
     if cfg!(target_os = "windows") {
-        path.push("engines/windows/nmap-7.97/nmap.exe");
+        path.push("engines");
+        path.push("windows");
+        path.push("nmap-7.97");
+        path.push("nmap.exe");
     } else {
-        path.push("engines/linux/nmap");
+        path.push("engines");
+        path.push("linux");
+        path.push("nmap");
     }
     path
 }
 
 /// Get the bin directory relative to the executable
 pub fn get_bin_directory() -> PathBuf {
-    let mut path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    log::debug!("Current executable path: {:?}", exe_path);
+    
+    let mut path = exe_path.clone();
     path.pop(); // Remove executable name
-    path.push("bin");
+    
+    // In development mode, the exe is at src-tauri/target/debug/legion2.exe
+    // but the bin directory is at src-tauri/bin/
+    // In production, the exe and bin should be in the same directory
+    
+    // Check if we're in development mode (target/debug or target/release)
+    if path.to_string_lossy().contains("target") {
+        // Navigate up to src-tauri directory
+        while path.file_name().and_then(|name| name.to_str()) != Some("src-tauri") && path.parent().is_some() {
+            path.pop();
+        }
+        path.push("bin");
+        log::debug!("Development mode - bin directory resolved to: {:?}", path);
+    } else {
+        // Production mode - bin directory is relative to executable
+        path.push("bin");
+        log::debug!("Production mode - bin directory resolved to: {:?}", path);
+    }
+    
     path
 }
 
@@ -125,17 +162,34 @@ pub fn get_nmap_binary_name() -> &'static str {
 
 /// Check if a command/binary is available on the system or locally
 pub async fn is_command_available(command_path: &Path) -> bool {
-    let version_arg = match get_os() {
-        OperatingSystem::Windows => "--version", // Most Windows binaries support --version
-        _ => "--version",
-    };
-
-    tokio::process::Command::new(command_path)
-        .arg(version_arg)
+    // Try --version first, then --help as fallback
+    let result_version = tokio::process::Command::new(command_path)
+        .arg("--version")
         .output()
-        .await
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        .await;
+        
+    match result_version {
+        Ok(output) if output.status.success() => return true,
+        Ok(_) => {
+            // Try --help as fallback (some tools like masscan exit with non-zero on --version)
+            let result_help = tokio::process::Command::new(command_path)
+                .arg("--help")
+                .output()
+                .await;
+                
+            match result_help {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    // Check if help output contains usage information
+                    stdout.contains("usage:") || stderr.contains("usage:") || 
+                    stdout.contains("Usage:") || stderr.contains("Usage:")
+                }
+                Err(_) => false,
+            }
+        },
+        Err(_) => false,
+    }
 }
 /// Check if masscan is available (checks local /bin first, then system PATH)
 pub async fn is_masscan_available() -> bool {

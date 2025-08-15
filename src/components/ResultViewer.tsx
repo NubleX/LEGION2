@@ -19,46 +19,80 @@
 //     If not, see <http://www.gnu.org/licenses/>.
 
 
-import { AlertTriangle, Download, Search, Shield } from 'lucide-react';
-import React, { useMemo, useState } from 'react';
+import { AlertTriangle, Download, Search, Shield, Network, Server } from 'lucide-react';
+import React, { useMemo, useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import useAppStore from '../stores/appStore';
+import useHostStore, { type Host } from '../stores/hostStore';
+
+interface PortInfo {
+  number: number;
+  protocol: string;
+  state: string;
+  service?: string;
+  version?: string;
+  banner?: string;
+}
 
 interface ResultViewerProps {
   selectedScanId?: string;
+  selectedHost?: Host;
   className?: string;
 }
 
-const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
-  // Mock scan data for now since we're using a simplified store
-  const scanHistory: any[] = [];
-  const getScanById = (_id: string) => null;
-
+const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHost }) => {
+  const { vulnerabilities } = useAppStore();
+  const hosts = useHostStore(state => state.hosts);
+  
   const [selectedTab, setSelectedTab] = useState<'ports' | 'vulnerabilities' | 'details'>('ports');
   const [severityFilter, setSeverityFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
+  const [hostPorts, setHostPorts] = useState<PortInfo[]>([]);
+  const [loadingPorts, setLoadingPorts] = useState(false);
 
-  const currentScan = selectedScanId ? getScanById(selectedScanId) : null;
-  const results = currentScan ? [currentScan] : scanHistory.filter(scan => scan.status === 'completed');
+  // Get the host either from selectedHost prop or by selectedScanId (treating it as host ID)
+  const currentHost = selectedHost || (selectedScanId ? hosts.find(h => h.id === selectedScanId) : null);
+
+  // Load ports when host changes
+  useEffect(() => {
+    if (currentHost?.ip) {
+      setLoadingPorts(true);
+      invoke<PortInfo[]>('get_host_ports_detailed', { hostIp: currentHost.ip })
+        .then(setHostPorts)
+        .catch(err => {
+          console.error('Failed to load ports:', err);
+          setHostPorts([]);
+        })
+        .finally(() => setLoadingPorts(false));
+    } else {
+      setHostPorts([]);
+    }
+  }, [currentHost?.ip]);
 
   const allVulnerabilities = useMemo(() => {
-    const vulns = results.flatMap((scan: any) => scan.vulnerabilities);
-    return vulns.filter((vuln: any) => {
-      if (severityFilter !== 'all' && vuln.severity !== severityFilter) return false;
+    if (!currentHost || !vulnerabilities) return [];
+    
+    // Filter vulnerabilities for the current host
+    const hostVulns = vulnerabilities.filter(vuln => vuln.host_ip === currentHost.ip);
+    
+    return hostVulns.filter((vuln: any) => {
+      if (severityFilter !== 'all' && vuln.severity.toLowerCase() !== severityFilter) return false;
       if (searchTerm && !vuln.name.toLowerCase().includes(searchTerm.toLowerCase())) return false;
       return true;
     });
-  }, [results, severityFilter, searchTerm]);
+  }, [currentHost, vulnerabilities, severityFilter, searchTerm]);
 
   const allPorts = useMemo(() => {
-    const ports = results.flatMap((scan: any) => scan.open_ports);
-    return ports.filter((port: any) => {
-      if (searchTerm) {
-        const searchLower = searchTerm.toLowerCase();
-        return port.service?.toLowerCase().includes(searchLower) ||
-          port.number.toString().includes(searchTerm);
-      }
-      return true;
-    });
-  }, [results, searchTerm]);
+    if (!hostPorts) return [];
+    
+    return hostPorts.filter(port =>
+      searchTerm === '' ||
+      port.number.toString().includes(searchTerm) ||
+      port.protocol.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      port.service?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      port.state.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [hostPorts, searchTerm]);
 
   const getSeverityColor = (severity: string) => {
     switch (severity) {
@@ -81,7 +115,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
 
   const exportResults = () => {
     const data = {
-      scan_results: results,
+      host: currentHost,
       vulnerabilities: allVulnerabilities,
       ports: allPorts,
       export_time: new Date().toISOString()
@@ -96,12 +130,12 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
     URL.revokeObjectURL(url);
   };
 
-  if (results.length === 0) {
+  if (!currentHost) {
     return (
       <div className="bg-gray-900 p-6 rounded-lg border border-gray-700">
         <div className="text-center py-8 text-gray-400">
           <Shield className="w-12 h-12 mx-auto mb-2 opacity-50" />
-          <p>No scan results available. Complete a scan to see results here.</p>
+          <p>No host selected. Select a host to see results here.</p>
         </div>
       </div>
     );
@@ -114,7 +148,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-semibold text-white flex items-center gap-2">
             <Shield className="w-5 h-5 text-yellow-400" />
-            Scan Results
+            Target Information
           </h2>
           <button
             onClick={exportResults}
@@ -175,18 +209,23 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
         {/* Tab Content */}
         {selectedTab === 'ports' && (
           <div className="space-y-4">
-            {allPorts.length === 0 ? (
-              <p className="text-gray-400 text-center py-8">No open ports found.</p>
+            {loadingPorts ? (
+              <p className="text-gray-400 text-center py-8">Loading ports...</p>
+            ) : allPorts.length === 0 ? (
+              <p className="text-gray-400 text-center py-8">No ports found.</p>
             ) : (
               <div className="grid gap-4">
-                {allPorts.map((port: any, index: number) => (
+                {allPorts.map((port: PortInfo, index: number) => (
                   <div key={`${port.number}-${port.protocol}-${index}`} className="bg-gray-800 p-4 rounded border border-gray-600">
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-3">
                         <span className="text-lg font-mono text-white">
                           {port.number}/{port.protocol}
                         </span>
-                        <span className={`font-medium ${getPortStateColor(port.state)}`}>
+                        <span className={`px-2 py-1 text-white text-xs rounded font-medium ${
+                          port.state === 'open' ? 'bg-green-600' : 
+                          port.state === 'closed' ? 'bg-red-600' : 'bg-gray-600'
+                        }`}>
                           {port.state}
                         </span>
                         {port.service && (
@@ -195,24 +234,22 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
                           </span>
                         )}
                       </div>
-                      {port.confidence && (
-                        <span className="text-sm text-gray-400">
-                          {port.confidence}% confidence
-                        </span>
-                      )}
+                      <Network className="w-4 h-4 text-blue-400" />
                     </div>
 
-                    {port.version && (
-                      <div className="text-sm text-gray-300 mb-2">
-                        Version: {port.version}
-                      </div>
-                    )}
-
-                    {port.banner && (
-                      <div className="bg-gray-900 p-2 rounded font-mono text-xs text-gray-300">
-                        {port.banner}
-                      </div>
-                    )}
+                    <div className="space-y-2">
+                      {port.service && (
+                        <div className="text-sm text-gray-300">
+                          <span className="text-gray-400">Service:</span> {port.service}
+                          {port.version && <span className="text-gray-400"> v{port.version}</span>}
+                        </div>
+                      )}
+                      {port.banner && (
+                        <div className="text-sm text-gray-300">
+                          <span className="text-gray-400">Banner:</span> <code className="bg-gray-900 px-1 rounded">{port.banner}</code>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -267,63 +304,90 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
         )}
 
         {selectedTab === 'details' && (
-          <div className="space-y-6">
-            {results.map((scan: any) => (
-              <div key={scan.id} className="bg-gray-800 p-4 rounded border border-gray-600">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-white">
-                    {scan.scan_type.toUpperCase()} Scan
+          <div className="space-y-4">
+            {currentHost ? (
+              <div className="bg-gray-800 p-6 rounded border border-gray-600">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-lg font-semibold text-white flex items-center">
+                    <Server className="w-5 h-5 mr-2 text-blue-400" />
+                    Host Summary
                   </h3>
                   <span className="text-sm text-gray-400">
-                    {scan.end_time && new Date(scan.end_time).toLocaleString()}
+                    Last seen: {currentHost.last_seen ? new Date(currentHost.last_seen).toLocaleString() : 'Unknown'}
                   </span>
                 </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                  <div className="bg-gray-900 p-3 rounded">
-                    <div className="text-sm text-gray-400">Target</div>
-                    <div className="font-mono text-white">{scan.target_id}</div>
+                <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">IP Address</span>
+                    <span className="font-mono text-white">{currentHost.ip}</span>
                   </div>
-                  <div className="bg-gray-900 p-3 rounded">
-                    <div className="text-sm text-gray-400">Duration</div>
-                    <div className="text-white">
-                      {scan.end_time ?
-                        `${Math.round((new Date(scan.end_time).getTime() - new Date(scan.start_time).getTime()) / 1000)}s` :
-                        'In progress'
-                      }
-                    </div>
+                  
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">Hostname</span>
+                    <span className="text-white">{currentHost.hostname || 'Unknown'}</span>
                   </div>
-                  <div className="bg-gray-900 p-3 rounded">
-                    <div className="text-sm text-gray-400">Open Ports</div>
-                    <div className="text-green-400 font-semibold">{scan.open_ports.length}</div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">Status</span>
+                    <span className={`font-semibold ${currentHost.status === 'up' ? 'text-green-400' : currentHost.status === 'down' ? 'text-red-400' : 'text-yellow-400'}`}>
+                      {currentHost.status?.toUpperCase() || 'UNKNOWN'}
+                    </span>
                   </div>
-                  <div className="bg-gray-900 p-3 rounded">
-                    <div className="text-sm text-gray-400">Vulnerabilities</div>
-                    <div className="text-red-400 font-semibold">{scan.vulnerabilities.length}</div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">MAC Address</span>
+                    <span className="font-mono text-white">{currentHost.mac_address || 'Unknown'}</span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">Vendor</span>
+                    <span className="text-white">{currentHost.vendor || 'Unknown'}</span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">OS Name</span>
+                    <span className="text-white">{currentHost.os_name || 'Unknown'}</span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">OS Family</span>
+                    <span className="text-white">{currentHost.os_family || 'Unknown'}</span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">OS Accuracy</span>
+                    <span className="text-white">
+                      {currentHost.os_accuracy ? `${currentHost.os_accuracy}%` : 'Unknown'}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">Total Ports</span>
+                    <span className="text-white font-semibold">{currentHost.port_count || hostPorts.length}</span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">Open Ports</span>
+                    <span className="text-green-400 font-semibold">{hostPorts.filter(p => p.state === 'open').length}</span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">Services</span>
+                    <span className="text-blue-400 font-semibold">{hostPorts.filter(p => p.service).length}</span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">Vulnerabilities</span>
+                    <span className="text-red-400 font-semibold">{currentHost.vulnerability_count || allVulnerabilities.length}</span>
                   </div>
                 </div>
-
-                {scan.error_message && (
-                  <div className="bg-red-900/20 border border-red-500/30 p-3 rounded mb-4">
-                    <div className="flex items-center gap-2 text-red-400">
-                      <AlertTriangle className="w-4 h-4" />
-                      <span className="text-sm">{scan.error_message}</span>
-                    </div>
-                  </div>
-                )}
-
-                {scan.raw_output && (
-                  <details className="mt-4">
-                    <summary className="cursor-pointer text-sm text-gray-400 hover:text-white">
-                      Show Raw Output
-                    </summary>
-                    <div className="mt-2 bg-gray-900 p-3 rounded font-mono text-xs text-gray-300 overflow-x-auto">
-                      <pre>{scan.raw_output}</pre>
-                    </div>
-                  </details>
-                )}
               </div>
-            ))}
+            ) : (
+              <div className="text-gray-400 text-center py-8">
+                No target selected for details view.
+              </div>
+            )}
           </div>
         )}
       </div>

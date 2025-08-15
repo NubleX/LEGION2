@@ -29,6 +29,14 @@ export interface Host {
   status?: string;
   port_count?: number;
   vulnerability_count?: number;
+  mac_address?: string;
+  vendor?: string;
+  os_name?: string;
+  os_family?: string;
+  os_accuracy?: number;
+  last_seen?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 interface HostStore {

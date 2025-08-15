@@ -69,14 +69,53 @@ impl ScanCoordinator {
             .and_then(|o| o.rate)
             .map(|r| r as u64);
 
-        let plan = if let Some(rate) = rate {
-            Plan::masscan(scan_id, request.target.clone(), ports.clone(), Some(rate))
+        // Use the use_masscan field to decide scanner type
+        let plan = if request
+            .options
+            .as_ref()
+            .and_then(|o| o.use_masscan)
+            .unwrap_or(false)
+        {
+            // Masscan selected - use rate if provided
+            let masscan_rate = rate.unwrap_or(1000); // Default masscan rate
+            Plan::masscan(scan_id, request.target.clone(), ports.clone(), Some(masscan_rate))
                 .with_extra_args(extra)
         } else {
-            Plan::nmap(scan_id, request.target.clone(), ports.clone(), extra)
+            // Use nmap with scan type-specific configuration
+            match request.scan_type {
+                ScanType::Comprehensive => {
+                    Plan::comprehensive(scan_id, request.target.clone(), ports.clone())
+                        .with_extra_args(extra)
+                }
+                ScanType::Discovery => {
+                    Plan::os_detection(scan_id, request.target.clone())
+                        .with_extra_args(extra)
+                }
+                ScanType::Stealth => {
+                    Plan::nmap(scan_id, request.target.clone(), ports.clone(), 
+                              vec!["-sS".to_string(), "-T2".to_string(), "-f".to_string()])
+                        .with_extra_args(extra)
+                }
+                ScanType::Quick => {
+                    Plan::nmap(scan_id, request.target.clone(), ports.clone(),
+                              vec!["-T4".to_string(), "-F".to_string()])
+                        .with_extra_args(extra)
+                }
+                _ => {
+                    // Default nmap scan
+                    Plan::nmap(scan_id, request.target.clone(), ports.clone(), extra)
+                }
+            }
         };
 
-        let registry = Registry::new(self.db.clone(), app);
+        let mut registry = Registry::new(self.db.clone(), app);
+        
+        // Initialize registry components
+        if let Err(e) = registry.initialize_standard_components().await {
+            log::error!("Failed to initialize coordinator registry: {}", e);
+            return Err(format!("Registry initialization failed: {}", e));
+        }
+        
         let engine = Engine { registry };
 
         {

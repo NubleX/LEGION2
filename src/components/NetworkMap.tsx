@@ -35,6 +35,8 @@ interface NetworkNode {
   y: number;
   host: Host;
   connections: string[];
+  subnet: string;
+  role: 'gateway' | 'server' | 'client' | 'unknown';
 }
 
 const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHostIp }) => {
@@ -46,6 +48,39 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [showLabels, setShowLabels] = useState(true);
   const [showServices, setShowServices] = useState(false);
+  const [showLegend, setShowLegend] = useState(true);
+
+  // Determine host role based on ports and IP patterns
+  const getHostRole = (host: Host): 'gateway' | 'server' | 'client' | 'unknown' => {
+    const ip = host.ip;
+    const portCount = host.port_count || 0;
+    
+    // Gateway patterns (router/firewall)
+    if (ip.endsWith('.1') || ip.endsWith('.254')) return 'gateway';
+    
+    // Server patterns (many open ports)
+    if (portCount > 10) return 'server';
+    
+    // Client patterns (few or no open ports)
+    if (portCount <= 3) return 'client';
+    
+    return 'unknown';
+  };
+
+  // Group hosts by subnet for better topology
+  const groupBySubnet = (hosts: Host[]) => {
+    const subnets = new Map<string, Host[]>();
+    
+    hosts.forEach(host => {
+      const subnet = host.ip.split('.').slice(0, 3).join('.');
+      if (!subnets.has(subnet)) {
+        subnets.set(subnet, []);
+      }
+      subnets.get(subnet)!.push(host);
+    });
+    
+    return subnets;
+  };
 
   // Initialize network layout
   useEffect(() => {
@@ -56,33 +91,124 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
 
     const centerX = canvas.width / 2;
     const centerY = canvas.height / 2;
-    const radius = Math.min(centerX, centerY) * 0.6;
+    const subnets = groupBySubnet(hosts);
+    const subnetEntries = Array.from(subnets.entries());
+    
+    let newNodes: NetworkNode[] = [];
 
-    // Create nodes in circular layout
-    const newNodes: NetworkNode[] = hosts.map((host: Host, index: number) => {
-      const angle = (index / hosts.length) * 2 * Math.PI;
-      return {
-        id: host.ip,
-        x: centerX + Math.cos(angle) * radius,
-        y: centerY + Math.sin(angle) * radius,
-        host,
-        connections: [] // Would be populated based on network topology
-      };
-    });
+    if (subnetEntries.length === 1) {
+      // Single subnet - circular layout
+      const [subnet, subnetHosts] = subnetEntries[0];
+      const radius = Math.min(centerX, centerY) * 0.6;
+      
+      subnetHosts.forEach((host, index) => {
+        const angle = (index / subnetHosts.length) * 2 * Math.PI;
+        newNodes.push({
+          id: host.ip,
+          x: centerX + Math.cos(angle) * radius,
+          y: centerY + Math.sin(angle) * radius,
+          host,
+          connections: [],
+          subnet,
+          role: getHostRole(host)
+        });
+      });
+    } else {
+      // Multiple subnets - hierarchical layout
+      const subnetRadius = Math.min(centerX, centerY) * 0.3;
+      
+      subnetEntries.forEach(([subnet, subnetHosts], subnetIndex) => {
+        const subnetAngle = (subnetIndex / subnetEntries.length) * 2 * Math.PI;
+        const subnetCenterX = centerX + Math.cos(subnetAngle) * subnetRadius;
+        const subnetCenterY = centerY + Math.sin(subnetAngle) * subnetRadius;
+        const hostRadius = 80;
+        
+        subnetHosts.forEach((host, hostIndex) => {
+          const hostAngle = (hostIndex / subnetHosts.length) * 2 * Math.PI;
+          newNodes.push({
+            id: host.ip,
+            x: subnetCenterX + Math.cos(hostAngle) * hostRadius,
+            y: subnetCenterY + Math.sin(hostAngle) * hostRadius,
+            host,
+            connections: [],
+            subnet,
+            role: getHostRole(host)
+          });
+        });
+      });
+    }
 
     setNodes(newNodes);
   }, [hosts]);
 
   // Drawing functions
-  const getNodeColor = (host: Host) => {
+  const getNodeColor = (host: Host, role: string) => {
     if (host.status === 'down') return '#6b7280'; // gray
     
+    // Role-based colors with vulnerability overlay
     const vuln_count = host.vulnerability_count || 0;
     
-    if (vuln_count === 0) return '#16a34a'; // green
+    if (vuln_count === 0) {
+      switch (role) {
+        case 'gateway': return '#8b5cf6'; // purple
+        case 'server': return '#3b82f6'; // blue
+        case 'client': return '#16a34a'; // green
+        default: return '#6b7280'; // gray
+      }
+    }
+    
+    // Vulnerability-based colors (override role colors)
     if (vuln_count < 5) return '#eab308'; // yellow
     if (vuln_count < 10) return '#ea580c'; // orange
     return '#dc2626'; // red
+  };
+
+  const drawNodeShape = (ctx: CanvasRenderingContext2D, node: NetworkNode, isSelected: boolean) => {
+    const size = isSelected ? 12 : 8;
+    const color = getNodeColor(node.host, node.role);
+    
+    ctx.fillStyle = color;
+    
+    switch (node.role) {
+      case 'gateway':
+        // Draw diamond for gateways
+        ctx.beginPath();
+        ctx.moveTo(node.x, node.y - size);
+        ctx.lineTo(node.x + size, node.y);
+        ctx.lineTo(node.x, node.y + size);
+        ctx.lineTo(node.x - size, node.y);
+        ctx.closePath();
+        ctx.fill();
+        break;
+        
+      case 'server':
+        // Draw square for servers
+        ctx.fillRect(node.x - size/2, node.y - size/2, size, size);
+        break;
+        
+      case 'client':
+        // Draw circle for clients
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, size/2, 0, 2 * Math.PI);
+        ctx.fill();
+        break;
+        
+      default:
+        // Draw triangle for unknown
+        ctx.beginPath();
+        ctx.moveTo(node.x, node.y - size);
+        ctx.lineTo(node.x - size, node.y + size);
+        ctx.lineTo(node.x + size, node.y + size);
+        ctx.closePath();
+        ctx.fill();
+    }
+    
+    // Selection ring
+    if (isSelected) {
+      ctx.strokeStyle = '#3b82f6';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
   };
 
   const drawNetwork = () => {
@@ -98,45 +224,57 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     ctx.translate(offset.x, offset.y);
     ctx.scale(scale, scale);
 
-    // Draw connections (simple example - same subnet)
-    ctx.strokeStyle = '#374151';
-    ctx.lineWidth = 1;
+    // Draw subnet connections and gateway links
+    const subnets = groupBySubnet(nodes.map(n => n.host));
+    const gateways = nodes.filter(n => n.role === 'gateway');
     
-    nodes.forEach(nodeA => {
-      nodes.forEach(nodeB => {
-        if (nodeA.id !== nodeB.id) {
-          const ipA = nodeA.host.ip.split('.').slice(0, 3).join('.');
-          const ipB = nodeB.host.ip.split('.').slice(0, 3).join('.');
-          
-          if (ipA === ipB) { // Same subnet
-            ctx.beginPath();
-            ctx.moveTo(nodeA.x, nodeA.y);
-            ctx.lineTo(nodeB.x, nodeB.y);
-            ctx.globalAlpha = 0.3;
-            ctx.stroke();
-            ctx.globalAlpha = 1;
-          }
-        }
-      });
+    // Draw subnet boundaries
+    subnets.forEach((_, subnet) => {
+      const subnetNodes = nodes.filter(n => n.subnet === subnet);
+      if (subnetNodes.length > 1) {
+        ctx.strokeStyle = '#374151';
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.2;
+        
+        // Draw connections between hosts in same subnet
+        subnetNodes.forEach(nodeA => {
+          subnetNodes.forEach(nodeB => {
+            if (nodeA.id !== nodeB.id) {
+              ctx.beginPath();
+              ctx.moveTo(nodeA.x, nodeA.y);
+              ctx.lineTo(nodeB.x, nodeB.y);
+              ctx.stroke();
+            }
+          });
+        });
+      }
     });
+    
+    // Draw inter-subnet connections through gateways
+    if (gateways.length > 0 && subnets.size > 1) {
+      ctx.strokeStyle = '#8b5cf6';
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = 0.4;
+      
+      gateways.forEach(gateway => {
+        // Connect gateway to other subnet gateways
+        gateways.forEach(otherGateway => {
+          if (gateway.id !== otherGateway.id && gateway.subnet !== otherGateway.subnet) {
+            ctx.beginPath();
+            ctx.moveTo(gateway.x, gateway.y);
+            ctx.lineTo(otherGateway.x, otherGateway.y);
+            ctx.stroke();
+          }
+        });
+      });
+    }
+    
+    ctx.globalAlpha = 1;
 
-    // Draw nodes
+    // Draw nodes with role-based shapes
     nodes.forEach(node => {
       const isSelected = node.host.ip === selectedHostIp;
-      const color = getNodeColor(node.host);
-      
-      // Node circle
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, isSelected ? 12 : 8, 0, 2 * Math.PI);
-      ctx.fillStyle = color;
-      ctx.fill();
-      
-      // Selection ring
-      if (isSelected) {
-        ctx.strokeStyle = '#3b82f6';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
+      drawNodeShape(ctx, node, isSelected);
 
       // Host labels
       if (showLabels && scale > 0.5) {
@@ -340,31 +478,51 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
           </div>
         )}
 
-        {/* Legend */}
-        <div className="absolute bottom-4 left-4 bg-gray-800/90 p-3 rounded border border-gray-600">
-          <div className="text-xs text-gray-300 mb-2 font-medium">Host Status</div>
-          <div className="space-y-1 text-xs">
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full bg-green-500"></div>
-              <span className="text-gray-300">Secure</span>
+        {/* Legend Toggle */}
+        <div className="absolute top-4 left-4">
+          <button
+            onClick={() => setShowLegend(!showLegend)}
+            className="bg-gray-800/90 p-2 rounded border border-gray-600 hover:bg-gray-700/90 transition-colors"
+            title="Toggle Legend"
+          >
+            <Network className="w-4 h-4 text-gray-300" />
+          </button>
+          
+          {showLegend && (
+            <div className="mt-2 bg-gray-800/90 p-3 rounded border border-gray-600 min-w-[140px]">
+              <div className="text-xs text-gray-300 mb-2 font-medium">Host Types</div>
+              <div className="space-y-1 text-xs mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 bg-purple-500 transform rotate-45"></div>
+                  <span className="text-gray-300">Gateway</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 bg-blue-500"></div>
+                  <span className="text-gray-300">Server</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full bg-green-500"></div>
+                  <span className="text-gray-300">Client</span>
+                </div>
+              </div>
+              
+              <div className="text-xs text-gray-300 mb-1 font-medium">Risk Level</div>
+              <div className="space-y-1 text-xs">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                  <span className="text-gray-300">Secure</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-yellow-500"></div>
+                  <span className="text-gray-300">Low Risk</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-red-500"></div>
+                  <span className="text-gray-300">Critical</span>
+                </div>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
-              <span className="text-gray-300">Low/Medium Risk</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full bg-orange-500"></div>
-              <span className="text-gray-300">High Risk</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full bg-red-500"></div>
-              <span className="text-gray-300">Critical Risk</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full bg-gray-500"></div>
-              <span className="text-gray-300">Offline</span>
-            </div>
-          </div>
+          )}
         </div>
       </div>
     </div>

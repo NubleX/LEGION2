@@ -17,7 +17,9 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, State};
 
-use crate::scanning::coordinator::{ScanCoordinator, ScanRequest};
+use crate::database::Db;
+use crate::plan::ScanType;
+use crate::scanning::coordinator::{ScanCoordinator, ScanRequest, ScanOptions};
 
 /// Start a scan using the ScanCoordinator
 #[tauri::command]
@@ -76,4 +78,116 @@ pub async fn get_scanner_status() -> Result<String, String> {
     });
 
     Ok(status.to_string())
+}
+
+/// Start a coordinated scan using the coordinator with ScanOptions
+#[tauri::command]
+pub async fn start_coordinated_scan(
+    target: String,
+    scan_type: String,
+    ports: Option<String>,
+    rate: Option<u32>,
+    extra_args: Option<Vec<String>>,
+    use_masscan: Option<bool>,
+    state_db: State<'_, Arc<Db>>,
+    app: AppHandle,
+) -> Result<String, String> {
+    log::info!("Starting coordinated scan for target: {}", target);
+    
+    // Parse scan type
+    let scan_type = match scan_type.as_str() {
+        "Discovery" => ScanType::Discovery,
+        "PortScan" => ScanType::PortScan,
+        "ServiceDetection" => ScanType::ServiceDetection,
+        "Vulnerability" => ScanType::Vulnerability,
+        "Comprehensive" => ScanType::Comprehensive,
+        "Quick" => ScanType::Quick,
+        "Stealth" => ScanType::Stealth,
+        _ => ScanType::Quick,
+    };
+
+    let options = ScanOptions {
+        ports,
+        rate,
+        extra_args,
+        use_masscan,
+    };
+
+    let request = ScanRequest {
+        target,
+        scan_type,
+        options: Some(options),
+    };
+
+    let coordinator = ScanCoordinator::new(state_db.inner().clone());
+    coordinator.start_scan(app, request).await
+}
+
+/// Start a masscan-specific scan using coordinator
+#[tauri::command]
+pub async fn start_masscan_scan(
+    target: String,
+    ports: Option<String>,
+    rate: Option<u32>,
+    state_db: State<'_, Arc<Db>>,
+    app: AppHandle,
+) -> Result<String, String> {
+    log::info!("Starting masscan scan for target: {}", target);
+    
+    let options = ScanOptions {
+        ports,
+        rate,
+        extra_args: None,
+        use_masscan: Some(true),
+    };
+
+    let request = ScanRequest {
+        target,
+        scan_type: ScanType::PortScan,
+        options: Some(options),
+    };
+
+    let coordinator = ScanCoordinator::new(state_db.inner().clone());
+    coordinator.start_scan(app, request).await
+}
+
+/// Start an nmap-specific scan using coordinator
+#[tauri::command]
+pub async fn start_nmap_scan(
+    target: String,
+    scan_type: String,
+    ports: Option<String>,
+    extra_args: Option<Vec<String>>,
+    state_db: State<'_, Arc<Db>>,
+    app: AppHandle,
+) -> Result<String, String> {
+    log::info!("Starting nmap scan for target: {}", target);
+    
+    // Parse scan type
+    let scan_type = match scan_type.as_str() {
+        "Discovery" => ScanType::Discovery,
+        "PortScan" => ScanType::PortScan,
+        "ServiceDetection" => ScanType::ServiceDetection,
+        "Vulnerability" => ScanType::Vulnerability,
+        "Comprehensive" => ScanType::Comprehensive,
+        "Quick" => ScanType::Quick,
+        "Stealth" => ScanType::Stealth,
+        _ => ScanType::Quick,
+    };
+
+    let options = ScanOptions {
+        ports,
+        rate: None,
+        extra_args,
+        use_masscan: Some(false),
+    };
+
+    let request = ScanRequest {
+        target,
+        scan_type,
+        options: Some(options),
+    };
+
+    let coordinator = ScanCoordinator::new(state_db.inner().clone());
+    coordinator.start_scan(app, request).await
 }

@@ -19,7 +19,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { create } from 'zustand';
-import type { ScanConfig } from '../types/scanning';
+import type { Plan, ScanConfig } from '../types/scanning';
 
 // Simple state reflecting backend events
 interface AppState {
@@ -27,6 +27,17 @@ interface AppState {
   recentHosts: Array<{ ip: string; hostname?: string; timestamp: string }>;
   recentServices: Array<{ ip: string; port: number; protocol: string; timestamp: string }>;
   liveOutput: string[];
+  vulnerabilities?: Array<{
+    id: string;
+    host_ip: string;
+    port: number;
+    service: string;
+    name: string;
+    severity: string;
+    description: string;
+    cvss_score?: number;
+    timestamp: string;
+  }>;
 
   // Current metrics from backend
   metrics: {
@@ -83,6 +94,15 @@ const useAppStore = create<AppState & AppActions>((set) => {
       }));
     });
 
+    await listen('obs:vulnerability', (event: any) => {
+      const vuln = event.payload;
+      const vulnMsg = `🔍 Vulnerability: ${vuln.name} on ${vuln.host_ip}:${vuln.port} (${vuln.severity})`;
+      set((state) => ({ 
+        liveOutput: [...state.liveOutput, vulnMsg],
+        vulnerabilities: [...(state.vulnerabilities || []), vuln]
+      }));
+    });
+
     await listen('obs:done', () => {
       set({ scanInProgress: false });
     });
@@ -96,6 +116,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
     recentHosts: [],
     recentServices: [],
     liveOutput: [],
+    vulnerabilities: [],
     metrics: {
       hosts_discovered: 0,
       services_discovered: 0,
@@ -110,54 +131,91 @@ const useAppStore = create<AppState & AppActions>((set) => {
       const ports = config.ports && config.ports.trim() !== '' ? config.ports : '1-65535';
 
       // Build plans based on selected tools
-      const plans: any[] = [];
+      const plans: Plan[] = [];
 
       if (config.useMasscan) {
-        plans.push({
-          scan_id: crypto.randomUUID(),
+        // Use Plan::masscan builder method
+        const masscanPlan = await invoke<Plan>('create_masscan_plan', {
           targets,
           ports,
           rate: config.rate || 1000,
-          extra: [],
-          modules: [],
-          source_type: 'masscan',
-          sink_types: ['ui', 'db'],
         });
+        plans.push(masscanPlan);
       }
 
       if (config.useNmap) {
-        const nmapArgs: string[] = [];
+        // Use appropriate Plan builder based on scan type
+        let nmapPlan: Plan;
+        const scanId = crypto.randomUUID();
 
-        // Preset options based on scan type
         switch (config.scanType) {
           case 'quick':
-            nmapArgs.push('-T4', '-F');
+            // Use basic nmap plan with quick args
+            nmapPlan = await invoke<Plan>('create_nmap_plan', {
+              scanId,
+              targets,
+              ports,
+              extraArgs: ['-T4', '-F'],
+            });
             break;
           case 'comprehensive':
-            nmapArgs.push('-sS', '-sV', '-O', '-A', '-T4');
+            // Use Plan::comprehensive builder
+            nmapPlan = await invoke<Plan>('create_comprehensive_plan', {
+              scanId,
+              targets,
+              ports,
+            });
             break;
           case 'stealth':
-            nmapArgs.push('-sS', '-T2', '-f', '--randomize-hosts');
+            // Use nmap plan with stealth args
+            nmapPlan = await invoke<Plan>('create_nmap_plan', {
+              scanId,
+              targets,
+              ports,
+              extraArgs: ['-sS', '-T2', '-f', '--randomize-hosts'],
+            });
             break;
+          default:
+            // Standard nmap plan
+            const nmapArgs: string[] = [];
+            if (config.detectOS) nmapArgs.push('-O');
+            if (config.detectVersions) nmapArgs.push('-sV');
+            if (config.skipPing) nmapArgs.push('-Pn');
+            if (config.extra) {
+              nmapArgs.push(...config.extra.split(' '));
+            }
+
+            nmapPlan = await invoke<Plan>('create_nmap_plan', {
+              scanId,
+              targets,
+              ports,
+              extraArgs: nmapArgs,
+            });
         }
 
-        if (config.detectOS) nmapArgs.push('-O');
-        if (config.detectVersions) nmapArgs.push('-sV');
-        if (config.skipPing) nmapArgs.push('-Pn');
-        if (config.extra) {
-          nmapArgs.push(...config.extra.split(' '));
+        // Add OS detection if requested
+        if (config.detectOS && config.scanType !== 'comprehensive') {
+          nmapPlan = await invoke<Plan>('plan_with_os_detection', { plan: nmapPlan });
         }
 
-        plans.push({
-          scan_id: crypto.randomUUID(),
-          targets,
-          ports,
-          rate: null,
-          extra: nmapArgs,
-          modules: [],
-          source_type: 'nmap',
-          sink_types: ['ui', 'db'],
-        });
+        // Test the module system - add some transform modules
+        const availableModules = await invoke<string[]>('get_available_modules');
+        console.log('Available transform modules:', availableModules);
+
+        // Add some example modules to the plan
+        if (availableModules.length > 0) {
+          nmapPlan = await invoke<Plan>('create_plan_with_modules', {
+            scanId: nmapPlan.scan_id,
+            targets: nmapPlan.targets,
+            ports: nmapPlan.ports,
+            sourceType: nmapPlan.source_type,
+            modules: ['ip-enrichment', 'service-parsing'], // Use modular pipeline
+            sinkTypes: nmapPlan.sink_types,
+          });
+          console.log('Created plan with modules:', nmapPlan);
+        }
+
+        plans.push(nmapPlan);
       }
 
       set(() => ({

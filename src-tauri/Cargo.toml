@@ -26,6 +26,11 @@ rusqlite = { version = "0.37.0", features = ["bundled", "chrono"] }
 async-trait = "0.1.89"
 futures = "0.3"
 parking_lot = "0.12"
+dirs = "5.0"
+sha2 = "0.10"
+hex = "0.4"
+aes-gcm = "0.10"
+rand = "0.8"
 
 # For Windows-specific networking
 [target.'cfg(windows)'.dependencies]
