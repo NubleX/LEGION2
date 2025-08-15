@@ -19,7 +19,7 @@
 )]
 
 use crate::analysis::AnalysisEngine;
-use crate::database::{DatabaseOperations, Db};
+use crate::database::Db;
 use crate::scanning::coordinator::ScanCoordinator;
 use anyhow::Result;
 use std::sync::Arc;
@@ -54,39 +54,20 @@ async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     println!("LEGION2 starting up...");
 
-    // Initialize database
-
-    let db = Arc::new(open_db().expect("Failed to open database"));
-
-    // Initialize database operations for scanning
-    let db_path = app_data_dir().join("LEGION2").join("network.db");
-    let database_ops = Arc::new(
-        DatabaseOperations::open(db_path.to_str().unwrap())
-            .await
-            .expect("Failed to open database operations"),
+    // Initialize single database
+    let db_dir = app_data_dir().join("LEGION2");
+    std::fs::create_dir_all(&db_dir).expect("Failed to create database directory");
+    let db_path = db_dir.join("network.db");
+    let db = Arc::new(
+        Db::open(db_path.to_str().unwrap())
+            .expect("Failed to open database"),
     );
-
-    // Initialize scan coordinator
-    let scan_coordinator = Arc::new(ScanCoordinator::new(db.clone()));
 
     tauri::Builder::default()
         .manage(db.clone())
-        .manage(database_ops.clone())
-        .manage(scan_coordinator.clone())
         .invoke_handler(tauri::generate_handler![
             commands::engine_commands::engine_execute,
             commands::host_commands::get_all_hosts,
-            commands::host_commands::get_host_details,
-            commands::host_commands::delete_host,
-            commands::host_commands::batch_import_hosts,
-            commands::host_commands::update_host_os_detection,
-            commands::host_commands::get_host_by_ip,
-            commands::scanner_commands::start_scan,
-            commands::scanner_commands::cancel_scan,
-            commands::scanner_commands::get_active_scans,
-            commands::scanner_commands::get_scan_progress,
-            commands::scanner_commands::get_scan_statistics,
-            commands::scanner_commands::get_scanner_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

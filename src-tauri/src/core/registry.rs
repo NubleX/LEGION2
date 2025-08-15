@@ -1,5 +1,5 @@
 //      mk_source: Box<dyn Fn(&str) -> Result<Box<dyn Source>> + Send + Sync>,
-//      mk_transform: Box<dyn Fn(&str) -> Result<Box<dyn Transform>> + Send + Sync>, 
+//      mk_transform: Box<dyn Fn(&str) -> Result<Box<dyn Transform>> + Send + Sync>,
 //      mk_sink: Box<dyn Fn(&str) -> Result<Box<dyn Sink>> + Send + Sync>,
 
 use anyhow::{anyhow, Result};
@@ -15,7 +15,6 @@ use crate::plan::Plan;
 use crate::scanning::masscan::MasscanScanner;
 use crate::scanning::nmap::NmapScanner;
 
-
 /// Registry for managing scanning components and their lifecycle
 
 pub struct Registry {
@@ -27,7 +26,10 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn new(db: Arc<Db>, app_handle: AppHandle, analysis_engine: Arc<AnalysisEngine>) -> Self {
+    pub fn new(db: Arc<Db>, app_handle: AppHandle) -> Self {
+        // Create analysis engine internally - keep registry simple
+        let analysis_engine = Arc::new(AnalysisEngine::new(db.clone()));
+        
         Self {
             db,
             app_handle,
@@ -59,10 +61,7 @@ impl Registry {
         for sink_type in &plan.sink_types {
             match sink_type.as_str() {
                 "ui" => sinks.push(Box::new(UiSink::new(self.app_handle.clone())) as Box<dyn Sink>),
-                "db" => sinks.push(Box::new(DbSink::new(
-                    self.db.clone(),
-                    self.analysis_engine.clone(),
-                )) as Box<dyn Sink>),
+                "db" => sinks.push(Box::new(DbSink::new(self.db.clone())) as Box<dyn Sink>),
                 _ => log::warn!("Unknown sink type: {}, skipping", sink_type),
             }
         }

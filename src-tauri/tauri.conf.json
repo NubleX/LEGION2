@@ -28,9 +28,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [
-      "../bin/**"
-    ],
     "targets": "all"
   },
   "identifier": "com.legion2.app",

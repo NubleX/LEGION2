@@ -11,7 +11,7 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-use crate::commands::scanner_commands::ScanTarget;
+use crate::scanning::models::ScanTarget;
 use crate::core::traits::Source;
 use crate::plan::Plan;
 use crate::scanning::events::{EventType, ScanEvent};
@@ -94,7 +94,7 @@ impl MasscanScanner {
         let mut cmd = Command::new(&self.bin);
         cmd.arg("-p")
             .arg(&ports_arg)
-            .arg(target.ip.to_string())
+            .arg(&target.ip)
             .args(["--open", "--wait", "0"])
             .arg("--rate")
             .arg(self.options.rate.to_string())

@@ -10,7 +10,6 @@ use crate::database::Db;
 pub fn make_registry(
     db: Arc<Db>,
     app_handle: AppHandle,
-    analysis_engine: Arc<AnalysisEngine>,
 ) -> Result<Registry> {
-    Ok(Registry::new(db, app_handle, analysis_engine))
+    Ok(Registry::new(db, app_handle))
 }

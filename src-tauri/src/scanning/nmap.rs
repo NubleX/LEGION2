@@ -16,7 +16,7 @@
 use crate::core::traits::Source;
 use crate::plan::Plan;
 use crate::scanning::events::{EventType, ScanEvent};
-use crate::commands::scanner_commands::ScanTarget;
+use crate::scanning::models::ScanTarget;
 use crate::scanning::models::{OSDetection, ScanProgress, ScanType};
 use crate::shared::{ObsStream, Observation};
 use crate::shared::{PortState, Protocol, ScanPort, ScanVulnerability};

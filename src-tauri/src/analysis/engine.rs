@@ -24,9 +24,9 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
 
 use crate::database::Db;
-// Import core analysis types. `AttackPath` was previously included but unused.
-// Removing it prevents compiler warnings about unused imports.
 use crate::analysis::types::{AnalysisResult, Finding, NetworkTopology, Vulnerability};
+use crate::analysis::vulnerability::VulnerabilityEngine;
+use crate::analysis::correlation::CorrelationEngine;
 
 /// Central analysis engine that coordinates all analysis activities
 pub struct AnalysisEngine {

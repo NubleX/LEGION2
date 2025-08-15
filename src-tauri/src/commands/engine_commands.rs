@@ -25,16 +25,12 @@ use tauri::{AppHandle, State};
 pub async fn engine_execute(
     plan: Plan,
     state_db: State<'_, Arc<Db>>,
-    analysis_engine: State<'_, Arc<AnalysisEngine>>,
     app: AppHandle,
 ) -> Result<(), String> {
     log::info!("Engine execute called with plan: {:?}", plan);
 
-    // Get database reference
-    let db = state_db.inner().clone();
-
-    // Create registry
-    let registry = Registry::new(db, app, analysis_engine.inner().clone());
+    // Build engine from registry, wire Arc<Db> into DbSink
+    let registry = Registry::new(state_db.inner().clone(), app);
 
     // Build engine from plan
     let engine = Engine { registry };

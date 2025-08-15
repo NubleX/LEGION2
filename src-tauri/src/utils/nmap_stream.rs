@@ -128,9 +128,9 @@ pub async fn run_nmap_stream_and_store<R: Runtime>(
         while let Some(line) = lines.next_line().await? {
             if let Some(evt) = parse_nmap_host_line(&line) {
                 // Store in database
-                db.upsert_host(&evt.ip, Utc::now())?;
+                db.upsert_host(&evt.ip, None).await?;
                 db.upsert_service(&evt.ip, evt.port, &evt.proto, 
-                    evt.service.as_deref(), Utc::now())?;
+                    evt.service.as_deref()).await?;
                 
                 // Emit to frontend
                 app.emit("nmap:host", &evt)?;

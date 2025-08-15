@@ -28,7 +28,7 @@ pub async fn get_all_hosts(
     db: State<'_, Arc<Db>>,
     _status_filter: Option<String>,
 ) -> Result<Vec<Host>, String> {
-    db.get_all_hosts().map_err(|e| e.to_string())
+    db.get_all_hosts().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -55,7 +55,7 @@ pub async fn batch_import_hosts(
     db: State<'_, Arc<Db>>,
 ) -> Result<(), String> {
     for ip in hosts {
-        if let Err(e) = db.upsert_host(&ip, chrono::Utc::now()) {
+        if let Err(e) = db.upsert_host(&ip, None).await {
             return Err(format!("Failed to import host {}: {}", ip, e));
         }
     }
@@ -73,7 +73,7 @@ pub async fn update_host_os_detection(
         Some(&os_detection.name),
         Some(&os_detection.family),
         Some(os_detection.accuracy),
-    ).map_err(|e| format!("Failed to update OS detection for {}: {}", host_ip, e))
+    ).await.map_err(|e| format!("Failed to update OS detection for {}: {}", host_ip, e))
 }
 
 #[tauri::command]
