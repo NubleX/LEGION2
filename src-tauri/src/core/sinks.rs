@@ -152,6 +152,11 @@ impl UiSink {
                 log::debug!("Successfully emitted obs:host event for {}", host_event.ip);
                 cache.insert(ip.to_string(), true);
                 self.metrics.increment_hosts().await;
+                
+                // Also emit a signal to refresh host data from database
+                if let Err(e) = self.app.emit("refresh_host_data", &ip) {
+                    log::warn!("Failed to emit refresh_host_data event: {}", e);
+                }
             }
         }
         Ok(())
@@ -450,6 +455,7 @@ impl VulnerabilityAnalysisSink {
             severity: String,
             description: String,
             cvss_score: Option<f32>,
+            cve_id: Option<String>,
             timestamp: String,
         }
         
@@ -462,16 +468,14 @@ impl VulnerabilityAnalysisSink {
             severity: format!("{:?}", vulnerability.finding.severity),
             description: vulnerability.finding.description.clone(),
             cvss_score: vulnerability.cvss_score,
+            cve_id: vulnerability.cve_id.clone(),
             timestamp: chrono::Utc::now().to_rfc3339(),
         };
         
         if let Err(e) = self.app.emit("obs:vulnerability", &vuln_event) {
             log::error!("Failed to emit vulnerability event: {}", e);
         } else {
-            // Update database vulnerability count
-            if let Err(e) = self.db.increment_host_vulnerability_count(&vulnerability.finding.host).await {
-                log::error!("Failed to increment vulnerability count for host {}: {}", vulnerability.finding.host, e);
-            }
+            log::info!("📢 Emitted vulnerability event: {} for {}:{}", vuln_event.name, vuln_event.host_ip, vuln_event.port);
             
             // Also emit as progress message for live output
             let progress_msg = format!(
@@ -509,14 +513,21 @@ impl Sink for VulnerabilityAnalysisSink {
             match obs.kind {
                 ObservationKind::Service => {
                     // Extract service information
-                    if let (Some(ip), Some(port), Some(service)) = (
+                    if let (Some(ip), Some(port)) = (
                         obs.fields.get("ip").and_then(|v| v.as_str()),
                         obs.fields.get("port").and_then(|v| v.as_u64()).map(|p| p as u16),
-                        obs.fields.get("service").and_then(|v| v.as_str()),
                     ) {
-                        // Run vulnerability analysis on this service
-                        match self.vulnerability_engine.analyze_service(ip, port, service).await {
+                        let service = obs.fields.get("service").and_then(|v| v.as_str());
+                        let version = obs.fields.get("version").and_then(|v| v.as_str());
+                        let banner = obs.fields.get("banner").and_then(|v| v.as_str());
+                        
+                        // Run vulnerability analysis on this service  
+                        let service_name = service.unwrap_or("unknown");
+                        log::debug!("Running vulnerability analysis for {}:{} ({})", ip, port, service_name);
+                        
+                        match self.vulnerability_engine.analyze_service(ip, port, service_name, version, banner).await {
                             Ok(vulnerabilities) => {
+                                log::info!("Found {} vulnerabilities for {}:{}", vulnerabilities.len(), ip, port);
                                 for vuln in vulnerabilities {
                                     if let Err(e) = self.emit_vulnerability(&vuln).await {
                                         log::error!("Failed to emit vulnerability: {}", e);
@@ -525,7 +536,7 @@ impl Sink for VulnerabilityAnalysisSink {
                                 }
                             }
                             Err(e) => {
-                                log::error!("Vulnerability analysis failed for {}:{} ({}): {}", ip, port, service, e);
+                                log::error!("Vulnerability analysis failed for {}:{} ({}): {}", ip, port, service_name, e);
                                 self.metrics.increment_errors().await;
                             }
                         }

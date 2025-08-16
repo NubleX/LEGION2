@@ -19,7 +19,7 @@
 //     If not, see <http://www.gnu.org/licenses/>.
 
 
-import { AlertTriangle, Download, Search, Shield, Network, Server } from 'lucide-react';
+import { AlertTriangle, Download, Shield, Network, Server } from 'lucide-react';
 import React, { useMemo, useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import useAppStore from '../stores/appStore';
@@ -34,6 +34,18 @@ interface PortInfo {
   banner?: string;
 }
 
+interface VulnerabilityInfo {
+  id: string;
+  host_ip: string;
+  name: string;
+  severity: string;
+  description: string;
+  cve_id?: string;
+  cvss_score?: number;
+  discovered_at: string;
+  last_seen: string;
+}
+
 interface ResultViewerProps {
   selectedScanId?: string;
   selectedHost?: Host;
@@ -45,10 +57,10 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
   const hosts = useHostStore(state => state.hosts);
   
   const [selectedTab, setSelectedTab] = useState<'ports' | 'vulnerabilities' | 'details'>('ports');
-  const [severityFilter, setSeverityFilter] = useState<string>('all');
-  const [searchTerm, setSearchTerm] = useState('');
   const [hostPorts, setHostPorts] = useState<PortInfo[]>([]);
   const [loadingPorts, setLoadingPorts] = useState(false);
+  const [hostVulnerabilities, setHostVulnerabilities] = useState<VulnerabilityInfo[]>([]);
+  const [loadingVulnerabilities, setLoadingVulnerabilities] = useState(false);
 
   // Get the host either from selectedHost prop or by selectedScanId (treating it as host ID)
   const currentHost = selectedHost || (selectedScanId ? hosts.find(h => h.id === selectedScanId) : null);
@@ -56,9 +68,13 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
   // Load ports when host changes
   useEffect(() => {
     if (currentHost?.ip) {
+      console.log('Loading ports for host:', currentHost.ip);
       setLoadingPorts(true);
-      invoke<PortInfo[]>('get_host_ports_detailed', { hostIp: currentHost.ip })
-        .then(setHostPorts)
+      invoke<PortInfo[]>('get_host_ports_detailed', { host_ip: currentHost.ip })
+        .then(ports => {
+          console.log('Loaded ports:', ports);
+          setHostPorts(ports);
+        })
         .catch(err => {
           console.error('Failed to load ports:', err);
           setHostPorts([]);
@@ -69,30 +85,62 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
     }
   }, [currentHost?.ip]);
 
+  // Load vulnerabilities when host changes
+  useEffect(() => {
+    if (currentHost?.ip) {
+      console.log('Loading vulnerabilities for host:', currentHost.ip);
+      setLoadingVulnerabilities(true);
+      invoke<VulnerabilityInfo[]>('get_host_vulnerabilities', { host_ip: currentHost.ip })
+        .then(vulns => {
+          console.log('Loaded vulnerabilities:', vulns);
+          setHostVulnerabilities(vulns);
+        })
+        .catch(err => {
+          console.error('Failed to load vulnerabilities:', err);
+          setHostVulnerabilities([]);
+        })
+        .finally(() => setLoadingVulnerabilities(false));
+    } else {
+      setHostVulnerabilities([]);
+    }
+  }, [currentHost?.ip]);
+
   const allVulnerabilities = useMemo(() => {
-    if (!currentHost || !vulnerabilities) return [];
+    if (!currentHost) return [];
     
-    // Filter vulnerabilities for the current host
-    const hostVulns = vulnerabilities.filter(vuln => vuln.host_ip === currentHost.ip);
+    // Combine database vulnerabilities with live event vulnerabilities
+    const combined = [...hostVulnerabilities];
     
-    return hostVulns.filter((vuln: any) => {
-      if (severityFilter !== 'all' && vuln.severity.toLowerCase() !== severityFilter) return false;
-      if (searchTerm && !vuln.name.toLowerCase().includes(searchTerm.toLowerCase())) return false;
-      return true;
-    });
-  }, [currentHost, vulnerabilities, severityFilter, searchTerm]);
+    // Add any live vulnerabilities that aren't already in the database
+    if (vulnerabilities) {
+      const liveVulns = vulnerabilities.filter(vuln => vuln.host_ip === currentHost.ip);
+      for (const liveVuln of liveVulns) {
+        // Check if this vulnerability is already in our database results
+        const exists = combined.some(dbVuln => dbVuln.id === liveVuln.id);
+        if (!exists) {
+          // Convert live vulnerability to our interface format
+          combined.push({
+            id: liveVuln.id,
+            host_ip: liveVuln.host_ip,
+            name: liveVuln.name,
+            severity: liveVuln.severity,
+            description: liveVuln.description,
+            cve_id: undefined,
+            cvss_score: liveVuln.cvss_score,
+            discovered_at: liveVuln.timestamp,
+            last_seen: liveVuln.timestamp,
+          });
+        }
+      }
+    }
+    
+    return combined;
+  }, [currentHost, hostVulnerabilities, vulnerabilities]);
 
   const allPorts = useMemo(() => {
     if (!hostPorts) return [];
-    
-    return hostPorts.filter(port =>
-      searchTerm === '' ||
-      port.number.toString().includes(searchTerm) ||
-      port.protocol.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      port.service?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      port.state.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-  }, [hostPorts, searchTerm]);
+    return hostPorts;
+  }, [hostPorts]);
 
   const getSeverityColor = (severity: string) => {
     switch (severity) {
@@ -104,14 +152,6 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
     }
   };
 
-  const getPortStateColor = (state: string) => {
-    switch (state) {
-      case 'open': return 'text-green-400';
-      case 'closed': return 'text-red-400';
-      case 'filtered': return 'text-yellow-400';
-      default: return 'text-gray-400';
-    }
-  };
 
   const exportResults = () => {
     const data = {
@@ -143,13 +183,25 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
 
   return (
     <div className="bg-gray-900 rounded-lg border border-gray-700">
-      {/* Header */}
-      <div className="p-6 border-b border-gray-700">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold text-white flex items-center gap-2">
-            <Shield className="w-5 h-5 text-yellow-400" />
-            Target Information
-          </h2>
+      {/* Compact Header with Tabs and Export */}
+      <div className="p-4 border-b border-gray-700">
+        <div className="flex items-center justify-between">
+          {/* Tabs */}
+          <div className="flex space-x-1 bg-gray-800 rounded-lg p-1">
+            {(['ports', 'vulnerabilities', 'details'] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setSelectedTab(tab)}
+                className={`px-4 py-2 rounded transition-colors capitalize ${selectedTab === tab
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-400 hover:text-white hover:bg-gray-700'
+                  }`}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+          
           <button
             onClick={exportResults}
             className="flex items-center gap-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors"
@@ -158,53 +210,11 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
             Export
           </button>
         </div>
-
-        {/* Tabs */}
-        <div className="flex space-x-1 bg-gray-800 rounded-lg p-1">
-          {(['ports', 'vulnerabilities', 'details'] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setSelectedTab(tab)}
-              className={`px-4 py-2 rounded transition-colors capitalize ${selectedTab === tab
-                  ? 'bg-blue-600 text-white'
-                  : 'text-gray-400 hover:text-white hover:bg-gray-700'
-                }`}
-            >
-              {tab}
-            </button>
-          ))}
-        </div>
       </div>
 
       {/* Content */}
       <div className="p-6">
-        {/* Search and Filter */}
-        <div className="flex gap-4 mb-6">
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              type="text"
-              placeholder={`Search ${selectedTab}...`}
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 bg-gray-800 border border-gray-600 rounded text-white focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
 
-          {selectedTab === 'vulnerabilities' && (
-            <select
-              value={severityFilter}
-              onChange={(e) => setSeverityFilter(e.target.value)}
-              className="px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="all">All Severities</option>
-              <option value="critical">Critical</option>
-              <option value="high">High</option>
-              <option value="medium">Medium</option>
-              <option value="low">Low</option>
-            </select>
-          )}
-        </div>
 
         {/* Tab Content */}
         {selectedTab === 'ports' && (
@@ -259,11 +269,13 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
 
         {selectedTab === 'vulnerabilities' && (
           <div className="space-y-4">
-            {allVulnerabilities.length === 0 ? (
+            {loadingVulnerabilities ? (
+              <p className="text-gray-400 text-center py-8">Loading vulnerabilities...</p>
+            ) : allVulnerabilities.length === 0 ? (
               <p className="text-gray-400 text-center py-8">No vulnerabilities found.</p>
             ) : (
               <div className="grid gap-4">
-                {allVulnerabilities.map((vuln: any, index: number) => (
+                {allVulnerabilities.map((vuln: VulnerabilityInfo, index: number) => (
                   <div key={`${vuln.name}-${index}`} className={`p-4 rounded border ${getSeverityColor(vuln.severity)}`}>
                     <div className="flex items-start justify-between mb-3">
                       <div>
@@ -275,6 +287,11 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
                           {vuln.cvss_score && (
                             <span className="text-sm text-gray-400">
                               CVSS: {vuln.cvss_score}
+                            </span>
+                          )}
+                          {vuln.cve_id && (
+                            <span className="text-sm text-blue-400">
+                              {vuln.cve_id}
                             </span>
                           )}
                         </div>
@@ -331,7 +348,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
                   <div className="flex justify-between py-2 border-b border-gray-700">
                     <span className="text-gray-400">Status</span>
                     <span className={`font-semibold ${currentHost.status === 'up' ? 'text-green-400' : currentHost.status === 'down' ? 'text-red-400' : 'text-yellow-400'}`}>
-                      {currentHost.status?.toUpperCase() || 'UNKNOWN'}
+                      {currentHost.status ? currentHost.status.toUpperCase() : 'UNKNOWN'}
                     </span>
                   </div>
 
@@ -364,7 +381,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
 
                   <div className="flex justify-between py-2 border-b border-gray-700">
                     <span className="text-gray-400">Total Ports</span>
-                    <span className="text-white font-semibold">{currentHost.port_count || hostPorts.length}</span>
+                    <span className="text-white font-semibold">{currentHost.port_count ?? hostPorts.length}</span>
                   </div>
 
                   <div className="flex justify-between py-2 border-b border-gray-700">
@@ -379,7 +396,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
 
                   <div className="flex justify-between py-2 border-b border-gray-700">
                     <span className="text-gray-400">Vulnerabilities</span>
-                    <span className="text-red-400 font-semibold">{currentHost.vulnerability_count || allVulnerabilities.length}</span>
+                    <span className="text-red-400 font-semibold">{currentHost.vulnerability_count ?? allVulnerabilities.length}</span>
                   </div>
                 </div>
               </div>

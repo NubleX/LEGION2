@@ -27,7 +27,7 @@ MANIFEST
 node_modules/
 CLAUDE.*
 CLAUDE.md
-/src-tauri/.claude
+src-tauri/.claude
 
 
 # PyInstaller

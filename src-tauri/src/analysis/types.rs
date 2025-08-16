@@ -27,13 +27,9 @@ pub enum Severity {
     Critical,
 }
 
-/// Confidence levels for analysis results
+/// Confidence levels for analysis results (0-100 scale)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
-pub enum Confidence {
-    Low(f32),    // 0.0-0.4
-    Medium(f32), // 0.4-0.7
-    High(f32),   // 0.7-1.0
-}
+pub struct Confidence(pub u8); // 0-100 confidence score
 
 /// Generic finding from analysis
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,19 +164,31 @@ pub struct AnalysisSummary {
 }
 
 impl Confidence {
-    pub fn value(&self) -> f32 {
-        match self {
-            Confidence::Low(v) => *v,
-            Confidence::Medium(v) => *v,
-            Confidence::High(v) => *v,
-        }
+    pub fn new(score: u8) -> Self {
+        Confidence(score.min(100))
+    }
+    
+    pub fn value(&self) -> u8 {
+        self.0
     }
 
-    pub fn from_score(score: f32) -> Self {
-        match score {
-            s if s < 0.4 => Confidence::Low(s),
-            s if s < 0.7 => Confidence::Medium(s), 
-            s => Confidence::High(s),
+    pub fn low() -> Self {
+        Confidence(30)
+    }
+    
+    pub fn medium() -> Self {
+        Confidence(70)
+    }
+    
+    pub fn high() -> Self {
+        Confidence(90)
+    }
+    
+    pub fn as_string(&self) -> &'static str {
+        match self.0 {
+            0..=40 => "Low",
+            41..=70 => "Medium",
+            _ => "High", // Covers 71-255, though we cap at 100
         }
     }
 }
@@ -192,7 +200,7 @@ impl Finding {
             title,
             description: String::new(),
             severity: Severity::Info,
-            confidence: Confidence::Low(0.0),
+            confidence: Confidence::low(),
             host,
             port: None,
             service: None,

@@ -629,15 +629,20 @@ impl Source for NmapScanner {
         
         let nmap_path = get_nmap_binary_path();
         let mut cmd = Command::new(&nmap_path);
-        cmd.args(&plan.extra);
-        cmd.arg(&plan.targets);
         
+        // Add port specification first if provided
         if !plan.ports.is_empty() {
             cmd.arg("-p").arg(&plan.ports);
         }
         
+        // Add extra arguments
+        cmd.args(&plan.extra);
+        
         // Enable verbose output for observation parsing
         cmd.arg("-v");
+        
+        // Target goes last
+        cmd.arg(&plan.targets);
         
         let mut child = cmd
             .stdout(std::process::Stdio::piped())
@@ -654,16 +659,18 @@ impl Source for NmapScanner {
         use std::sync::{Arc, Mutex};
         let parser = Arc::new(Mutex::new(NmapParser::new(scan_id)));
         
-        let stream = stream::unfold((lines, parser), move |(mut lines, parser)| async move {
+        let stream = stream::unfold((lines, parser, child), move |(mut lines, parser, mut child)| async move {
             match lines.next_line().await {
                 Ok(Some(line)) => {
+                    log::info!("Nmap output line: {}", line);
                     let obs = {
                         let mut parser_guard = parser.lock().unwrap();
                         parser_guard.parse_line(&line)
                     };
                     
                     if let Some(observation) = obs {
-                        Some((observation, (lines, parser)))
+                        log::info!("Parsed nmap observation: {:?}", observation);
+                        Some((observation, (lines, parser, child)))
                     } else {
                         // Even if no observation was created, continue parsing
                         // This happens for lines that set context but don't create observations
@@ -680,11 +687,29 @@ impl Source for NmapScanner {
                                 key: "nmap-output".to_string(),
                                 raw: Some(line),
                             },
-                            (lines, parser)
+                            (lines, parser, child)
                         ))
                     }
                 }
-                _ => None,
+                Ok(None) => {
+                    log::info!("Nmap stream ended - waiting for process to complete");
+                    // Wait for the child process to finish
+                    match child.wait().await {
+                        Ok(status) => {
+                            log::info!("Nmap process completed with status: {}", status);
+                        }
+                        Err(e) => {
+                            log::error!("Error waiting for nmap process: {}", e);
+                        }
+                    }
+                    None
+                }
+                Err(e) => {
+                    log::error!("Error reading nmap output: {}", e);
+                    // Kill the child process if there was an error
+                    let _ = child.kill().await;
+                    None
+                }
             }
         });
 

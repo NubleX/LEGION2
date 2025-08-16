@@ -54,7 +54,10 @@ interface AppState {
 interface AppActions {
   // Simple actions
   startScan: (config: ScanConfig) => Promise<void>;
+  cancelScan: () => Promise<void>;
   clearOutput: () => void;
+  resetScan: () => void;
+  loadExistingData: () => Promise<void>;
 }
 
 const useAppStore = create<AppState & AppActions>((set) => {
@@ -104,12 +107,33 @@ const useAppStore = create<AppState & AppActions>((set) => {
     });
 
     await listen('obs:done', () => {
-      set({ scanInProgress: false });
+      set((state) => ({ 
+        scanInProgress: false,
+        liveOutput: [...state.liveOutput, 'Scan completed. Ready for new scan.']
+      }));
     });
   };
 
-  // Initialize listeners
+  // Initialize listeners and load existing data
   setupEventListeners().catch(console.error);
+
+  // Auto-load existing data on startup
+  setTimeout(async () => {
+    try {
+      const existingHosts = await invoke<any[]>('get_all_hosts');
+      if (existingHosts && existingHosts.length > 0) {
+        set((state) => ({
+          liveOutput: [...state.liveOutput, `Loaded ${existingHosts.length} hosts from previous scans.`],
+          metrics: {
+            ...state.metrics,
+            hosts_discovered: existingHosts.length
+          }
+        }));
+      }
+    } catch (error) {
+      console.error('Failed to load existing data on startup:', error);
+    }
+  }, 500); // Small delay to ensure backend is ready
 
   return {
     // Initial state
@@ -193,43 +217,91 @@ const useAppStore = create<AppState & AppActions>((set) => {
             });
         }
 
-        // Add OS detection if requested
-        if (config.detectOS && config.scanType !== 'comprehensive') {
-          nmapPlan = await invoke<Plan>('plan_with_os_detection', { plan: nmapPlan });
-        }
-
-        // Test the module system - add some transform modules
-        const availableModules = await invoke<string[]>('get_available_modules');
-        console.log('Available transform modules:', availableModules);
-
-        // Add some example modules to the plan
-        if (availableModules.length > 0) {
-          nmapPlan = await invoke<Plan>('create_plan_with_modules', {
-            scanId: nmapPlan.scan_id,
-            targets: nmapPlan.targets,
-            ports: nmapPlan.ports,
-            sourceType: nmapPlan.source_type,
-            modules: ['ip-enrichment', 'service-parsing'], // Use modular pipeline
-            sinkTypes: nmapPlan.sink_types,
-          });
-          console.log('Created plan with modules:', nmapPlan);
-        }
+        // OS detection is already handled in the comprehensive plan
+        // Module system will be implemented later
 
         plans.push(nmapPlan);
       }
 
-      set(() => ({
+      set((state) => ({
         scanInProgress: true,
-        liveOutput: [`Starting scan for ${targets} using ${plans.map(p => p.source_type).join(' & ')}...`],
+        liveOutput: [...state.liveOutput, `Starting scan for ${targets} using ${plans.map(p => p.source_type).join(' & ')}...`],
       }));
 
-      for (const plan of plans) {
-        await invoke('engine_execute', { plan });
+      try {
+        for (const plan of plans) {
+          console.log('Executing scan plan:', plan);
+          await invoke('engine_execute', { plan });
+          console.log('Plan executed successfully');
+        }
+        
+        // Mark scan as complete after all plans are executed
+        set((state) => ({
+          scanInProgress: false,
+          liveOutput: [...state.liveOutput, 'All scan plans completed successfully. Ready for new scan.']
+        }));
+      } catch (error) {
+        console.error('Scan execution failed:', error);
+        set((state) => ({
+          scanInProgress: false,
+          liveOutput: [...state.liveOutput, `ERROR: Scan failed - ${error}`]
+        }));
+        throw error;
+      }
+    },
+
+    cancelScan: async () => {
+      try {
+        await invoke('engine_cancel_scan');
+        set((state) => ({ 
+          scanInProgress: false,
+          liveOutput: [...state.liveOutput, 'Scan cancelled by user.']
+        }));
+      } catch (error) {
+        console.error('Failed to cancel scan:', error);
+        set((state) => ({ 
+          liveOutput: [...state.liveOutput, 'ERROR: Failed to cancel scan.']
+        }));
       }
     },
 
     clearOutput: () => {
       set({ liveOutput: [] });
+    },
+
+    resetScan: () => {
+      set({
+        scanInProgress: false,
+        liveOutput: ['Previous scan data preserved. Ready for new scan.'],
+        // Keep existing data persistent:
+        // recentHosts: [],
+        // recentServices: [],
+        // vulnerabilities: [],
+        metrics: {
+          hosts_discovered: 0,
+          services_discovered: 0,
+          processing_rate: 0,
+          observations_processed: 0,
+        }
+      });
+    },
+
+    loadExistingData: async () => {
+      try {
+        // Load existing hosts from database to show persistent data
+        const existingHosts = await invoke<any[]>('get_all_hosts');
+        if (existingHosts && existingHosts.length > 0) {
+          set((state) => ({
+            liveOutput: [...state.liveOutput, `Loaded ${existingHosts.length} hosts from previous scans.`],
+            metrics: {
+              ...state.metrics,
+              hosts_discovered: existingHosts.length
+            }
+          }));
+        }
+      } catch (error) {
+        console.error('Failed to load existing data:', error);
+      }
     }
   };
 });

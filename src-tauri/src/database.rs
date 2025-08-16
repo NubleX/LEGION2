@@ -366,10 +366,10 @@ impl Db {
                     os_name,
                     os_family,
                     os_accuracy,
-                    status: status_s.parse().unwrap_or(crate::shared::HostStatus::Unknown),
-                    last_seen: from_rfc3339(&last_seen),
-                    created_at: from_rfc3339(&created_at),
-                    updated_at: from_rfc3339(&updated_at),
+                    status: status_s,
+                    last_seen,
+                    created_at,
+                    updated_at,
                     port_count,
                     vulnerability_count,
                     notes,
@@ -620,4 +620,157 @@ impl Db {
             Ok::<(), anyhow::Error>(())
         }).await?
     }
+
+    /// Store a vulnerability in the database
+    pub async fn store_vulnerability(
+        &self,
+        id: &str,
+        host_ip: &str,
+        port: u16,
+        name: &str,
+        description: &str,
+        severity: &str,
+        cvss_score: Option<f32>,
+        cve_id: Option<&str>,
+        remediation: Option<&str>,
+    ) -> Result<()> {
+        let ip_encrypted = self.encryption.encrypt(host_ip)?;
+        let conn = self.conn.clone();
+        let timestamp = to_rfc3339(Utc::now());
+        
+        let id = id.to_string();
+        let name = name.to_string();
+        let description = description.to_string();
+        let severity = severity.to_string();
+        let cve_id = cve_id.map(|s| s.to_string());
+        let remediation = remediation.map(|s| s.to_string());
+        
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.blocking_lock();
+            
+            // Find host by IP
+            let mut stmt = conn.prepare("SELECT id FROM hosts WHERE ip_encrypted = ?1")?;
+            let host_id: String = stmt.query_row([&ip_encrypted], |row| {
+                Ok(row.get::<_, String>(0)?)
+            })?;
+            
+            // Find port ID if exists
+            let port_id = {
+                let mut port_stmt = conn.prepare("SELECT id FROM ports WHERE host_id = ?1 AND number = ?2")?;
+                port_stmt.query_row([&host_id, &(port as i64).to_string()], |row| {
+                    Ok(Some(row.get::<_, String>(0)?))
+                }).unwrap_or(None)
+            };
+            
+            conn.execute(
+                r#"INSERT INTO vulnerabilities(id, host_id, port_id, name, severity, description, cve, cvss_score, discovered_at, last_seen)
+                   VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                   ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen"#,
+                params![&id, &host_id, port_id, &name, &severity, &description, cve_id, cvss_score, &timestamp],
+            )?;
+            
+            Ok::<(), anyhow::Error>(())
+        }).await??;
+        
+        // Increment host vulnerability count
+        self.increment_host_vulnerability_count(host_ip).await?;
+        
+        Ok(())
+    }
+
+    /// Get all vulnerabilities for a specific host by IP
+    pub async fn get_vulnerabilities_by_host_ip(&self, host_ip: &str) -> Result<Vec<VulnerabilityRecord>> {
+        let ip_encrypted = self.encryption.encrypt(host_ip)?;
+        let conn = self.conn.clone();
+        let host_ip_owned = host_ip.to_string(); // Create owned copy for the closure
+        
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.blocking_lock();
+            
+            // First get host ID
+            let mut host_stmt = conn.prepare("SELECT id FROM hosts WHERE ip_encrypted = ?1")?;
+            let host_id: String = host_stmt.query_row([&ip_encrypted], |row| {
+                Ok(row.get::<_, String>(0)?)
+            })?;
+            
+            let mut stmt = conn.prepare(
+                r#"SELECT id, name, severity, description, cve, cvss_score, discovered_at, last_seen
+                   FROM vulnerabilities WHERE host_id = ?1 ORDER BY severity DESC, discovered_at DESC"#,
+            )?;
+            
+            let rows = stmt.query_map([host_id], |row| {
+                Ok(VulnerabilityRecord {
+                    id: row.get(0)?,
+                    host_ip: host_ip_owned.clone(),
+                    name: row.get(1)?,
+                    severity: row.get(2)?,
+                    description: row.get(3)?,
+                    cve_id: row.get(4)?,
+                    cvss_score: row.get(5)?,
+                    discovered_at: row.get(6)?,
+                    last_seen: row.get(7)?,
+                })
+            })?;
+            
+            let mut vulns = Vec::new();
+            for vuln in rows {
+                vulns.push(vuln?);
+            }
+            Ok(vulns)
+        }).await?
+    }
+
+    /// Get all vulnerabilities across all hosts
+    pub async fn get_all_vulnerabilities(&self) -> Result<Vec<VulnerabilityRecord>> {
+        let conn = self.conn.clone();
+        let encryption = EncryptionManager::new();
+        
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.blocking_lock();
+            let mut stmt = conn.prepare(
+                r#"SELECT v.id, h.ip_encrypted, v.name, v.severity, v.description, v.cve, v.cvss_score, v.discovered_at, v.last_seen
+                   FROM vulnerabilities v
+                   JOIN hosts h ON v.host_id = h.id
+                   ORDER BY v.severity DESC, v.discovered_at DESC"#,
+            )?;
+            
+            let rows = stmt.query_map([], |row| {
+                let ip_encrypted: String = row.get(1)?;
+                let host_ip = encryption.decrypt(&ip_encrypted).unwrap_or_else(|_| "DECRYPTION_ERROR".to_string());
+                
+                Ok(VulnerabilityRecord {
+                    id: row.get(0)?,
+                    host_ip,
+                    name: row.get(2)?,
+                    severity: row.get(3)?,
+                    description: row.get(4)?,
+                    cve_id: row.get(5)?,
+                    cvss_score: row.get(6)?,
+                    discovered_at: row.get(7)?,
+                    last_seen: row.get(8)?,
+                })
+            })?;
+            
+            let mut vulns = Vec::new();
+            for vuln in rows {
+                vulns.push(vuln?);
+            }
+            Ok(vulns)
+        }).await?
+    }
+
+}
+
+/// Vulnerability record for database operations
+#[derive(Debug, Clone)]
+pub struct VulnerabilityRecord {
+    pub id: String,
+    pub host_ip: String,
+    pub name: String,
+    pub severity: String,
+    pub description: String,
+    pub cve_id: Option<String>,
+    pub cvss_score: Option<f32>,
+    pub discovered_at: String,
+    pub last_seen: String,
 }

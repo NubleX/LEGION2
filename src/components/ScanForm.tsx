@@ -18,7 +18,7 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-import { AlertCircle, Network, Play, Settings, Shield, Target, Zap, Square } from 'lucide-react';
+import { AlertCircle, Network, Play, Settings, Shield, Zap, Square } from 'lucide-react';
 import React, { useState } from 'react';
 import { ScanConfig } from '../types/scanning';
 
@@ -95,10 +95,6 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, onCancelScan, isScanni
 
   return (
     <div className="bg-gray-900 rounded-lg border border-gray-700 p-6">
-      <div className="flex items-center gap-2 mb-6">
-        <Target className="w-5 h-5 text-blue-400" />
-        <h2 className="text-xl font-semibold text-white">Network Scanner</h2>
-      </div>
 
       {errors.length > 0 && (
         <div className="mb-4 p-3 bg-red-900/20 border border-red-500/30 rounded">
@@ -144,7 +140,6 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, onCancelScan, isScanni
                   ? 'bg-blue-600 border-blue-500 text-white'
                   : 'bg-gray-800 border-gray-600 text-gray-300 hover:bg-gray-700'
                   }`}
-                disabled={isScanning}
               >
                 <div className="flex items-center justify-center mb-1">
                   {preset === 'quick' && <Zap className="w-4 h-4" />}

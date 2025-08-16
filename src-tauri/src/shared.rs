@@ -45,6 +45,7 @@ pub struct Observation {
 
 pub type ObsStream = futures::stream::BoxStream<'static, Observation>;
 
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum HostStatus {
     Up,
@@ -74,6 +75,7 @@ impl FromStr for HostStatus {
     }
 }
 
+/// Host information as stored in database and shared with frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Host {
     pub id: String,
@@ -84,10 +86,10 @@ pub struct Host {
     pub os_name: Option<String>,
     pub os_family: Option<String>,
     pub os_accuracy: Option<f32>,
-    pub status: HostStatus,
-    pub last_seen: DateTime<Utc>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub status: String,
+    pub last_seen: String,
+    pub created_at: String,
+    pub updated_at: String,
     pub port_count: i32,
     pub vulnerability_count: i32,
     pub notes: Option<String>,

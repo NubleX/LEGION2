@@ -82,15 +82,43 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     return subnets;
   };
 
-  // Initialize network layout
+  // Set up canvas with proper DPI scaling
   useEffect(() => {
-    if (hosts.length === 0) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Get device pixel ratio for sharp rendering
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+
+    // Set actual canvas size accounting for device pixel ratio
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+
+    // Scale the context to match device pixel ratio
+    ctx.scale(dpr, dpr);
+
+    // Set canvas CSS size to maintain layout
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+  }, []);
+
+  // Initialize network layout - update when hosts change
+  useEffect(() => {
+    if (hosts.length === 0) {
+      setNodes([]);
+      return;
+    }
 
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const centerX = canvas.width / 2;
-    const centerY = canvas.height / 2;
+    const rect = canvas.getBoundingClientRect();
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
     const subnets = groupBySubnet(hosts);
     const subnetEntries = Array.from(subnets.entries());
     
@@ -364,29 +392,12 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     drawNetwork();
   }, [nodes, scale, offset, selectedHostIp, showLabels, showServices]);
 
-  const getStatsColor = (count: number, type: 'vulnerabilities' | 'hosts') => {
-    if (type === 'vulnerabilities') {
-      if (count === 0) return 'text-green-400';
-      if (count < 5) return 'text-yellow-400';
-      return 'text-red-400';
-    }
-    return 'text-blue-400';
-  };
-
-  const totalVulns = hosts.reduce((sum: number, host: Host) => sum + (host.vulnerability_count || 0), 0);
-  const upHosts = hosts.filter((h: Host) => h.status === 'up').length;
-  const totalPorts = hosts.reduce((sum: number, host: Host) => sum + (host.port_count || 0), 0);
 
   return (
-    <div className="bg-gray-900 rounded-lg border border-gray-700">
-      {/* Header */}
-      <div className="p-4 border-b border-gray-700">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-            <Network className="w-5 h-5 text-purple-400" />
-            Network Topology
-          </h2>
-
+    <div className="bg-gray-900 rounded-lg border border-gray-700 flex flex-col h-full">
+      {/* Compact Controls Header */}
+      <div className="p-2 border-b border-gray-700">
+        <div className="flex items-center justify-start">
           <div className="flex items-center gap-2">
             <button
               onClick={() => setShowLabels(!showLabels)}
@@ -434,34 +445,13 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
           </div>
         </div>
 
-        {/* Network Stats */}
-        <div className="grid grid-cols-4 gap-4 text-sm">
-          <div className="bg-gray-800 p-2 rounded">
-            <div className="text-gray-400">Hosts</div>
-            <div className={getStatsColor(upHosts, 'hosts')}>{upHosts}/{hosts.length}</div>
-          </div>
-          <div className="bg-gray-800 p-2 rounded">
-            <div className="text-gray-400">Open Ports</div>
-            <div className="text-green-400">{totalPorts}</div>
-          </div>
-          <div className="bg-gray-800 p-2 rounded">
-            <div className="text-gray-400">Vulnerabilities</div>
-            <div className={getStatsColor(totalVulns, 'vulnerabilities')}>{totalVulns}</div>
-          </div>
-          <div className="bg-gray-800 p-2 rounded">
-            <div className="text-gray-400">Zoom</div>
-            <div className="text-gray-300">{Math.round(scale * 100)}%</div>
-          </div>
-        </div>
       </div>
 
       {/* Canvas */}
-      <div className="relative">
+      <div className="relative flex-1">
         <canvas
           ref={canvasRef}
-          width={800}
-          height={500}
-          className="w-full cursor-grab active:cursor-grabbing"
+          className="w-full h-full cursor-grab active:cursor-grabbing"
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}

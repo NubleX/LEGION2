@@ -97,9 +97,11 @@ pub async fn update_host_os_detection(
 }
 
 #[tauri::command]
-pub async fn get_host_by_ip(_db: State<'_, Arc<Db>>, _ip: String) -> Result<Host, String> {
-    // TODO: Implement get_host_by_ip in Db
-    Err("Not implemented".to_string())
+pub async fn get_host_by_ip(db: State<'_, Arc<Db>>, ip: String) -> Result<Host, String> {
+    let hosts = db.get_all_hosts().await.map_err(|e| e.to_string())?;
+    hosts.into_iter()
+        .find(|h| h.ip == ip)
+        .ok_or_else(|| "Host not found".to_string())
 }
 
 #[tauri::command]
@@ -107,10 +109,19 @@ pub async fn get_host_ports_detailed(
     host_ip: String,
     db: State<'_, Arc<Db>>,
 ) -> Result<Vec<PortInfo>, String> {
+    log::info!("Getting ports for host IP: {}", host_ip);
+    
     // First get the host ID by IP
     let hosts = db.get_all_hosts().await.map_err(|e| e.to_string())?;
-    let host = hosts.into_iter().find(|h| h.ip == host_ip)
-        .ok_or_else(|| "Host not found".to_string())?;
+    log::info!("Found {} total hosts in database", hosts.len());
     
-    db.get_host_ports_detailed(&host.id).await.map_err(|e| e.to_string())
+    let host = hosts.into_iter().find(|h| h.ip == host_ip)
+        .ok_or_else(|| format!("Host not found for IP: {}", host_ip))?;
+    
+    log::info!("Found host with ID: {} for IP: {}", host.id, host_ip);
+    
+    let ports = db.get_host_ports_detailed(&host.id).await.map_err(|e| e.to_string())?;
+    log::info!("Found {} ports for host ID: {}", ports.len(), host.id);
+    
+    Ok(ports)
 }

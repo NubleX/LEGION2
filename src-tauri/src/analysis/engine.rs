@@ -23,10 +23,10 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
 
-use crate::database::Db;
+use crate::analysis::correlation::CorrelationEngine;
 use crate::analysis::types::{AnalysisResult, Finding, NetworkTopology, Vulnerability};
 use crate::analysis::vulnerability::VulnerabilityEngine;
-use crate::analysis::correlation::CorrelationEngine;
+use crate::database::Db;
 
 /// Central analysis engine that coordinates all analysis activities
 pub struct AnalysisEngine {
@@ -127,7 +127,7 @@ impl AnalysisEngine {
         // Quick vulnerability check for this specific service
         let vulnerabilities = self
             .vulnerability_engine
-            .analyze_service(host_ip, port, service)
+            .analyze_service(host_ip, port, service, None, None)
             .await?;
 
         // Convert vulnerabilities to findings

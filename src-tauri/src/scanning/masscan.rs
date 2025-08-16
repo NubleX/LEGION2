@@ -112,10 +112,10 @@ impl MasscanScanner {
         let mut cmd = Command::new(&self.bin);
         cmd.arg("-p")
             .arg(&ports_arg)
-            .arg(&target.ip)
             .args(["--open", "--wait", "0"])
             .arg("--rate")
             .arg(self.options.rate.to_string())
+            .arg(&target.ip.to_string())  // Target goes LAST
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
 
@@ -233,15 +233,19 @@ impl Source for MasscanScanner {
         }
 
         let mut cmd = Command::new(&self.bin);
+        // Masscan syntax: masscan -p[ports] [options] [targets]
         cmd.arg("-p")
             .arg(&plan.ports)
-            .arg(&plan.targets)
-            .args(["--open", "--wait", "0"])
-            .args(["--rate", &plan.rate.unwrap_or(1000).to_string()])
+            .arg("--open")
+            .arg("--rate")
+            .arg(&plan.rate.unwrap_or(1000).to_string())
             .arg("--output-format")
             .arg("list")
+            .arg(&plan.targets)  // Target goes LAST
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
+
+        log::info!("Executing masscan command: {:?}", cmd);
 
         let mut child = cmd.spawn()?;
         let stdout = child
@@ -254,22 +258,27 @@ impl Source for MasscanScanner {
         let scan_id = plan.scan_id;
         let discovered_count = 0u64;
 
+        log::info!("Starting masscan stream processing");
+        
         let stream = stream::unfold(
-            (lines, discovered_count),
-            move |(mut lines, mut count)| async move {
+            (lines, discovered_count, child),
+            move |(mut lines, mut count, mut child)| async move {
                 match lines.next_line().await {
                     Ok(Some(line)) => {
+                        log::info!("Masscan output line: {}", line);
                         if let Some(obs) = parse_masscan_line(&line, scan_id) {
                             count += 1;
+                            log::info!("Parsed masscan observation: {:?}", obs);
                             // Create a progress observation every 10 discoveries
                             if count % 10 == 0 {
                                 let progress_obs =
                                     create_progress_observation(&line, scan_id, count);
-                                Some((progress_obs, (lines, count)))
+                                Some((progress_obs, (lines, count, child)))
                             } else {
-                                Some((obs, (lines, count)))
+                                Some((obs, (lines, count, child)))
                             }
                         } else {
+                            log::debug!("Non-service masscan line: {}", line);
                             // Skip this line and continue
                             Some((
                                 Observation {
@@ -278,7 +287,7 @@ impl Source for MasscanScanner {
                                     fields: {
                                         let mut fields = serde_json::Map::new();
                                         fields.insert(
-                                            "nmap_output".to_string(),
+                                            "masscan_output".to_string(),
                                             line.clone().into(),
                                         );
                                         fields
@@ -287,11 +296,29 @@ impl Source for MasscanScanner {
                                     key: "masscan-output".to_string(),
                                     raw: Some(line),
                                 },
-                                (lines, count),
+                                (lines, count, child),
                             ))
                         }
                     }
-                    _ => None,
+                    Ok(None) => {
+                        log::info!("Masscan stream ended - waiting for process to complete");
+                        // Wait for the child process to finish
+                        match child.wait().await {
+                            Ok(status) => {
+                                log::info!("Masscan process completed with status: {}", status);
+                            }
+                            Err(e) => {
+                                log::error!("Error waiting for masscan process: {}", e);
+                            }
+                        }
+                        None
+                    }
+                    Err(e) => {
+                        log::error!("Error reading masscan output: {}", e);
+                        // Kill the child process if there was an error
+                        let _ = child.kill().await;
+                        None
+                    }
                 }
             },
         );
@@ -300,118 +327,54 @@ impl Source for MasscanScanner {
     }
 }
 
-/// Create a progress observation for masscan using ScanProgress
+/// Parse a line from masscan output in list format
+/// Expected format: "open tcp 80 192.168.1.1" or "open udp 53 192.168.1.2"
+fn parse_masscan_line(line: &str, scan_id: uuid::Uuid) -> Option<Observation> {
+    let parts: Vec<&str> = line.trim().split_whitespace().collect();
+    
+    // Expected format: ["open", "tcp"/"udp", "port", "ip"]
+    if parts.len() >= 4 && parts[0] == "open" {
+        let protocol = parts[1];
+        if let (Ok(port), Ok(ip)) = (parts[2].parse::<u16>(), parts[3].parse::<IpAddr>()) {
+            let mut fields = serde_json::Map::new();
+            fields.insert("ip".to_string(), ip.to_string().into());
+            fields.insert("port".to_string(), port.into());
+            fields.insert("protocol".to_string(), protocol.into());
+            fields.insert("state".to_string(), "open".into());
+            fields.insert("reason".to_string(), "syn-ack".into()); // masscan default reason
+            
+            return Some(Observation {
+                scan_id,
+                kind: ObservationKind::Service,
+                fields,
+                ts: Utc::now(),
+                key: format!("{}:{}/{}", ip, port, protocol),
+                raw: Some(line.to_string()),
+            });
+        }
+    }
+    
+    None
+}
+
+/// Create a progress observation for masscan using ScanProgress  
 fn create_progress_observation(
     line: &str,
     scan_id: uuid::Uuid,
     discovered_count: u64,
 ) -> Observation {
-    use chrono::Utc;
-    use std::collections::HashMap;
-
-    let now = Utc::now();
-    let progress_percentage = (discovered_count as f32 * 0.1).min(90.0); // Estimate progress, cap at 90%
-
-    let progress = ScanProgress {
-        scan_id: scan_id.to_string(),
-        status: crate::scanning::models::ScanStatus::Running,
-        percentage: progress_percentage,
-        stage: "Port Discovery".to_string(),
-        targets_completed: 0, // Masscan doesn't track individual targets this way
-        targets_total: 1,     // Usually scanning one network range
-        hosts_found: 0,       // This would need to be tracked separately for hosts
-        services_found: discovered_count as usize,
-        eta_seconds: None,
-        started_at: now, // Would ideally be tracked from scan start
-        updated_at: now,
-        rate: None, // Could calculate based on time elapsed
-        details: HashMap::new(),
-
-        // Additional fields for compatibility
-        progress: progress_percentage,
-        current_target: None,
-        hosts_discovered: 0, // Masscan finds services, not just hosts
-        ports_found: discovered_count as u32,
-        vulnerabilities: 0,
-        elapsed_time: 0, // Would need to track actual elapsed time
-        estimated_remaining: None,
-        message: Some(format!("Discovered {} services", discovered_count)),
-        start_time: now,
-        current_phase: "Port Discovery".to_string(),
-    };
-
+    let mut fields = serde_json::Map::new();
+    fields.insert("scan_phase".to_string(), "port_scan".into());
+    fields.insert("services_found".to_string(), discovered_count.into());
+    fields.insert("progress_message".to_string(), 
+                  format!("Masscan found {} open ports", discovered_count).into());
+    
     Observation {
         scan_id,
         kind: ObservationKind::Metric,
-        fields: {
-            let mut fields = serde_json::Map::new();
-            fields.insert(
-                "progress".to_string(),
-                serde_json::to_value(&progress).unwrap_or_default(),
-            );
-            fields.insert("discovered_count".to_string(), discovered_count.into());
-            fields
-        },
-        ts: Utc::now(),
-        key: "masscan-progress".to_string(),
-        raw: Some(line.to_string()),
-    }
-}
-
-fn parse_masscan_line(line: &str, scan_id: uuid::Uuid) -> Option<Observation> {
-    // Parse masscan output format: "Discovered open port 22/tcp on 192.168.1.1"
-    if !line.starts_with("Discovered open port ") {
-        // If not a discovered port line, return as a metric observation for display
-        return Some(Observation {
-            scan_id,
-            kind: ObservationKind::Metric,
-            fields: {
-                let mut fields = serde_json::Map::new();
-                fields.insert("nmap_output".to_string(), line.trim().into());
-                fields.insert("type".to_string(), "masscan_output".into());
-                fields
-            },
-            ts: chrono::Utc::now(),
-            key: "masscan-output".to_string(),
-            raw: Some(line.to_string()),
-        });
-    }
-
-    let rest = line.trim_start_matches("Discovered open port ");
-    let mut parts = rest.split_whitespace();
-
-    let port_proto = parts.next()?; // e.g., "22/tcp"
-    let _on = parts.next()?; // "on"
-    let ip = parts.next()?; // e.g., "192.168.1.1"
-
-    // Parse port/protocol
-    let mut port_parts = port_proto.split('/');
-    let port: u16 = port_parts.next()?.parse().ok()?;
-    let protocol = port_parts.next().unwrap_or("tcp").to_string();
-
-    let ip_addr: IpAddr = ip.parse().ok()?;
-
-    let mut fields = serde_json::Map::new();
-    fields.insert(
-        "ip".to_string(),
-        serde_json::Value::String(ip_addr.to_string()),
-    );
-    fields.insert(
-        "port".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(port)),
-    );
-    fields.insert("protocol".to_string(), serde_json::Value::String(protocol));
-    fields.insert(
-        "reason".to_string(),
-        serde_json::Value::String("open".to_string()),
-    );
-
-    Some(Observation {
-        scan_id,
-        kind: ObservationKind::Service,
         fields,
         ts: Utc::now(),
-        key: format!("service-{}:{}", ip_addr, port),
+        key: format!("masscan-progress-{}", discovered_count),
         raw: Some(line.to_string()),
-    })
+    }
 }
