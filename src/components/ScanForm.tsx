@@ -25,6 +25,7 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, onCancelScan, isScanni
     detectOS: false,
     detectVersions: true,
     skipPing: false,
+    interface: '',
   });
 
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -209,6 +210,20 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, onCancelScan, isScanni
                     disabled={isScanning}
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Network Interface
+                </label>
+                <input
+                  type="text"
+                  value={config.interface}
+                  onChange={(e) => setConfig(prev => ({ ...prev, interface: e.target.value }))}
+                  placeholder="eth0"
+                  className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white focus:ring-2 focus:ring-blue-500"
+                  disabled={isScanning}
+                />
               </div>
 
               {config.useMasscan && (

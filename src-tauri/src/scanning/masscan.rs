@@ -91,6 +91,17 @@ impl MasscanScanner {
             cmd.arg(arg);
         }
 
+        // Detect private 10.* targets and append interface if provided
+        let targets_private = plan
+            .targets
+            .split(|c| c == ' ' || c == ',' || c == '\n')
+            .any(|t| t.trim_start().starts_with("10."));
+        if targets_private {
+            if let Some(iface) = &plan.interface {
+                cmd.arg("-e").arg(iface);
+            }
+        }
+
         // Target specification (must be last)
         cmd.arg(&plan.targets);
 
@@ -249,8 +260,20 @@ impl Source for MasscanScanner {
             .arg("--rate")
             .arg(&plan.rate.unwrap_or(1000).to_string())
             .arg("--output-format")
-            .arg("list")
-            .arg(&plan.targets) // Target goes LAST
+            .arg("list");
+
+        // Detect private 10.* targets and append interface if provided
+        let targets_private = plan
+            .targets
+            .split(|c| c == ' ' || c == ',' || c == '\n')
+            .any(|t| t.trim_start().starts_with("10."));
+        if targets_private {
+            if let Some(iface) = &plan.interface {
+                cmd.arg("-e").arg(iface);
+            }
+        }
+
+        cmd.arg(&plan.targets) // Target goes LAST
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 

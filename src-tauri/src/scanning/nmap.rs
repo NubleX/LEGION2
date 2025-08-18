@@ -77,6 +77,20 @@ impl NmapScanner {
             cmd.arg(arg);
         }
 
+        // Detect private 10.* targets and adjust privileges/interfaces
+        let targets_private = plan
+            .targets
+            .split(|c| c == ' ' || c == ',' || c == '\n')
+            .any(|t| t.trim_start().starts_with("10."));
+
+        if let Some(iface) = &plan.interface {
+            cmd.arg("-e").arg(iface);
+        }
+
+        if targets_private {
+            cmd.arg("--privileged");
+        }
+
         // Enable verbose output for parsing
         cmd.arg("-v");
 

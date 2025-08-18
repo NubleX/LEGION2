@@ -159,10 +159,13 @@ const useAppStore = create<AppState & AppActions>((set) => {
 
       if (config.useMasscan) {
         // Use Plan::masscan builder method
+        const scanId = crypto.randomUUID();
         const masscanPlan = await invoke<Plan>('create_masscan_plan', {
+          scanId,
           targets,
           ports,
           rate: config.rate || 1000,
+          interface: config.interface,
         });
         plans.push(masscanPlan);
       }
@@ -180,6 +183,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
               targets,
               ports,
               extraArgs: ['-T4', '-F'],
+              interface: config.interface,
             });
             break;
           case 'comprehensive':
@@ -188,6 +192,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
               scanId,
               targets,
               ports,
+              interface: config.interface,
             });
             break;
           case 'stealth':
@@ -197,6 +202,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
               targets,
               ports,
               extraArgs: ['-sS', '-T2', '-f', '--randomize-hosts'],
+              interface: config.interface,
             });
             break;
           default:
@@ -214,6 +220,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
               targets,
               ports,
               extraArgs: nmapArgs,
+              interface: config.interface,
             });
         }
 
