@@ -20,6 +20,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { create } from 'zustand';
 import type { Plan, ScanConfig } from '../types/scanning';
+import useVulnStore from './vulnStore';
 
 // Simple state reflecting backend events
 interface AppState {
@@ -27,17 +28,6 @@ interface AppState {
   recentHosts: Array<{ ip: string; hostname?: string; timestamp: string }>;
   recentServices: Array<{ ip: string; port: number; protocol: string; timestamp: string }>;
   liveOutput: string[];
-  vulnerabilities?: Array<{
-    id: string;
-    host_ip: string;
-    port: number;
-    service: string;
-    name: string;
-    severity: string;
-    description: string;
-    cvss_score?: number;
-    timestamp: string;
-  }>;
 
   // Current metrics from backend
   metrics: {
@@ -100,9 +90,9 @@ const useAppStore = create<AppState & AppActions>((set) => {
     await listen('obs:vulnerability', (event: any) => {
       const vuln = event.payload;
       const vulnMsg = `🔍 Vulnerability: ${vuln.name} on ${vuln.host_ip}:${vuln.port} (${vuln.severity})`;
-      set((state) => ({ 
+      useVulnStore.getState().addVulnerability(vuln);
+      set((state) => ({
         liveOutput: [...state.liveOutput, vulnMsg],
-        vulnerabilities: [...(state.vulnerabilities || []), vuln]
       }));
     });
 
@@ -140,7 +130,6 @@ const useAppStore = create<AppState & AppActions>((set) => {
     recentHosts: [],
     recentServices: [],
     liveOutput: [],
-    vulnerabilities: [],
     metrics: {
       hosts_discovered: 0,
       services_discovered: 0,
@@ -276,7 +265,6 @@ const useAppStore = create<AppState & AppActions>((set) => {
         // Keep existing data persistent:
         // recentHosts: [],
         // recentServices: [],
-        // vulnerabilities: [],
         metrics: {
           hosts_discovered: 0,
           services_discovered: 0,
