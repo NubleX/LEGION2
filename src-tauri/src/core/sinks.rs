@@ -723,16 +723,25 @@ impl DbSink {
         tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async {
                 for item in batch_items {
-                    if let Err(e) = db.upsert_service_detailed(
-                        &item.ip,
-                        item.port,
-                        &item.protocol,
-                        Some(&item.state),
-                        item.service.as_deref(),
-                        item.version.as_deref(),
-                        item.banner.as_deref(),
-                    ).await {
+                    if let Err(e) = db
+                        .upsert_service_detailed(
+                            &item.ip,
+                            item.port,
+                            &item.protocol,
+                            Some(&item.state),
+                            item.service.as_deref(),
+                            item.version.as_deref(),
+                            item.banner.as_deref(),
+                        )
+                        .await
+                    {
                         log::error!("Failed to batch store service {}:{}: {}", item.ip, item.port, e);
+                    } else if let Err(e) = db.update_host_port_count(&item.ip).await {
+                        log::error!(
+                            "Failed to update port count for {} after service insert: {}",
+                            item.ip,
+                            e
+                        );
                     }
                 }
                 Ok::<(), anyhow::Error>(())

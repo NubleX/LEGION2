@@ -45,6 +45,7 @@ export interface Host {
 
 interface HostStore {
   hosts: Host[];
+  ports: Record<string, Set<number>>;
   getHosts: () => Host[];
   getHost: (ip: string) => Host | undefined;
   setHosts: (hosts: Host[]) => void;
@@ -84,6 +85,36 @@ const useHostStore = create<HostStore>((set, get) => {
     });
   }).catch(console.error);
 
+  // Listen for service events and update port counts
+  listen('obs:service', (event: any) => {
+    const svc = event.payload;
+    console.log('Received obs:service event:', svc);
+
+    set(state => {
+      const hostIdx = state.hosts.findIndex(h => h.ip === svc.ip);
+      if (hostIdx === -1) {
+        return state; // Host not yet known
+      }
+
+      const ports = { ...state.ports };
+      const hostPorts = new Set(ports[svc.ip] || []);
+
+      if (hostPorts.has(svc.port)) {
+        return state; // Already counted
+      }
+
+      hostPorts.add(svc.port);
+      ports[svc.ip] = hostPorts;
+
+      const updatedHosts = [...state.hosts];
+      const host = { ...updatedHosts[hostIdx] };
+      host.port_count = (host.port_count || 0) + 1;
+      updatedHosts[hostIdx] = host;
+
+      return { hosts: updatedHosts, ports };
+    });
+  }).catch(console.error);
+
   // Listen for refresh signals and fetch detailed host data
   listen('refresh_host_data', async (event: any) => {
     const ip = event.payload as string;
@@ -115,11 +146,12 @@ const useHostStore = create<HostStore>((set, get) => {
 
   return {
     hosts: [],
+    ports: {},
     getHosts: () => get().hosts,
     getHost: (ip: string) => get().hosts.find(h => h.ip === ip),
     setHosts: (hosts: Host[]) => set({ hosts }),
-    addHost: (host: Host) => set(state => ({ 
-      hosts: [...state.hosts.filter(h => h.ip !== host.ip), host] 
+    addHost: (host: Host) => set(state => ({
+      hosts: [...state.hosts.filter(h => h.ip !== host.ip), host]
     })),
   };
 });
