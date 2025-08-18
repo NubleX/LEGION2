@@ -134,8 +134,14 @@ impl UiSink {
         }
     }
 
-    /// Emit a host event if not already cached
-    async fn emit_host_if_new(&self, ip: &str, hostname: Option<String>) -> Result<()> {
+    /// Emit a host event if not already cached. Optionally force a refresh
+    /// signal even if the host was seen before (used for MAC/OS updates).
+    async fn emit_host_if_new(
+        &self,
+        ip: &str,
+        hostname: Option<String>,
+        refresh: bool,
+    ) -> Result<()> {
         let mut cache = self.host_cache.lock().await;
         if !cache.contains_key(ip) {
             let host_event = HostEvent {
@@ -152,13 +158,22 @@ impl UiSink {
                 log::debug!("Successfully emitted obs:host event for {}", host_event.ip);
                 cache.insert(ip.to_string(), true);
                 self.metrics.increment_hosts().await;
-                
+
                 // Also emit a signal to refresh host data from database
                 if let Err(e) = self.app.emit("refresh_host_data", &ip) {
                     log::warn!("Failed to emit refresh_host_data event: {}", e);
                 }
             }
         }
+
+        // For MAC/OS observations we want to trigger a refresh even if the host
+        // was previously cached.
+        if refresh {
+            if let Err(e) = self.app.emit("refresh_host_data", &ip) {
+                log::warn!("Failed to emit refresh_host_data event: {}", e);
+            }
+        }
+
         Ok(())
     }
 
@@ -296,7 +311,7 @@ impl Sink for UiSink {
                     };
 
                     // Emit host first if new
-                    self.emit_host_if_new(ip, None).await?;
+                    self.emit_host_if_new(ip, None, false).await?;
 
                     // Emit service with enhanced info
                     self.emit_service(ip, port, protocol, &service_desc).await?;
@@ -322,7 +337,15 @@ impl Sink for UiSink {
                         .and_then(|v| v.as_str())
                         .unwrap_or("up");
 
-                    self.emit_host_if_new(ip, hostname.clone()).await?;
+                    // Determine if this host observation includes MAC or OS info
+                    let has_mac_or_os = obs.fields.get("mac_address").is_some()
+                        || obs.fields.get("vendor").is_some()
+                        || obs.fields.get("os_name").is_some()
+                        || obs.fields.get("os_family").is_some()
+                        || obs.fields.get("os_accuracy").is_some();
+
+                    self.emit_host_if_new(ip, hostname.clone(), has_mac_or_os)
+                        .await?;
                     
                     // Also emit as progress to show in live output
                     let progress_msg = if let Some(ref hn) = hostname {
@@ -633,7 +656,10 @@ impl Sink for VulnerabilityAnalysisSink {
 
 impl DbSink {
     async fn store_host(&self, ip: &str, hostname: Option<&str>, status: Option<&str>) -> Result<()> {
-        self.db.upsert_host(ip, hostname, status).await?;
+        self
+            .db
+            .upsert_host(ip, hostname, status, None, None, None, None, None)
+            .await?;
         self.metrics.increment_hosts().await;
         Ok(())
     }
@@ -684,23 +710,21 @@ impl DbSink {
             tokio::runtime::Handle::current().block_on(async {
                 for item in batch_items {
                     // Store host with all information at once
-                    if let Err(e) = db.upsert_host(&item.ip, item.hostname.as_deref(), item.status.as_deref()).await {
+                    if let Err(e) = db
+                        .upsert_host(
+                            &item.ip,
+                            item.hostname.as_deref(),
+                            item.status.as_deref(),
+                            item.mac_address.as_deref(),
+                            item.vendor.as_deref(),
+                            item.os_name.as_deref(),
+                            item.os_family.as_deref(),
+                            item.os_accuracy,
+                        )
+                        .await
+                    {
                         log::error!("Failed to batch store host {}: {}", item.ip, e);
                         continue;
-                    }
-
-                    // Store network info if available
-                    if item.mac_address.is_some() || item.vendor.is_some() {
-                        if let Err(e) = db.update_host_network_info(&item.ip, item.mac_address.as_deref(), item.vendor.as_deref()).await {
-                            log::error!("Failed to batch store network info for {}: {}", item.ip, e);
-                        }
-                    }
-
-                    // Store OS info if available
-                    if item.os_name.is_some() || item.os_family.is_some() || item.os_accuracy.is_some() {
-                        if let Err(e) = db.update_host_os(&item.ip, item.os_name.as_deref(), item.os_family.as_deref(), item.os_accuracy).await {
-                            log::error!("Failed to batch store OS info for {}: {}", item.ip, e);
-                        }
                     }
                 }
                 Ok::<(), anyhow::Error>(())

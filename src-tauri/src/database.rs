@@ -215,10 +215,20 @@ impl Db {
         })
     }
 
-    pub async fn upsert_host(&self, ip: &str, hostname: Option<&str>, status: Option<&str>) -> Result<()> {
+    pub async fn upsert_host(
+        &self,
+        ip: &str,
+        hostname: Option<&str>,
+        status: Option<&str>,
+        mac_address: Option<&str>,
+        vendor: Option<&str>,
+        os_name: Option<&str>,
+        os_family: Option<&str>,
+        os_accuracy: Option<f32>,
+    ) -> Result<()> {
         let ts = Utc::now();
         let t = to_rfc3339(ts);
-        
+
         // Encrypt sensitive data
         let ip_encrypted = self.encryption.encrypt(ip)?;
         let hostname_encrypted = if let Some(h) = hostname {
@@ -226,26 +236,51 @@ impl Db {
         } else {
             None
         };
-        
+        let mac_encrypted = if let Some(m) = mac_address {
+            Some(self.encryption.encrypt(m)?)
+        } else {
+            None
+        };
+
         let conn = self.conn.clone();
         let ip = ip.to_string();
+        let vendor = vendor.map(|s| s.to_string());
+        let os_name = os_name.map(|s| s.to_string());
+        let os_family = os_family.map(|s| s.to_string());
         let status = status.unwrap_or("unknown").to_string();
-        
+        let os_accuracy = os_accuracy;
+
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock();
             conn.execute(
-                r#"INSERT INTO hosts(id, ip_encrypted, hostname, status, first_seen, last_seen, created_at, updated_at, port_count, vulnerability_count)
-                   VALUES(?1, ?2, ?3, ?4, ?5, ?5, ?5, ?5, 0, 0)
-                   ON CONFLICT(ip_encrypted) DO UPDATE SET 
+                r#"INSERT INTO hosts(id, ip_encrypted, hostname, mac_address, vendor, os_name, os_family, os_accuracy, status, first_seen, last_seen, created_at, updated_at, port_count, vulnerability_count)
+                   VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10, ?10, 0, 0)
+                   ON CONFLICT(ip_encrypted) DO UPDATE SET
                        hostname = COALESCE(excluded.hostname, hosts.hostname),
+                       mac_address = COALESCE(excluded.mac_address, hosts.mac_address),
+                       vendor = COALESCE(excluded.vendor, hosts.vendor),
+                       os_name = COALESCE(excluded.os_name, hosts.os_name),
+                       os_family = COALESCE(excluded.os_family, hosts.os_family),
+                       os_accuracy = COALESCE(excluded.os_accuracy, hosts.os_accuracy),
                        status = COALESCE(excluded.status, hosts.status),
                        last_seen = excluded.last_seen,
                        updated_at = excluded.updated_at"#,
-                params![&ip, &ip_encrypted, hostname_encrypted, &status, &t],
+                params![
+                    &ip,
+                    &ip_encrypted,
+                    hostname_encrypted,
+                    mac_encrypted,
+                    vendor,
+                    os_name,
+                    os_family,
+                    os_accuracy,
+                    &status,
+                    &t
+                ],
             )?;
             Ok::<(), anyhow::Error>(())
         }).await??;
-        
+
         Ok(())
     }
 

@@ -71,7 +71,11 @@ pub async fn delete_host(host_id: String, db: State<'_, Arc<Db>>) -> Result<(), 
 #[tauri::command]
 pub async fn batch_import_hosts(hosts: Vec<String>, db: State<'_, Arc<Db>>) -> Result<(), String> {
     for ip in hosts {
-        if let Err(e) = db.inner().upsert_host(&ip, None, None).await {
+        if let Err(e) = db
+            .inner()
+            .upsert_host(&ip, None, None, None, None, None, None, None)
+            .await
+        {
             return Err(format!("Failed to import host {}: {}", ip, e));
         }
     }
