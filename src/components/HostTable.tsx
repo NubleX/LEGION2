@@ -100,7 +100,7 @@ const HostTable: React.FC<HostTableProps> = ({ onHostSelect, className = '' }) =
                   <div className="flex items-center space-x-1">
                     <Network className="w-3 h-3 text-blue-400" />
                     <span className="text-white font-medium">
-                      {host.port_count || 0}
+                      {host.port_count ?? 0}
                     </span>
                   </div>
                 </td>

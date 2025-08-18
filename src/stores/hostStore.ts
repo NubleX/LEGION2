@@ -19,7 +19,7 @@
 //     If not, see <http://www.gnu.org/licenses/>.
 
 import { create } from 'zustand';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
 
 export interface Host {
   id: string;
@@ -45,6 +45,7 @@ export interface Host {
 
 interface HostStore {
   hosts: Host[];
+  ports: Record<string, Set<number>>;
   getHosts: () => Host[];
   getHost: (ip: string) => Host | undefined;
   setHosts: (hosts: Host[]) => void;
@@ -84,6 +85,16 @@ const useHostStore = create<HostStore>((set, get) => {
     });
   }).catch(console.error);
 
+
+  // When a service is observed, notify listeners to refresh that host's ports
+  listen('obs:service', (event: any) => {
+    const serviceEvent = event.payload;
+    if (serviceEvent?.ip) {
+      console.log('Received obs:service event for', serviceEvent.ip);
+      emit('refresh_host_ports', serviceEvent.ip).catch(console.error);
+    }
+  }).catch(console.error);
+
   // Listen for refresh signals and fetch detailed host data
   listen('refresh_host_data', async (event: any) => {
     const ip = event.payload as string;
@@ -115,11 +126,12 @@ const useHostStore = create<HostStore>((set, get) => {
 
   return {
     hosts: [],
+    ports: {},
     getHosts: () => get().hosts,
     getHost: (ip: string) => get().hosts.find(h => h.ip === ip),
     setHosts: (hosts: Host[]) => set({ hosts }),
-    addHost: (host: Host) => set(state => ({ 
-      hosts: [...state.hosts.filter(h => h.ip !== host.ip), host] 
+    addHost: (host: Host) => set(state => ({
+      hosts: [...state.hosts.filter(h => h.ip !== host.ip), host]
     })),
   };
 });

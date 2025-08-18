@@ -1,25 +1,12 @@
+
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
-
-// LEGION2 - Minimal event-driven frontend store
-// Backend handles all logic via UiSink events and DbSink storage
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { create } from 'zustand';
 import type { Plan, ScanConfig } from '../types/scanning';
+
 
 // Simple state reflecting backend events
 interface AppState {
@@ -100,14 +87,14 @@ const useAppStore = create<AppState & AppActions>((set) => {
     await listen('obs:vulnerability', (event: any) => {
       const vuln = event.payload;
       const vulnMsg = `🔍 Vulnerability: ${vuln.name} on ${vuln.host_ip}:${vuln.port} (${vuln.severity})`;
-      set((state) => ({ 
+      set((state) => ({
         liveOutput: [...state.liveOutput, vulnMsg],
         vulnerabilities: [...(state.vulnerabilities || []), vuln]
       }));
     });
 
-    await listen('obs:done', async () => {
-      await invoke('engine_reset');
+
+    await listen('obs:done', () => {
       set((state) => ({
         scanInProgress: false,
         liveOutput: [...state.liveOutput, 'Scan completed. Ready for new scan.']
@@ -151,18 +138,9 @@ const useAppStore = create<AppState & AppActions>((set) => {
     scanInProgress: false,
 
     // Actions
-      startScan: async (config: ScanConfig) => {
-        try {
-          const engineState = await invoke<string>('engine_get_state');
-          if (engineState !== 'Idle') {
-            set((state) => ({
-              liveOutput: [...state.liveOutput, `Engine busy (${engineState}). Cannot start new scan.`]
-            }));
-            return;
-          }
-
-          const targets = config.targets;
-          const ports = config.ports && config.ports.trim() !== '' ? config.ports : '1-65535';
+    startScan: async (config: ScanConfig) => {
+      const targets = config.targets;
+      const ports = config.ports && config.ports.trim() !== '' ? config.ports : '1-65535';
 
       // Build plans based on selected tools
       const plans: Plan[] = [];
@@ -189,6 +167,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
               scanId,
               targets,
               ports,
+              scanType: 'quick',
               extraArgs: ['-T4', '-F'],
             });
             break;
@@ -233,21 +212,21 @@ const useAppStore = create<AppState & AppActions>((set) => {
         plans.push(nmapPlan);
       }
 
-        set((state) => ({
-          scanInProgress: true,
-          liveOutput: [...state.liveOutput, `Starting scan for ${targets} using ${plans.map(p => p.source_type).join(' & ')}...`],
-        }));
+      set((state) => ({
+        scanInProgress: true,
+        liveOutput: [...state.liveOutput, `Starting scan for ${targets} using ${plans.map(p => p.source_type).join(' & ')}...`],
+      }));
 
+      try {
         for (const plan of plans) {
           console.log('Executing scan plan:', plan);
           await invoke('engine_execute', { plan });
           console.log('Plan executed successfully');
         }
 
-        // Mark scan as complete after all plans are executed
+        // Don't set scanInProgress to false here - let the backend handle it via obs:done event
         set((state) => ({
-          scanInProgress: false,
-          liveOutput: [...state.liveOutput, 'All scan plans completed successfully. Ready for new scan.'],
+          liveOutput: [...state.liveOutput, 'All scan plans submitted to backend.']
         }));
       } catch (error) {
         console.error('Scan execution failed:', error);
@@ -262,13 +241,13 @@ const useAppStore = create<AppState & AppActions>((set) => {
     cancelScan: async () => {
       try {
         await invoke('engine_cancel_scan');
-        set((state) => ({ 
+        set((state) => ({
           scanInProgress: false,
           liveOutput: [...state.liveOutput, 'Scan cancelled by user.']
         }));
       } catch (error) {
         console.error('Failed to cancel scan:', error);
-        set((state) => ({ 
+        set((state) => ({
           liveOutput: [...state.liveOutput, 'ERROR: Failed to cancel scan.']
         }));
       }
@@ -282,7 +261,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
       set({
         scanInProgress: false,
         liveOutput: ['Previous scan data preserved. Ready for new scan.'],
-        // Keep existing data persistent:
+        keep_existing_data_persistent: true,
         // recentHosts: [],
         // recentServices: [],
         // vulnerabilities: [],
