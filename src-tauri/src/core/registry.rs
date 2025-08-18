@@ -9,7 +9,7 @@ use tauri::AppHandle;
 
 use super::sinks::{DbSink, UiSink, VulnerabilityAnalysisSink};
 use super::traits::{Sink, Source, Transform};
-use super::transforms::{IpEnrichmentTransform, ServiceParsingTransform, ProgressTrackingTransform};
+use super::transformer::{IpEnrichmentTransform, ServiceParsingTransform, ProgressTrackingTransform};
 use crate::analysis::AnalysisEngine;
 use crate::database::Db;
 use crate::plan::Plan;

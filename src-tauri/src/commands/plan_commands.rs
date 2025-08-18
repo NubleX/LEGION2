@@ -1,19 +1,7 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
 
-use crate::plan::{Plan, ScanType, ScanTiming, PortRange, Protocol, PortState};
+use crate::plan::{Plan, PortRange, PortState, Protocol, ScanTiming, ScanType};
 use uuid::Uuid;
 
 /// Create a masscan plan using the builder pattern
@@ -30,19 +18,56 @@ pub fn create_masscan_plan(
 
 /// Create an nmap plan using the builder pattern
 #[tauri::command]
-pub fn create_nmap_plan(
-    scan_id: Option<String>,
+pub async fn create_nmap_plan(
     targets: String,
     ports: String,
+    scan_type: String,
     extra_args: Vec<String>,
 ) -> Result<Plan, String> {
-    let scan_id = scan_id
-        .map(|s| Uuid::parse_str(&s))
-        .transpose()
-        .map_err(|e| format!("Invalid UUID: {}", e))?
-        .unwrap_or_else(Uuid::new_v4);
-    
-    let plan = Plan::nmap(scan_id, targets, ports, extra_args);
+    let mut plan = Plan {
+        scan_id: Uuid::new_v4(),
+        targets,
+        ports,
+        rate: None,
+        extra: Vec::new(),
+        modules: vec![],
+        source_type: "nmap".to_string(),
+        sink_types: vec![
+            "ui".to_string(),
+            "db".to_string(),
+            "vulnerability".to_string(),
+        ],
+    };
+
+    // Add scan type arguments
+    match scan_type.as_str() {
+        "quick" => {
+            plan.extra.push("-T4".to_string());
+            plan.extra.push("-F".to_string());
+        }
+        "comprehensive" => {
+            plan.extra.push("-sS".to_string());
+            plan.extra.push("-sV".to_string());
+            plan.extra.push("-O".to_string());
+            plan.extra.push("-A".to_string());
+            plan.extra.push("-T4".to_string());
+        }
+        "stealth" => {
+            plan.extra.push("-sS".to_string());
+            plan.extra.push("-T2".to_string());
+            plan.extra.push("-f".to_string());
+            plan.extra.push("--randomize-hosts".to_string());
+        }
+        _ => {
+            // Default scan
+            plan.extra.push("-sS".to_string());
+            plan.extra.push("-T3".to_string());
+        }
+    }
+
+    // Add any additional user-specified arguments
+    plan.extra.extend(extra_args);
+
     Ok(plan)
 }
 
@@ -58,23 +83,20 @@ pub fn create_comprehensive_plan(
         .transpose()
         .map_err(|e| format!("Invalid UUID: {}", e))?
         .unwrap_or_else(Uuid::new_v4);
-    
+
     let plan = Plan::comprehensive(scan_id, targets, ports);
     Ok(plan)
 }
 
 /// Create an OS detection plan using the builder pattern
 #[tauri::command]
-pub fn create_os_detection_plan(
-    scan_id: Option<String>,
-    targets: String,
-) -> Result<Plan, String> {
+pub fn create_os_detection_plan(scan_id: Option<String>, targets: String) -> Result<Plan, String> {
     let scan_id = scan_id
         .map(|s| Uuid::parse_str(&s))
         .transpose()
         .map_err(|e| format!("Invalid UUID: {}", e))?
         .unwrap_or_else(Uuid::new_v4);
-    
+
     let plan = Plan::os_detection(scan_id, targets);
     Ok(plan)
 }
@@ -129,7 +151,7 @@ pub fn get_scan_types() -> Vec<String> {
 }
 
 /// Get available scan timing options
-#[tauri::command] 
+#[tauri::command]
 pub fn get_scan_timings() -> Vec<String> {
     vec![
         "Paranoid".to_string(),
@@ -143,17 +165,26 @@ pub fn get_scan_timings() -> Vec<String> {
 
 /// Create a port range configuration
 #[tauri::command]
-pub fn create_port_range(start: u16, end: u16, top_ports: Option<u16>) -> Result<PortRange, String> {
+pub fn create_port_range(
+    start: u16,
+    end: u16,
+    top_ports: Option<u16>,
+) -> Result<PortRange, String> {
     if start > end {
         return Err("Start port must be less than or equal to end port".to_string());
     }
-    Ok(PortRange { start, end, top_ports })
+    Ok(PortRange {
+        start,
+        end,
+        top_ports,
+    })
 }
 
 /// Parse a protocol string
 #[tauri::command]
 pub fn parse_protocol(protocol_str: String) -> Result<String, String> {
-    let protocol: Protocol = protocol_str.parse()
+    let protocol: Protocol = protocol_str
+        .parse()
         .map_err(|e| format!("Invalid protocol: {}", e))?;
     Ok(protocol.as_str().to_string())
 }
@@ -161,7 +192,8 @@ pub fn parse_protocol(protocol_str: String) -> Result<String, String> {
 /// Parse a port state string
 #[tauri::command]
 pub fn parse_port_state(state_str: String) -> Result<String, String> {
-    let state: PortState = state_str.parse()
+    let state: PortState = state_str
+        .parse()
         .map_err(|e| format!("Invalid port state: {}", e))?;
     Ok(state.as_str().to_string())
 }
@@ -188,7 +220,7 @@ pub fn create_plan_with_modules(
         .transpose()
         .map_err(|e| format!("Invalid UUID: {}", e))?
         .unwrap_or_else(Uuid::new_v4);
-    
+
     let plan = Plan {
         scan_id,
         targets,
@@ -199,6 +231,6 @@ pub fn create_plan_with_modules(
         source_type,
         sink_types,
     };
-    
+
     Ok(plan)
 }

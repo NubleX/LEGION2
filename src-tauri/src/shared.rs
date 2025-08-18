@@ -1,50 +1,37 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
 
-use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
-use std::collections::HashMap;
+use crate::core::registry::Registry;
 use anyhow;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 use uuid::Uuid;
-use crate::core::registry::Registry;
 
 // Core observation types - moved from core/types.rs
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ObservationKind { 
-    Host, 
-    Service, 
-    Banner, 
-    TopologyEdge, 
-    Metric, 
-    Error 
+pub enum ObservationKind {
+    Host,
+    Service,
+    Banner,
+    TopologyEdge,
+    Metric,
+    Error,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Observation {
     pub ts: DateTime<Utc>,
     pub kind: ObservationKind,
-    pub key: String,                         // e.g. "10.0.0.5:22/tcp"
+    pub key: String, // e.g. "10.0.0.5:22/tcp"
     pub fields: serde_json::Map<String, serde_json::Value>,
     pub raw: Option<String>,
     pub scan_id: Uuid,
 }
 
 pub type ObsStream = futures::stream::BoxStream<'static, Observation>;
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum HostStatus {

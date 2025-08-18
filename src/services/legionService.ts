@@ -20,6 +20,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { ScanConfig, Plan } from '../types/scanning';
 
 /**
  * Execute a scan plan by delegating to the backend engine.
@@ -44,3 +45,58 @@ export async function subscribeObs(
   return () => unsubs.forEach((u) => u());
 }
 
+//  Update Frontend to Pass Scan Types
+
+export async function startScan(config: ScanConfig): Promise<string> {
+  // Build extra arguments based on scan type
+  const extraArgs = buildExtraArgs(config);
+
+  const plan: Plan = {
+    scan_id: crypto.randomUUID(),
+    targets: config.targets,
+    ports: config.ports || '1-1000',
+    rate: config.rate,
+    extra: extraArgs,
+    modules: [],
+    source_type: config.useMasscan ? 'masscan' : 'nmap',
+    sink_types: ['ui', 'db', 'vulnerability']
+  };
+
+  await invoke('engine_execute', { plan });
+  return plan.scan_id;
+}
+
+function buildExtraArgs(config: ScanConfig): string[] {
+  const args: string[] = [];
+
+  if (config.useNmap) {
+    switch (config.scanType) {
+      case 'quick':
+        args.push('-T4', '-F');
+        break;
+      case 'comprehensive':
+        args.push('-sS', '-sV', '-O', '-A', '-T4');
+        break;
+      case 'stealth':
+        args.push('-sS', '-T2', '-f', '--randomize-hosts');
+        break;
+      case 'discovery':
+        args.push('-sn', '-T4');
+        break;
+      default:
+        args.push('-sS', '-T3'); // Default scan
+    }
+
+    if (config.detectOS) args.push('-O');
+    if (config.detectVersions) args.push('-sV');
+    if (config.skipPing) args.push('-Pn');
+  }
+
+  // Add user's custom extra arguments
+  if (config.extra) {
+    const customArgs = config.extra.split(' ').filter(a => a.trim());
+    args.push(...customArgs);
+  }
+
+  return args;
+}

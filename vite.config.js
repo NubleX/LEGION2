@@ -70,10 +70,11 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
-      '@components': path.resolve(__dirname, './src/components'),
-      '@stores': path.resolve(__dirname, './src/stores'),
-      '@services': path.resolve(__dirname, './src/services'),
-      '@types': path.resolve(__dirname, './src/types')
+      '@commands': path.resolve(__dirname, './src-tauri/src/commands'),
+      '@analysis': path.resolve(__dirname, './src-tauri/src/analysis'),
+      '@core': path.resolve(__dirname, './src-tauri/src/core'),
+      '@scanning': path.resolve(__dirname, './src-tauri/src/scanning'),
+      '@utils': path.resolve(__dirname, './src-tauri/src/utils')
     }
   },
 

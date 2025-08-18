@@ -26,7 +26,7 @@ build_platform() {
     case $platform in
         "windows")
             # For Windows (if on Windows or using cross-compilation)
-            npm run tauri build -- --target x86_64-pc-windows-msvc
+            npm run tauri build -- --target x86_64-pc-windows-msvc.exe
             ;;
         "macos")
             # For macOS (only works on macOS)

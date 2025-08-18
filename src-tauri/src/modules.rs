@@ -73,7 +73,7 @@
 // Keeping them for when the plugin system is fully implemented
 
 use crate::core::traits::Transform;
-use crate::core::transforms::{
+use crate::core::transformer::{
     IpEnrichmentTransform, ProgressTrackingTransform, ServiceParsingTransform,
 };
 use anyhow::Result;

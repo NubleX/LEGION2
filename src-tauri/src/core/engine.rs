@@ -1,6 +1,6 @@
 use crate::core::registry::Registry;
 use crate::core::traits::Transform;
-use crate::core::transforms::CompositeTransform;
+use crate::core::transformer::CompositeTransform;
 use crate::plan::Plan;
 use crate::shared::{ObsStream, Observation};
 use anyhow::Result;
