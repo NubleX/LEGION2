@@ -107,6 +107,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
       }));
     });
 
+
     await listen('obs:done', () => {
       set((state) => ({
         scanInProgress: false,
@@ -180,6 +181,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
               scanId,
               targets,
               ports,
+              scanType: 'quick',
               extraArgs: ['-T4', '-F'],
             });
             break;

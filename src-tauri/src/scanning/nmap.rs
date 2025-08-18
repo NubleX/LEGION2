@@ -10,12 +10,12 @@ use crate::shared::{PortState, Protocol, ScanPort, ScanVulnerability};
 use crate::utils::os::{get_nmap_binary_path, is_nmap_available};
 use crate::utils::parsing::NmapParser;
 use crate::utils::xml_parser::XmlParser;
-
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -171,6 +171,21 @@ impl Source for NmapScanner {
             move |(mut lines, parser, mut child, xml_file, xml_parsed)| async move {
                 match lines.next_line().await {
                     Ok(Some(line)) => {
+                        if engine_commands::is_scan_cancelled() {
+                            log::warn!("Nmap scan cancelled by user");
+                            let _ = child.kill().await;
+                            let mut fields = serde_json::Map::new();
+                            fields.insert("status".to_string(), "cancelled".into());
+                            let cancel_obs = Observation {
+                                scan_id,
+                                kind: crate::shared::ObservationKind::Metric,
+                                fields,
+                                ts: chrono::Utc::now(),
+                                key: "scan-status".to_string(),
+                                raw: None,
+                            };
+                            return Some((cancel_obs, (lines, parser, child, xml_file, xml_parsed)));
+                        }
                         log::info!("Nmap output line: {}", line);
                         let obs = {
                             let mut parser_guard = parser.lock().unwrap();
