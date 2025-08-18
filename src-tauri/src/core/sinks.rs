@@ -395,7 +395,8 @@ struct HostBatchItem {
     hostname: Option<String>,
     status: Option<String>,
     mac_address: Option<String>,
-    vendor: Option<String>,
+    nic_vendor: Option<String>,
+    nic_model: Option<String>,
     os_name: Option<String>,
     os_family: Option<String>,
     os_accuracy: Option<f32>,
@@ -618,6 +619,41 @@ impl Sink for VulnerabilityAnalysisSink {
                         log::warn!("⚠️  Service observation missing required fields (ip or port)");
                     }
                 }
+                ObservationKind::Host => {
+                    if let Some(ip) = obs.fields.get("ip").and_then(|v| v.as_str()) {
+                        let nic_vendor = obs
+                            .fields
+                            .get("nic_vendor")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| obs.fields.get("vendor").and_then(|v| v.as_str()));
+                        let nic_model = obs
+                            .fields
+                            .get("nic_model")
+                            .and_then(|v| v.as_str());
+
+                        if nic_vendor.is_some() || nic_model.is_some() {
+                            match self
+                                .vulnerability_engine
+                                .analyze_hardware(ip, nic_vendor, nic_model)
+                                .await
+                            {
+                                Ok(vulns) => {
+                                    vulnerabilities_found += vulns.len() as u64;
+                                    for vuln in vulns {
+                                        if let Err(e) = self.emit_vulnerability(&vuln).await {
+                                            log::error!("Failed to emit hardware vulnerability: {}", e);
+                                            self.metrics.increment_errors().await;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("Hardware analysis failed for {}: {}", ip, e);
+                                    self.metrics.increment_errors().await;
+                                }
+                            }
+                        }
+                    }
+                }
                 _ => {
                     // Don't process other observation types for vulnerability analysis
                     log::trace!("⏭️  Skipping non-service observation: {:?}", obs.kind);
@@ -638,8 +674,16 @@ impl DbSink {
         Ok(())
     }
 
-    async fn store_host_network_info(&self, ip: &str, mac_address: Option<&str>, vendor: Option<&str>) -> Result<()> {
-        self.db.update_host_network_info(ip, mac_address, vendor).await?;
+    async fn store_host_network_info(
+        &self,
+        ip: &str,
+        mac_address: Option<&str>,
+        nic_vendor: Option<&str>,
+        nic_model: Option<&str>,
+    ) -> Result<()> {
+        self.db
+            .update_host_network_info(ip, mac_address, nic_vendor, nic_model)
+            .await?;
         Ok(())
     }
 
@@ -690,8 +734,16 @@ impl DbSink {
                     }
 
                     // Store network info if available
-                    if item.mac_address.is_some() || item.vendor.is_some() {
-                        if let Err(e) = db.update_host_network_info(&item.ip, item.mac_address.as_deref(), item.vendor.as_deref()).await {
+                    if item.mac_address.is_some() || item.nic_vendor.is_some() || item.nic_model.is_some() {
+                        if let Err(e) = db
+                            .update_host_network_info(
+                                &item.ip,
+                                item.mac_address.as_deref(),
+                                item.nic_vendor.as_deref(),
+                                item.nic_model.as_deref(),
+                            )
+                            .await
+                        {
                             log::error!("Failed to batch store network info for {}: {}", item.ip, e);
                         }
                     }
@@ -803,17 +855,28 @@ impl Sink for DbSink {
                                         let hostname = observation.fields.get("hostname").and_then(|v| v.as_str()).map(|s| s.to_string());
                                         let status = observation.fields.get("status").and_then(|v| v.as_str()).map(|s| s.to_string());
                                         let mac_address = observation.fields.get("mac_address").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                        let vendor = observation.fields.get("vendor").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                        let nic_vendor = observation
+                                            .fields
+                                            .get("nic_vendor")
+                                            .and_then(|v| v.as_str())
+                                            .or_else(|| observation.fields.get("vendor").and_then(|v| v.as_str()))
+                                            .map(|s| s.to_string());
+                                        let nic_model = observation
+                                            .fields
+                                            .get("nic_model")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string());
                                         let os_name = observation.fields.get("os_name").and_then(|v| v.as_str()).map(|s| s.to_string());
                                         let os_family = observation.fields.get("os_family").and_then(|v| v.as_str()).map(|s| s.to_string());
                                         let os_accuracy = observation.fields.get("os_accuracy").and_then(|v| v.as_f64()).map(|a| a as f32);
-                                        
+
                                         batch.add_host(HostBatchItem {
                                             ip: ip.to_string(),
                                             hostname,
                                             status,
                                             mac_address,
-                                            vendor,
+                                            nic_vendor,
+                                            nic_model,
                                             os_name,
                                             os_family,
                                             os_accuracy,

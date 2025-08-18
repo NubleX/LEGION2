@@ -3,7 +3,9 @@
 
 use crate::shared::{Observation, ObservationKind};
 use anyhow::Result;
+use once_cell::sync::Lazy;
 use regex::Regex;
+use serde::Deserialize;
 use std::collections::HashMap;
 use uuid::Uuid;
 use roxmltree::Document;
@@ -12,7 +14,19 @@ use roxmltree::Document;
 pub struct MacInfo {
     pub mac: String,
     pub vendor: Option<String>,
+    pub model: Option<String>,
 }
+
+#[derive(Debug, Clone, Deserialize)]
+struct OuiEntry {
+    vendor: String,
+    model: Option<String>,
+}
+
+static OUI_DB: Lazy<HashMap<String, OuiEntry>> = Lazy::new(|| {
+    let data = include_str!("../../oui.json");
+    serde_json::from_str(data).unwrap_or_default()
+});
 
 #[derive(Debug, Clone)]
 pub struct OsInfo {
@@ -159,7 +173,11 @@ impl NmapParser {
                             fields.insert("ip".to_string(), current_ip.clone().into());
                             fields.insert("mac_address".to_string(), mac_info.mac.into());
                             if let Some(vendor) = mac_info.vendor {
+                                fields.insert("nic_vendor".to_string(), vendor.clone().into());
                                 fields.insert("vendor".to_string(), vendor.into());
+                            }
+                            if let Some(model) = mac_info.model {
+                                fields.insert("nic_model".to_string(), model.into());
                             }
                             fields.insert("type".to_string(), "mac_discovery".into());
                             fields
@@ -348,12 +366,21 @@ impl NmapParser {
 
         if let Some(captures) = mac_regex.captures(line) {
             let mac = captures.get(1)?.as_str().to_string();
-            let vendor = captures
+            let vendor_from_line = captures
                 .get(2)
                 .map(|m| m.as_str().to_string())
                 .filter(|v| !v.is_empty() && v != "Unknown" && v != "unknown");
 
-            return Some(MacInfo { mac, vendor });
+            let prefix = mac[..8].to_uppercase();
+            let (vendor_lookup, model_lookup) = OUI_DB
+                .get(&prefix)
+                .map(|e| (Some(e.vendor.clone()), e.model.clone()))
+                .unwrap_or((None, None));
+
+            let vendor = vendor_from_line.or(vendor_lookup);
+            let model = model_lookup;
+
+            return Some(MacInfo { mac, vendor, model });
         }
 
         None
