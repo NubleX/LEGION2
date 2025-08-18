@@ -45,6 +45,7 @@ export interface Host {
 
 interface HostStore {
   hosts: Host[];
+  ports: Record<string, Set<number>>;
   getHosts: () => Host[];
   getHost: (ip: string) => Host | undefined;
   setHosts: (hosts: Host[]) => void;
@@ -83,6 +84,7 @@ const useHostStore = create<HostStore>((set, get) => {
       return { hosts: [...state.hosts, partialHost as Host] };
     });
   }).catch(console.error);
+
 
   // When a service is observed, notify listeners to refresh that host's ports
   listen('obs:service', (event: any) => {
@@ -124,11 +126,12 @@ const useHostStore = create<HostStore>((set, get) => {
 
   return {
     hosts: [],
+    ports: {},
     getHosts: () => get().hosts,
     getHost: (ip: string) => get().hosts.find(h => h.ip === ip),
     setHosts: (hosts: Host[]) => set({ hosts }),
-    addHost: (host: Host) => set(state => ({ 
-      hosts: [...state.hosts.filter(h => h.ip !== host.ip), host] 
+    addHost: (host: Host) => set(state => ({
+      hosts: [...state.hosts.filter(h => h.ip !== host.ip), host]
     })),
   };
 });

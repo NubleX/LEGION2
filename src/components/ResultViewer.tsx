@@ -45,6 +45,7 @@ interface VulnerabilityInfo {
   cvss_score?: number;
   discovered_at: string;
   last_seen: string;
+  references?: string[];
 }
 
 interface ResultViewerProps {
