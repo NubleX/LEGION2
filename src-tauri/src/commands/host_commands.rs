@@ -18,11 +18,11 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use crate::shared::Host;
 use crate::database::Db;
-use tauri::State;
-use std::sync::Arc;
+use crate::shared::Host;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tauri::State;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortInfo {
@@ -39,7 +39,7 @@ pub async fn get_all_hosts(
     db: State<'_, Arc<Db>>,
     _status_filter: Option<String>,
 ) -> Result<Vec<Host>, String> {
-    db.get_all_hosts().await.map_err(|e| e.to_string())
+    db.inner().get_all_hosts().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -47,26 +47,31 @@ pub async fn get_host_details(
     host_id: String,
     db: State<'_, Arc<Db>>,
 ) -> Result<(Vec<String>, Vec<String>), String> {
-    let ports = db.get_host_ports(&host_id).await.map_err(|e| e.to_string())?;
-    let vulns = db.get_host_vulnerabilities(&host_id).await.map_err(|e| e.to_string())?;
+    let ports = db
+        .inner()
+        .get_host_ports(&host_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let vulns = db
+        .inner()
+        .get_host_vulnerabilities(&host_id)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok((ports, vulns))
 }
 
 #[tauri::command]
-pub async fn delete_host(
-    host_id: String,
-    db: State<'_, Arc<Db>>,
-) -> Result<(), String> {
-    db.delete_host(&host_id).await.map_err(|e| e.to_string())
+pub async fn delete_host(host_id: String, db: State<'_, Arc<Db>>) -> Result<(), String> {
+    db.inner()
+        .delete_host(&host_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn batch_import_hosts(
-    hosts: Vec<String>,
-    db: State<'_, Arc<Db>>,
-) -> Result<(), String> {
+pub async fn batch_import_hosts(hosts: Vec<String>, db: State<'_, Arc<Db>>) -> Result<(), String> {
     for ip in hosts {
-        if let Err(e) = db.upsert_host(&ip, None, None).await {
+        if let Err(e) = db.inner().upsert_host(&ip, None, None).await {
             return Err(format!("Failed to import host {}: {}", ip, e));
         }
     }
@@ -79,7 +84,10 @@ pub async fn update_host_tags(
     tags: Vec<String>,
     db: State<'_, Arc<Db>>,
 ) -> Result<(), String> {
-    db.update_host_tags(&host_id, &tags).await.map_err(|e| e.to_string())
+    db.inner()
+        .update_host_tags(&host_id, &tags)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -88,18 +96,26 @@ pub async fn update_host_os_detection(
     os_detection: crate::scanning::models::OSDetection,
     db: State<'_, Arc<Db>>,
 ) -> Result<(), String> {
-    db.update_host_os(
-        &host_ip,
-        Some(&os_detection.name),
-        Some(&os_detection.family),
-        Some(os_detection.accuracy),
-    ).await.map_err(|e| format!("Failed to update OS detection for {}: {}", host_ip, e))
+    db.inner()
+        .update_host_os(
+            &host_ip,
+            Some(&os_detection.name),
+            Some(&os_detection.family),
+            Some(os_detection.accuracy),
+        )
+        .await
+        .map_err(|e| format!("Failed to update OS detection for {}: {}", host_ip, e))
 }
 
 #[tauri::command]
 pub async fn get_host_by_ip(db: State<'_, Arc<Db>>, ip: String) -> Result<Host, String> {
-    let hosts = db.get_all_hosts().await.map_err(|e| e.to_string())?;
-    hosts.into_iter()
+    let hosts = db
+        .inner()
+        .get_all_hosts()
+        .await
+        .map_err(|e| e.to_string())?;
+    hosts
+        .into_iter()
         .find(|h| h.ip == ip)
         .ok_or_else(|| "Host not found".to_string())
 }
@@ -110,18 +126,28 @@ pub async fn get_host_ports_detailed(
     db: State<'_, Arc<Db>>,
 ) -> Result<Vec<PortInfo>, String> {
     log::info!("Getting ports for host IP: {}", host_ip);
-    
+
     // First get the host ID by IP
-    let hosts = db.get_all_hosts().await.map_err(|e| e.to_string())?;
+    let hosts = db
+        .inner()
+        .get_all_hosts()
+        .await
+        .map_err(|e| e.to_string())?;
     log::info!("Found {} total hosts in database", hosts.len());
-    
-    let host = hosts.into_iter().find(|h| h.ip == host_ip)
+
+    let host = hosts
+        .into_iter()
+        .find(|h| h.ip == host_ip)
         .ok_or_else(|| format!("Host not found for IP: {}", host_ip))?;
-    
+
     log::info!("Found host with ID: {} for IP: {}", host.id, host_ip);
-    
-    let ports = db.get_host_ports_detailed(&host.id).await.map_err(|e| e.to_string())?;
+
+    let ports = db
+        .inner()
+        .get_host_ports_detailed(&host.id)
+        .await
+        .map_err(|e| e.to_string())?;
     log::info!("Found {} ports for host ID: {}", ports.len(), host.id);
-    
+
     Ok(ports)
 }

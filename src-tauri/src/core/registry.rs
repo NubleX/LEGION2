@@ -18,13 +18,15 @@ use crate::scanning::nmap::NmapScanner;
 
 /// Registry for managing scanning components and their lifecycle
 
+#[derive(Clone)]
 pub struct Registry {
     db: Arc<Db>,
     app_handle: AppHandle,
     analysis_engine: Arc<AnalysisEngine>,
-    sources: HashMap<String, Box<dyn Source>>,
-    sinks: HashMap<String, Box<dyn Sink>>,
-    transforms: HashMap<String, Box<dyn Transform>>,
+    // Use shared storage for sources, sinks, and transforms
+    sources: Arc<std::sync::Mutex<HashMap<String, String>>>, // Just track names
+    sinks: Arc<std::sync::Mutex<HashMap<String, String>>>,
+    transforms: Arc<std::sync::Mutex<HashMap<String, String>>>,
 }
 
 impl Registry {
@@ -32,55 +34,31 @@ impl Registry {
         // Create analysis engine internally - keep registry simple
         let analysis_engine = Arc::new(AnalysisEngine::new(db.clone()));
 
-        let mut registry = Self {
+        let registry = Self {
             db: db.clone(),
             app_handle: app_handle.clone(),
             analysis_engine,
-            sources: HashMap::new(),
-            sinks: HashMap::new(),
-            transforms: HashMap::new(),
+            sources: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            sinks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            transforms: Arc::new(std::sync::Mutex::new(HashMap::new())),
         };
-
-        // Register standard sinks on startup
-        registry.register_sink("ui".to_string(), Box::new(UiSink::new(app_handle)));
-        registry.register_sink("db".to_string(), Box::new(DbSink::new(db)));
 
         registry
     }
 
     /// Create a source from configuration using registry or dynamic creation
     pub async fn create_source(&self, plan: &Plan) -> Result<Box<dyn Source>> {
-        // First try to get from registry
-        if let Some(_registered_source) = self.get_source(&plan.source_type) {
-            // For now, create new instances since we can't clone trait objects easily
-            // In the future, we could use Arc<dyn Source> for shared instances
-            match plan.source_type.as_str() {
-                "masscan" => {
-                    let scanner = MasscanScanner::new()?;
-                    Ok(Box::new(scanner))
-                }
-                "nmap" => {
-                    let scanner = NmapScanner::new();
-                    Ok(Box::new(scanner))
-                }
-                _ => Err(anyhow!(
-                    "Registered source type {} cannot be cloned",
-                    plan.source_type
-                )),
+        // Dynamic creation based on plan type
+        match plan.source_type.as_str() {
+            "masscan" => {
+                let scanner = MasscanScanner::new()?;
+                Ok(Box::new(scanner))
             }
-        } else {
-            // Fallback to dynamic creation for runtime registration
-            match plan.source_type.as_str() {
-                "masscan" => {
-                    let scanner = MasscanScanner::new()?;
-                    Ok(Box::new(scanner))
-                }
-                "nmap" => {
-                    let scanner = NmapScanner::new();
-                    Ok(Box::new(scanner))
-                }
-                _ => Err(anyhow!("Unknown source type: {}", plan.source_type)),
+            "nmap" => {
+                let scanner = NmapScanner::new();
+                Ok(Box::new(scanner))
             }
+            _ => Err(anyhow!("Unknown source type: {}", plan.source_type)),
         }
     }
 
@@ -89,24 +67,13 @@ impl Registry {
         let mut sinks = Vec::new();
 
         for sink_type in &plan.sink_types {
-            // First try to get from registry
-            if let Some(_registered_sink) = self.get_sink(sink_type) {
-                // For now, create new instances since we can't clone trait objects easily
-                // In the future, we could use Arc<dyn Sink> for shared instances
-                match sink_type.as_str() {
-                    "ui" => {
-                        sinks.push(Box::new(UiSink::new(self.app_handle.clone())) as Box<dyn Sink>)
-                    }
-                    "db" => sinks.push(Box::new(DbSink::new(self.db.clone())) as Box<dyn Sink>),
-                    "vulnerability" => sinks.push(Box::new(VulnerabilityAnalysisSink::new(self.db.clone(), self.app_handle.clone())) as Box<dyn Sink>),
-                    _ => log::warn!(
-                        "Registered sink type {} cannot be cloned, creating new instance",
-                        sink_type
-                    ),
+            match sink_type.as_str() {
+                "ui" => {
+                    sinks.push(Box::new(UiSink::new(self.app_handle.clone())) as Box<dyn Sink>)
                 }
-            } else {
-                // Fallback to dynamic creation for unknown types
-                log::warn!("Sink type {} not registered, skipping", sink_type);
+                "db" => sinks.push(Box::new(DbSink::new(self.db.clone())) as Box<dyn Sink>),
+                "vulnerability" => sinks.push(Box::new(VulnerabilityAnalysisSink::new(self.db.clone(), self.app_handle.clone())) as Box<dyn Sink>),
+                _ => log::warn!("Unknown sink type: {}", sink_type),
             }
         }
 
@@ -117,80 +84,79 @@ impl Registry {
         Ok(sinks)
     }
 
-    /// Get a registered source
-    pub fn get_source(&self, name: &str) -> Option<&Box<dyn Source>> {
-        self.sources.get(name)
+    /// Check if a source is registered
+    pub fn has_source(&self, name: &str) -> bool {
+        self.sources.lock().unwrap().contains_key(name)
     }
 
-    /// Get a registered sink
-    pub fn get_sink(&self, name: &str) -> Option<&Box<dyn Sink>> {
-        self.sinks.get(name)
+    /// Check if a sink is registered
+    pub fn has_sink(&self, name: &str) -> bool {
+        self.sinks.lock().unwrap().contains_key(name)
     }
 
-    /// Register a new source
-    pub fn register_source(&mut self, name: String, source: Box<dyn Source>) {
+    /// Register a new source type
+    pub fn register_source(&self, name: String) {
         log::info!("Registering source: {}", name);
-        self.sources.insert(name, source);
+        self.sources.lock().unwrap().insert(name.clone(), name);
     }
 
-    /// Register a new sink
-    pub fn register_sink(&mut self, name: String, sink: Box<dyn Sink>) {
+    /// Register a new sink type
+    pub fn register_sink(&self, name: String) {
         log::info!("Registering sink: {}", name);
-        self.sinks.insert(name, sink);
+        self.sinks.lock().unwrap().insert(name.clone(), name);
     }
 
-    /// Get a registered transform
-    pub fn get_transform(&self, name: &str) -> Option<&Box<dyn Transform>> {
-        self.transforms.get(name)
-    }
-
-    /// Register a new transform
-    pub fn register_transform(&mut self, name: String, transform: Box<dyn Transform>) {
+    /// Register a new transform type
+    pub fn register_transform(&self, name: String) {
         log::info!("Registering transform: {}", name);
-        self.transforms.insert(name, transform);
+        self.transforms.lock().unwrap().insert(name.clone(), name);
     }
 
     /// Initialize all standard sources and sinks
-    pub async fn initialize_standard_components(&mut self) -> Result<()> {
+    pub async fn initialize_standard_components(&self) -> Result<()> {
         log::info!("Initializing standard registry components");
 
-        // Register standard sources (creating dummy instances for registry tracking)
-        // Note: We create lightweight instances just for registration purposes
-        match MasscanScanner::new() {
-            Ok(scanner) => {
-                self.register_source("masscan".to_string(), Box::new(scanner));
-            }
-            Err(e) => log::warn!("Failed to register masscan source: {}", e),
-        }
-
-        let nmap_scanner = NmapScanner::new();
-        self.register_source("nmap".to_string(), Box::new(nmap_scanner));
+        // Register standard sources
+        self.register_source("masscan".to_string());
+        self.register_source("nmap".to_string());
         
         // Register standard transforms
-        self.register_transform("ip_enrichment".to_string(), Box::new(IpEnrichmentTransform::new()));
-        self.register_transform("service_parsing".to_string(), Box::new(ServiceParsingTransform::new()));
-        self.register_transform("progress_tracking".to_string(), Box::new(ProgressTrackingTransform::new()));
+        self.register_transform("ip_enrichment".to_string());
+        self.register_transform("service_parsing".to_string());
+        self.register_transform("progress_tracking".to_string());
 
-        // Register standard sinks (lightweight instances for registry)
-        self.register_sink("ui".to_string(), Box::new(UiSink::new(self.app_handle.clone())));
-        self.register_sink("db".to_string(), Box::new(DbSink::new(self.db.clone())));
-        self.register_sink("vulnerability".to_string(), Box::new(VulnerabilityAnalysisSink::new(self.db.clone(), self.app_handle.clone())));
+        // Register standard sinks
+        self.register_sink("ui".to_string());
+        self.register_sink("db".to_string());
+        self.register_sink("vulnerability".to_string());
+
+        let sources_count = self.sources.lock().unwrap().len();
+        let sinks_count = self.sinks.lock().unwrap().len();
+        let transforms_count = self.transforms.lock().unwrap().len();
 
         log::info!(
             "Registry initialized with {} sources, {} sinks, and {} transforms",
-            self.sources.len(),
-            self.sinks.len(),
-            self.transforms.len()
+            sources_count,
+            sinks_count,
+            transforms_count
         );
         Ok(())
     }
 
     /// List all registered component types
     pub fn list_components(&self) -> (Vec<String>, Vec<String>, Vec<String>) {
-        let sources: Vec<String> = self.sources.keys().cloned().collect();
-        let sinks: Vec<String> = self.sinks.keys().cloned().collect();
-        let transforms: Vec<String> = self.transforms.keys().cloned().collect();
+        let sources: Vec<String> = self.sources.lock().unwrap().keys().cloned().collect();
+        let sinks: Vec<String> = self.sinks.lock().unwrap().keys().cloned().collect();
+        let transforms: Vec<String> = self.transforms.lock().unwrap().keys().cloned().collect();
         (sources, sinks, transforms)
+    }
+
+    /// Clear active sources and reset registry state
+    pub async fn clear_active_sources(&self) {
+        log::info!("Clearing active sources in registry");
+        // For now, we don't maintain active source state, but this method
+        // exists for future state management and cleanup
+        // TODO: If we add source lifecycle tracking, clear it here
     }
 }
 

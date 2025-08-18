@@ -20,9 +20,15 @@ use crate::plan::Plan;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, State};
+use tokio::sync::Mutex;
 
 // Global scan cancellation flag
 static SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+// Global engine instance to persist state between calls
+lazy_static::lazy_static! {
+    static ref GLOBAL_ENGINE: Arc<Mutex<Option<Engine>>> = Arc::new(Mutex::new(None));
+}
 
 /// One command to rule them all - unified engine execution
 #[tauri::command]
@@ -33,23 +39,47 @@ pub async fn engine_execute(
 ) -> Result<(), String> {
     log::info!("Engine execute called with plan: {:?}", plan);
 
-    // Build engine from registry, wire Arc<Db> into DbSink
-    let mut registry = Registry::new(state_db.inner().clone(), app);
-    
-    // Initialize all standard components in registry
-    if let Err(e) = registry.initialize_standard_components().await {
-        log::error!("Failed to initialize registry components: {}", e);
-        return Err(format!("Registry initialization failed: {}", e));
-    }
-    
-    // Log available components
-    let (sources, sinks, transforms) = registry.list_components();
-    log::info!("Available sources: {:?}", sources);
-    log::info!("Available sinks: {:?}", sinks);
-    log::info!("Available transforms: {:?}", transforms);
+    // Get or create engine instance
+    let mut engine_guard = GLOBAL_ENGINE.lock().await;
+    let engine = match engine_guard.as_ref() {
+        Some(existing_engine) => {
+            // Check if engine is ready for new scan
+            if existing_engine.is_ready().await {
+                log::info!("Using existing engine in ready state");
+                existing_engine.clone()
+            } else {
+                log::info!("Engine not ready, resetting and preparing for new scan");
+                existing_engine.reset().await.map_err(|e| e.to_string())?;
+                existing_engine.clone()
+            }
+        }
+        None => {
+            log::info!("Creating new engine instance");
+            
+            // Build engine from registry, wire Arc<Db> into DbSink
+            let mut registry = Registry::new(state_db.inner().clone(), app);
+            
+            // Initialize all standard components in registry
+            if let Err(e) = registry.initialize_standard_components().await {
+                log::error!("Failed to initialize registry components: {}", e);
+                return Err(format!("Registry initialization failed: {}", e));
+            }
+            
+            // Log available components
+            let (sources, sinks, transforms) = registry.list_components();
+            log::info!("Available sources: {:?}", sources);
+            log::info!("Available sinks: {:?}", sinks);
+            log::info!("Available transforms: {:?}", transforms);
 
-    // Build engine from plan
-    let engine = Engine { registry };
+            // Build engine from plan
+            let new_engine = Engine::new(registry);
+            *engine_guard = Some(new_engine.clone());
+            new_engine
+        }
+    };
+    
+    // Release the lock
+    drop(engine_guard);
 
     // Execute in background task - return immediately while streaming
     tokio::spawn(async move {
@@ -88,4 +118,32 @@ pub async fn engine_cancel_scan() -> Result<(), String> {
     log::info!("Engine scan cancellation requested");
     cancel_current_scan();
     Ok(())
+}
+
+/// Reset the engine to allow new scans
+#[tauri::command]
+pub async fn engine_reset() -> Result<(), String> {
+    log::info!("Engine reset requested");
+    
+    let engine_guard = GLOBAL_ENGINE.lock().await;
+    if let Some(engine) = engine_guard.as_ref() {
+        engine.reset().await.map_err(|e| e.to_string())?;
+        log::info!("Engine reset completed");
+    } else {
+        log::info!("No engine instance to reset");
+    }
+    
+    Ok(())
+}
+
+/// Get current engine state
+#[tauri::command]
+pub async fn engine_get_state() -> Result<String, String> {
+    let engine_guard = GLOBAL_ENGINE.lock().await;
+    if let Some(engine) = engine_guard.as_ref() {
+        let state = engine.get_state().await;
+        Ok(format!("{:?}", state))
+    } else {
+        Ok("NoEngine".to_string())
+    }
 }

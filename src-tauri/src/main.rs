@@ -23,7 +23,12 @@ use crate::analysis::AnalysisEngine;
 use crate::database::Db;
 use crate::scanning::coordinator::ScanCoordinator;
 use anyhow::Result;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{TrayIconBuilder, TrayIconEvent},
+    Manager,
+};
 
 mod analysis;
 mod commands;
@@ -49,42 +54,60 @@ fn open_db() -> Result<Db> {
     let db_dir = app_data_dir();
     std::fs::create_dir_all(&db_dir)?;
     let db_path = db_dir.join("network.db");
-    let db = Db::open(db_path.to_str().unwrap())?;
+    let db = Db::open(db_path)?;
     Ok(db)
 }
 
 // engine_execute is now handled in commands::engine_commands
 
-#[tokio::main]
-async fn main() {
-    // Initialize logging
+fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     println!("LEGION2 starting up...");
 
-    // Initialize module system
-    if let Err(e) = modules::init() {
-        log::error!("Failed to initialize modules: {}", e);
-        return;
-    }
-
-    // Initialize single database
-    let db_dir = app_data_dir();
-    std::fs::create_dir_all(&db_dir).expect("Failed to create database directory");
-    let db_path = db_dir.join("network.db");
-    let db = Arc::new(
-        Db::open(db_path.to_str().unwrap())
-            .expect("Failed to open database"),
-    );
-
-    // Initialize analysis engine for vulnerability and topology analysis
-    let analysis_engine = AnalysisEngine::new(db.clone());
-
     tauri::Builder::default()
-        .manage(db.clone())
-        .manage(analysis_engine)
+        .setup(|app| {
+            // Synchronous setup: tray, state, etc.
+            let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
+                .expect("Failed to load tray icon");
+
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&quit])?;
+
+            TrayIconBuilder::with_id("tray")
+                .icon(icon)
+                .menu(&menu)
+                .on_menu_event(|app, event| {
+                    if event.id == "quit" {
+                        app.exit(0);
+                    }
+                })
+                .build(app)?;
+
+            // Synchronous state management
+            let db_dir = app_data_dir();
+            std::fs::create_dir_all(&db_dir).expect("Failed to create database directory");
+            let db_path = db_dir.join("network.db");
+            let db = Arc::new(Db::open(db_path).expect("Failed to open database"));
+            let analysis_engine = AnalysisEngine::new(db.clone());
+
+            app.manage(db.clone());
+            app.manage(analysis_engine);
+
+            // Spawn async tasks if needed, but do NOT use `app` inside
+            tauri::async_runtime::spawn(async {
+                // Async work here, but don't touch `app`
+                if let Err(e) = modules::init() {
+                    log::error!("Failed to initialize modules: {}", e);
+                }
+            });
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::engine_commands::engine_execute,
             commands::engine_commands::engine_cancel_scan,
+            commands::engine_commands::engine_reset,
+            commands::engine_commands::engine_get_state,
             commands::host_commands::get_all_hosts,
             commands::host_commands::get_host_details,
             commands::host_commands::get_host_by_ip,

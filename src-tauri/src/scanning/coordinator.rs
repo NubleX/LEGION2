@@ -116,7 +116,7 @@ impl ScanCoordinator {
             return Err(format!("Registry initialization failed: {}", e));
         }
         
-        let engine = Engine { registry };
+        let engine = Engine::new(registry);
 
         {
             let mut active = self.active_scans.lock().await;

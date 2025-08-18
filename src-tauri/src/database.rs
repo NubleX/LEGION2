@@ -17,12 +17,14 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use crate::shared::{Host, HostStatus};
 use sha2::{Sha256, Digest};
 use hex;
 use aes_gcm::{Aes256Gcm, Key, Nonce, aead::{Aead, KeyInit}};
 use rand::Rng;
+use parking_lot::Mutex;
+use std::path::PathBuf;
+
 
 // ------------- internal helpers (shared) -------------
 
@@ -194,7 +196,7 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-// ------------- your original simple Db (kept) -------------
+// ------------- Main Db implementation with encryption -------------
 
 #[derive(Debug)]
 pub struct Db {
@@ -203,9 +205,10 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn open(path: &str) -> Result<Self> {
+    pub fn open(path: PathBuf) -> Result<Self> {
+        std::fs::create_dir_all(path.parent().unwrap())?;
         let conn = Connection::open(path)?;
-        ensure_schema(&conn)?; // use the full schema now
+        ensure_schema(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             encryption: EncryptionManager::new(),
@@ -224,22 +227,21 @@ impl Db {
             None
         };
         
-        // Use spawn_blocking to run database operations on a blocking thread
         let conn = self.conn.clone();
         let ip = ip.to_string();
-        let status = status.map(|s| s.to_string());
+        let status = status.unwrap_or("unknown").to_string();
         
         tokio::task::spawn_blocking(move || {
-            let conn = conn.blocking_lock();
-            
-            // If no row, insert with the extended columns initialized;
-            // if exists, update last_seen and status if provided.
-            let host_status = status.as_deref().unwrap_or("unknown");
+            let conn = conn.lock();
             conn.execute(
-                r#"INSERT INTO hosts(id, ip_encrypted, hostname, first_seen, last_seen, created_at, updated_at, status, tags, port_count, vulnerability_count)
-                   VALUES(?1, ?2, ?3, ?4, ?4, ?4, ?4, ?5, '[]', 0, 0)
-                   ON CONFLICT(ip_encrypted) DO UPDATE SET last_seen=excluded.last_seen, updated_at=excluded.updated_at, hostname=COALESCE(excluded.hostname, hostname), status=excluded.status"#,
-                params![&ip, &ip_encrypted, hostname_encrypted, &t, host_status],
+                r#"INSERT INTO hosts(id, ip_encrypted, hostname, status, first_seen, last_seen, created_at, updated_at, port_count, vulnerability_count)
+                   VALUES(?1, ?2, ?3, ?4, ?5, ?5, ?5, ?5, 0, 0)
+                   ON CONFLICT(ip_encrypted) DO UPDATE SET 
+                       hostname = COALESCE(excluded.hostname, hosts.hostname),
+                       status = COALESCE(excluded.status, hosts.status),
+                       last_seen = excluded.last_seen,
+                       updated_at = excluded.updated_at"#,
+                params![&ip, &ip_encrypted, hostname_encrypted, &status, &t],
             )?;
             Ok::<(), anyhow::Error>(())
         }).await??;
@@ -283,29 +285,49 @@ impl Db {
         let version = version.map(|s| s.to_string());
         let banner = banner.map(|s| s.to_string());
         
+        // Encrypt sensitive service data outside the closure
+        let service_encrypted = if let Some(s) = &service {
+            Some(self.encryption.encrypt(s)?)
+        } else {
+            None
+        };
+        let version_encrypted = if let Some(v) = &version {
+            Some(self.encryption.encrypt(v)?)
+        } else {
+            None
+        };
+        let banner_encrypted = if let Some(b) = &banner {
+            Some(self.encryption.encrypt(b)?)
+        } else {
+            None
+        };
+
         tokio::task::spawn_blocking(move || {
-            let conn = conn.blocking_lock();
+            let conn = conn.lock();
 
             // Ensure host row exists, but mark as 'down' by default until proven up
             // This prevents phantom hosts from appearing as 'up' in the UI
             conn.execute(
-                r#"INSERT INTO hosts(id, ip, first_seen, last_seen, created_at, updated_at, status, port_count, vulnerability_count)
+                r#"INSERT INTO hosts(id, ip_encrypted, first_seen, last_seen, created_at, updated_at, status, port_count, vulnerability_count)
                    VALUES(?1, ?2, ?3, ?3, ?3, ?3, 'down', 0, 0)
-                   ON CONFLICT(ip) DO UPDATE SET last_seen=excluded.last_seen, updated_at=excluded.updated_at"#,
-                params![&ip, &ip, &t],
+                   ON CONFLICT(ip_encrypted) DO UPDATE SET last_seen=excluded.last_seen, updated_at=excluded.updated_at"#,
+                params![&ip, &ip_encrypted, &t],
             )?;
 
             let port_id = format!("{}:{}/{}", &ip, port, &proto);
+            
             conn.execute(
-                r#"INSERT INTO ports(id, host_id, number, protocol, state, service, version, banner, created_at)
-                   VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                   ON CONFLICT(id)
+                r#"INSERT INTO ports(id, host_id, number, protocol, state, service_name, product, version, banner, first_seen, last_seen)
+                   VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+                   ON CONFLICT(host_id, number, protocol)
                    DO UPDATE SET 
                        state=COALESCE(excluded.state, ports.state),
-                       service=COALESCE(excluded.service, ports.service),
+                       service_name=COALESCE(excluded.service_name, ports.service_name),
+                       product=COALESCE(excluded.product, ports.product),
                        version=COALESCE(excluded.version, ports.version),
-                       banner=COALESCE(excluded.banner, ports.banner)"#,
-                params![port_id, &ip, port as i64, &proto, state, service, version, banner, &t],
+                       banner=COALESCE(excluded.banner, ports.banner),
+                       last_seen=excluded.last_seen"#,
+                params![port_id, &ip, port as i64, &proto, state, service_encrypted, service_encrypted, version_encrypted, banner_encrypted, &t],
             )?;
             Ok::<(), anyhow::Error>(())
         }).await??;
@@ -318,7 +340,7 @@ impl Db {
         let encryption = EncryptionManager::new(); // Create new instance for decryption
         
         tokio::task::spawn_blocking(move || {
-            let conn = conn.blocking_lock();
+            let conn = conn.lock();
             let mut stmt = conn.prepare(
                 "SELECT id, ip_encrypted, hostname, mac_address, vendor, os_name, os_family, os_accuracy,
                         status, first_seen, last_seen, created_at, updated_at, port_count, vulnerability_count, notes, tags, scan_progress
@@ -389,22 +411,31 @@ impl Db {
     pub async fn get_host_ports(&self, host_id: &str) -> Result<Vec<String>> {
         let conn = self.conn.clone();
         let host_id = host_id.to_string();
+        let encryption = EncryptionManager::new(); // Create new instance for decryption
         
         tokio::task::spawn_blocking(move || {
-            let conn = conn.blocking_lock();
+            let conn = conn.lock();
             let mut stmt = conn.prepare(
-                "SELECT number, protocol, state, service FROM ports WHERE host_id = ? ORDER BY number",
+                "SELECT number, protocol, state, service_name FROM ports WHERE host_id = ? ORDER BY number",
             )?;
             let rows = stmt.query_map([host_id], |row| {
                 let number: i32 = row.get(0)?;
                 let protocol: String = row.get(1)?;
                 let state: Option<String> = row.get(2)?;
-                let service: Option<String> = row.get(3)?;
+                let service_encrypted: Option<String> = row.get(3)?;
+                
+                // Decrypt service name
+                let service = if let Some(s_enc) = service_encrypted {
+                    encryption.decrypt(&s_enc).unwrap_or_else(|_| "unknown".to_string())
+                } else {
+                    "".to_string()
+                };
+                
                 Ok(format!("{}/{} {} {}", 
                     number, 
                     protocol, 
                     state.unwrap_or_else(|| "unknown".to_string()),
-                    service.unwrap_or_else(|| "".to_string())
+                    service
                 ))
             })?;
             
@@ -419,19 +450,37 @@ impl Db {
     pub async fn get_host_ports_detailed(&self, host_id: &str) -> Result<Vec<crate::commands::host_commands::PortInfo>> {
         let conn = self.conn.clone();
         let host_id = host_id.to_string();
+        let encryption = EncryptionManager::new(); // Create new instance for decryption
         
         tokio::task::spawn_blocking(move || {
-            let conn = conn.blocking_lock();
+            let conn = conn.lock();
             let mut stmt = conn.prepare(
-                "SELECT number, protocol, state, service, version, banner FROM ports WHERE host_id = ? ORDER BY number",
+                "SELECT number, protocol, state, service_name, version, banner FROM ports WHERE host_id = ? ORDER BY number",
             )?;
             let rows = stmt.query_map([host_id], |row| {
                 let number: i32 = row.get(0)?;
                 let protocol: String = row.get(1)?;
                 let state: String = row.get(2)?;
-                let service: Option<String> = row.get(3)?;
-                let version: Option<String> = row.get(4)?;
-                let banner: Option<String> = row.get(5)?;
+                let service_encrypted: Option<String> = row.get(3)?;
+                let version_encrypted: Option<String> = row.get(4)?;
+                let banner_encrypted: Option<String> = row.get(5)?;
+                
+                // Decrypt service data
+                let service = if let Some(s_enc) = service_encrypted {
+                    encryption.decrypt(&s_enc).ok()
+                } else {
+                    None
+                };
+                let version = if let Some(v_enc) = version_encrypted {
+                    encryption.decrypt(&v_enc).ok()
+                } else {
+                    None
+                };
+                let banner = if let Some(b_enc) = banner_encrypted {
+                    encryption.decrypt(&b_enc).ok()
+                } else {
+                    None
+                };
                 
                 Ok(crate::commands::host_commands::PortInfo {
                     number: number as u16,
@@ -458,7 +507,7 @@ impl Db {
         let vendor = vendor.map(|s| s.to_string());
         
         tokio::task::spawn_blocking(move || {
-            let conn = conn.blocking_lock();
+            let conn = conn.lock();
             
             // Update the host with MAC address and vendor information
             let mut query = "UPDATE hosts SET updated_at = CURRENT_TIMESTAMP".to_string();
@@ -489,7 +538,7 @@ impl Db {
         let host_id = host_id.to_string();
         
         tokio::task::spawn_blocking(move || {
-            let conn = conn.blocking_lock();
+            let conn = conn.lock();
             let mut stmt = conn.prepare(
                 "SELECT name, severity, cve FROM vulnerabilities WHERE host_id = ? ORDER BY severity DESC",
             )?;
@@ -517,7 +566,7 @@ impl Db {
         let host_id = host_id.to_string();
         
         tokio::task::spawn_blocking(move || {
-            let conn = conn.blocking_lock();
+            let conn = conn.lock();
             conn.execute("DELETE FROM hosts WHERE id = ?", [host_id])?;
             Ok(())
         }).await?
@@ -530,7 +579,7 @@ impl Db {
         let timestamp = to_rfc3339(Utc::now());
         
         tokio::task::spawn_blocking(move || {
-            let conn = conn.blocking_lock();
+            let conn = conn.lock();
             conn.execute(
                 "UPDATE hosts SET tags = ?, updated_at = ? WHERE id = ?",
                 (encoded_tags, timestamp, host_id),
@@ -553,7 +602,7 @@ impl Db {
         let timestamp = to_rfc3339(Utc::now());
         
         tokio::task::spawn_blocking(move || {
-            let conn = conn.blocking_lock();
+            let conn = conn.lock();
             conn.execute(
                 r#"UPDATE hosts SET
                    os_name = COALESCE(?2, os_name),
@@ -591,7 +640,7 @@ impl Db {
         let timestamp = to_rfc3339(Utc::now());
         
         tokio::task::spawn_blocking(move || {
-            let conn = conn.blocking_lock();
+            let conn = conn.lock();
             conn.execute(
                 r#"UPDATE hosts SET
                    hostname = COALESCE(?2, hostname),
@@ -612,7 +661,7 @@ impl Db {
         let timestamp = to_rfc3339(Utc::now());
         
         tokio::task::spawn_blocking(move || {
-            let conn = conn.blocking_lock();
+            let conn = conn.lock();
             conn.execute(
                 r#"UPDATE hosts SET vulnerability_count = vulnerability_count + 1, updated_at = ?2, last_seen = ?2 WHERE ip_encrypted = ?1"#,
                 params![&ip_encrypted, &timestamp],
@@ -646,7 +695,7 @@ impl Db {
         let remediation = remediation.map(|s| s.to_string());
         
         tokio::task::spawn_blocking(move || {
-            let conn = conn.blocking_lock();
+            let conn = conn.lock();
             
             // Find host by IP
             let mut stmt = conn.prepare("SELECT id FROM hosts WHERE ip_encrypted = ?1")?;
@@ -685,7 +734,7 @@ impl Db {
         let host_ip_owned = host_ip.to_string(); // Create owned copy for the closure
         
         tokio::task::spawn_blocking(move || {
-            let conn = conn.blocking_lock();
+            let conn = conn.lock();
             
             // First get host ID
             let mut host_stmt = conn.prepare("SELECT id FROM hosts WHERE ip_encrypted = ?1")?;
@@ -726,7 +775,7 @@ impl Db {
         let encryption = EncryptionManager::new();
         
         tokio::task::spawn_blocking(move || {
-            let conn = conn.blocking_lock();
+            let conn = conn.lock();
             let mut stmt = conn.prepare(
                 r#"SELECT v.id, h.ip_encrypted, v.name, v.severity, v.description, v.cve, v.cvss_score, v.discovered_at, v.last_seen
                    FROM vulnerabilities v
@@ -758,7 +807,6 @@ impl Db {
             Ok(vulns)
         }).await?
     }
-
 }
 
 /// Vulnerability record for database operations

@@ -384,8 +384,44 @@ impl Sink for UiSink {
 /// Batch of observations for efficient database operations
 #[derive(Debug)]
 struct ObsBatch {
-    hosts: Vec<(String, Option<String>)>,         // (ip, hostname)
-    services: Vec<(String, u16, String, String)>, // (ip, port, protocol, reason)
+    hosts: Vec<HostBatchItem>,
+    services: Vec<ServiceBatchItem>,
+    vulnerabilities: Vec<VulnerabilityBatchItem>,
+}
+
+#[derive(Debug, Clone)]
+struct HostBatchItem {
+    ip: String,
+    hostname: Option<String>,
+    status: Option<String>,
+    mac_address: Option<String>,
+    vendor: Option<String>,
+    os_name: Option<String>,
+    os_family: Option<String>,
+    os_accuracy: Option<f32>,
+}
+
+#[derive(Debug, Clone)]
+struct ServiceBatchItem {
+    ip: String,
+    port: u16,
+    protocol: String,
+    state: String,
+    service: Option<String>,
+    version: Option<String>,
+    banner: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct VulnerabilityBatchItem {
+    id: String,
+    host_ip: String,
+    port: u16,
+    name: String,
+    description: String,
+    severity: String,
+    cvss_score: Option<f32>,
+    cve_id: Option<String>,
 }
 
 impl ObsBatch {
@@ -393,20 +429,38 @@ impl ObsBatch {
         Self {
             hosts: Vec::new(),
             services: Vec::new(),
+            vulnerabilities: Vec::new(),
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.hosts.is_empty() && self.services.is_empty()
+        self.hosts.is_empty() && self.services.is_empty() && self.vulnerabilities.is_empty()
     }
 
     fn len(&self) -> usize {
-        self.hosts.len() + self.services.len()
+        self.hosts.len() + self.services.len() + self.vulnerabilities.len()
     }
 
     fn clear(&mut self) {
         self.hosts.clear();
         self.services.clear();
+        self.vulnerabilities.clear();
+    }
+
+    fn add_host(&mut self, item: HostBatchItem) {
+        self.hosts.push(item);
+    }
+
+    fn add_service(&mut self, item: ServiceBatchItem) {
+        self.services.push(item);
+    }
+
+    fn add_vulnerability(&mut self, item: VulnerabilityBatchItem) {
+        self.vulnerabilities.push(item);
+    }
+
+    fn should_flush(&self) -> bool {
+        self.len() >= 50 // Flush when we have 50+ items
     }
 }
 
@@ -507,6 +561,10 @@ impl Sink for VulnerabilityAnalysisSink {
     }
     
     async fn run(&self, mut input: ObsStream) -> anyhow::Result<()> {
+        log::info!("🔍 VulnerabilityAnalysisSink started - listening for service observations");
+        let mut services_analyzed = 0u64;
+        let mut vulnerabilities_found = 0u64;
+        
         while let Some(obs) = input.next().await {
             self.metrics.increment_observations().await;
             
@@ -520,33 +578,55 @@ impl Sink for VulnerabilityAnalysisSink {
                         let service = obs.fields.get("service").and_then(|v| v.as_str());
                         let version = obs.fields.get("version").and_then(|v| v.as_str());
                         let banner = obs.fields.get("banner").and_then(|v| v.as_str());
+                        let state = obs.fields.get("state").and_then(|v| v.as_str()).unwrap_or("open");
                         
-                        // Run vulnerability analysis on this service  
-                        let service_name = service.unwrap_or("unknown");
-                        log::debug!("Running vulnerability analysis for {}:{} ({})", ip, port, service_name);
-                        
-                        match self.vulnerability_engine.analyze_service(ip, port, service_name, version, banner).await {
-                            Ok(vulnerabilities) => {
-                                log::info!("Found {} vulnerabilities for {}:{}", vulnerabilities.len(), ip, port);
-                                for vuln in vulnerabilities {
-                                    if let Err(e) = self.emit_vulnerability(&vuln).await {
-                                        log::error!("Failed to emit vulnerability: {}", e);
-                                        self.metrics.increment_errors().await;
+                        // Only analyze open services
+                        if state.to_lowercase() == "open" {
+                            services_analyzed += 1;
+                            let service_name = service.unwrap_or("unknown");
+                            
+                            log::info!("🔍 Analyzing service {}:{}/{} ({})", ip, port, state, service_name);
+                            
+                            // Run vulnerability analysis on this service  
+                            match self.vulnerability_engine.analyze_service(ip, port, service_name, version, banner).await {
+                                Ok(vulnerabilities) => {
+                                    log::info!("✅ Found {} vulnerabilities for {}:{}", vulnerabilities.len(), ip, port);
+                                    
+                                    if vulnerabilities.is_empty() {
+                                        log::debug!("✅ No vulnerabilities found for {}:{} ({})", ip, port, service_name);
+                                    } else {
+                                        vulnerabilities_found += vulnerabilities.len() as u64;
+                                        
+                                        for vuln in vulnerabilities {
+                                            log::info!("🚨 Emitting vulnerability: {} for {}:{}", vuln.finding.title, ip, port);
+                                            if let Err(e) = self.emit_vulnerability(&vuln).await {
+                                                log::error!("❌ Failed to emit vulnerability: {}", e);
+                                                self.metrics.increment_errors().await;
+                                            }
+                                        }
                                     }
                                 }
+                                Err(e) => {
+                                    log::error!("❌ Vulnerability analysis failed for {}:{} ({}): {}", ip, port, service_name, e);
+                                    self.metrics.increment_errors().await;
+                                }
                             }
-                            Err(e) => {
-                                log::error!("Vulnerability analysis failed for {}:{} ({}): {}", ip, port, service_name, e);
-                                self.metrics.increment_errors().await;
-                            }
+                        } else {
+                            log::debug!("⏭️  Skipping non-open service {}:{}/{}", ip, port, state);
                         }
+                    } else {
+                        log::warn!("⚠️  Service observation missing required fields (ip or port)");
                     }
                 }
                 _ => {
                     // Don't process other observation types for vulnerability analysis
+                    log::trace!("⏭️  Skipping non-service observation: {:?}", obs.kind);
                 }
             }
         }
+        
+        log::info!("🔍 VulnerabilityAnalysisSink completed: analyzed {} services, found {} vulnerabilities", 
+                  services_analyzed, vulnerabilities_found);
         Ok(())
     }
 }
@@ -578,6 +658,127 @@ impl DbSink {
         self.metrics.increment_services().await;
         Ok(())
     }
+
+    async fn store_host_os_info(&self, ip: &str, os_name: Option<&str>, os_family: Option<&str>, os_accuracy: Option<f32>) -> Result<()> {
+        self.db.update_host_os(ip, os_name, os_family, os_accuracy).await?;
+        Ok(())
+    }
+
+    async fn store_host_hostname(&self, ip: &str, hostname: Option<&str>) -> Result<()> {
+        if let Some(hostname) = hostname {
+            self.db.update_host_info(ip, Some(hostname), None, None).await?;
+        }
+        Ok(())
+    }
+
+    /// Batch insert hosts with spawn_blocking for performance
+    async fn flush_hosts_batch(&self, batch: &[HostBatchItem]) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        let db = self.db.clone();
+        let batch_items = batch.to_vec();
+        
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(async {
+                for item in batch_items {
+                    // Store host with all information at once
+                    if let Err(e) = db.upsert_host(&item.ip, item.hostname.as_deref(), item.status.as_deref()).await {
+                        log::error!("Failed to batch store host {}: {}", item.ip, e);
+                        continue;
+                    }
+
+                    // Store network info if available
+                    if item.mac_address.is_some() || item.vendor.is_some() {
+                        if let Err(e) = db.update_host_network_info(&item.ip, item.mac_address.as_deref(), item.vendor.as_deref()).await {
+                            log::error!("Failed to batch store network info for {}: {}", item.ip, e);
+                        }
+                    }
+
+                    // Store OS info if available
+                    if item.os_name.is_some() || item.os_family.is_some() || item.os_accuracy.is_some() {
+                        if let Err(e) = db.update_host_os(&item.ip, item.os_name.as_deref(), item.os_family.as_deref(), item.os_accuracy).await {
+                            log::error!("Failed to batch store OS info for {}: {}", item.ip, e);
+                        }
+                    }
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+        }).await??;
+
+        log::debug!("Batch processed {} hosts", batch.len());
+        Ok(())
+    }
+
+    /// Batch insert services with spawn_blocking for performance
+    async fn flush_services_batch(&self, batch: &[ServiceBatchItem]) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        let db = self.db.clone();
+        let batch_items = batch.to_vec();
+        
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(async {
+                for item in batch_items {
+                    if let Err(e) = db.upsert_service_detailed(
+                        &item.ip,
+                        item.port,
+                        &item.protocol,
+                        Some(&item.state),
+                        item.service.as_deref(),
+                        item.version.as_deref(),
+                        item.banner.as_deref(),
+                    ).await {
+                        log::error!("Failed to batch store service {}:{}: {}", item.ip, item.port, e);
+                    }
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+        }).await??;
+
+        log::debug!("Batch processed {} services", batch.len());
+        Ok(())
+    }
+
+    /// Flush entire batch to database
+    async fn flush_batch(&self, batch: &mut ObsBatch) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        let start_time = std::time::Instant::now();
+        
+        // Process batches concurrently
+        let hosts_task = self.flush_hosts_batch(&batch.hosts);
+        let services_task = self.flush_services_batch(&batch.services);
+        
+        // Wait for all batch operations to complete
+        let (hosts_result, services_result) = tokio::join!(hosts_task, services_task);
+        
+        if let Err(e) = hosts_result {
+            log::error!("Host batch flush failed: {}", e);
+        }
+        if let Err(e) = services_result {
+            log::error!("Service batch flush failed: {}", e);
+        }
+        
+        let duration = start_time.elapsed();
+        log::info!("Flushed batch of {} items in {}ms", batch.len(), duration.as_millis());
+        
+        // Update metrics
+        for _ in &batch.hosts {
+            self.metrics.increment_hosts().await;
+        }
+        for _ in &batch.services {
+            self.metrics.increment_services().await;
+        }
+        
+        batch.clear();
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -587,71 +788,103 @@ impl Sink for DbSink {
     }
 
     async fn run(&self, mut stream: ObsStream) -> Result<()> {
-        while let Some(observation) = stream.next().await {
-            match observation.kind {
-                ObservationKind::Host => {
-                    if let Some(ip) = observation.fields.get("ip").and_then(|v| v.as_str()) {
-                        let hostname = observation.fields.get("hostname").and_then(|v| v.as_str());
-                        let status = observation.fields.get("status").and_then(|v| v.as_str());
-                        let mac_address = observation.fields.get("mac_address").and_then(|v| v.as_str());
-                        let vendor = observation.fields.get("vendor").and_then(|v| v.as_str());
-                        
-                        if let Err(e) = self.store_host(ip, hostname, status).await {
-                            eprintln!("Failed to store host {}: {}", ip, e);
-                            self.metrics.increment_errors().await;
-                        }
-                        
-                        // Store MAC address and vendor information if available
-                        if mac_address.is_some() || vendor.is_some() {
-                            if let Err(e) = self.store_host_network_info(ip, mac_address, vendor).await {
-                                eprintln!("Failed to store network info for host {}: {}", ip, e);
-                                self.metrics.increment_errors().await;
+        let mut batch = ObsBatch::new();
+        let mut flush_interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+        
+        loop {
+            tokio::select! {
+                // Process observations
+                obs_result = stream.next() => {
+                    match obs_result {
+                        Some(observation) => {
+                            match observation.kind {
+                                ObservationKind::Host => {
+                                    if let Some(ip) = observation.fields.get("ip").and_then(|v| v.as_str()) {
+                                        let hostname = observation.fields.get("hostname").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                        let status = observation.fields.get("status").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                        let mac_address = observation.fields.get("mac_address").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                        let vendor = observation.fields.get("vendor").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                        let os_name = observation.fields.get("os_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                        let os_family = observation.fields.get("os_family").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                        let os_accuracy = observation.fields.get("os_accuracy").and_then(|v| v.as_f64()).map(|a| a as f32);
+                                        
+                                        batch.add_host(HostBatchItem {
+                                            ip: ip.to_string(),
+                                            hostname,
+                                            status,
+                                            mac_address,
+                                            vendor,
+                                            os_name,
+                                            os_family,
+                                            os_accuracy,
+                                        });
+                                    }
+                                }
+                                ObservationKind::Service => {
+                                    if let (Some(ip), Some(port), Some(protocol)) = (
+                                        observation.fields.get("ip").and_then(|v| v.as_str()),
+                                        observation.fields.get("port").and_then(|v| v.as_u64()).map(|p| p as u16),
+                                        observation.fields.get("protocol").and_then(|v| v.as_str()),
+                                    ) {
+                                        let state = observation.fields.get("state").and_then(|v| v.as_str()).unwrap_or("open");
+                                        let service = observation.fields.get("service").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                        let version = observation.fields.get("version").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                        let banner = observation.fields.get("banner").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                        
+                                        batch.add_service(ServiceBatchItem {
+                                            ip: ip.to_string(),
+                                            port,
+                                            protocol: protocol.to_string(),
+                                            state: state.to_string(),
+                                            service,
+                                            version,
+                                            banner,
+                                        });
+                                    }
+                                }
+                                ObservationKind::Error => {
+                                    if let Some(message) = observation.fields.get("message").and_then(|v| v.as_str()) {
+                                        log::error!("Database sink encountered scan error: {}", message);
+                                        self.metrics.increment_errors().await;
+                                    }
+                                }
+                                _ => {
+                                    // Other observation types don't need DB storage
+                                }
+                            }
+
+                            self.metrics.increment_observations().await;
+                            
+                            // Flush batch if it's getting large
+                            if batch.should_flush() {
+                                if let Err(e) = self.flush_batch(&mut batch).await {
+                                    log::error!("Failed to flush observation batch: {}", e);
+                                    self.metrics.increment_errors().await;
+                                }
                             }
                         }
+                        None => {
+                            // Stream ended, flush remaining batch and exit
+                            if !batch.is_empty() {
+                                if let Err(e) = self.flush_batch(&mut batch).await {
+                                    log::error!("Failed to flush final batch: {}", e);
+                                }
+                            }
+                            break;
+                        }
                     }
                 }
-                ObservationKind::Service => {
-                    if let (Some(ip), Some(port), Some(protocol)) = (
-                        observation.fields.get("ip").and_then(|v| v.as_str()),
-                        observation
-                            .fields
-                            .get("port")
-                            .and_then(|v| v.as_u64())
-                            .map(|p| p as u16),
-                        observation.fields.get("protocol").and_then(|v| v.as_str()),
-                    ) {
-                        let state = observation
-                            .fields
-                            .get("state")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("open");
-                        let service = observation.fields.get("service").and_then(|v| v.as_str());
-                        let version = observation.fields.get("version").and_then(|v| v.as_str());
-                        let banner = observation.fields.get("banner").and_then(|v| v.as_str());
-                        
-                        if let Err(e) = self.store_service_detailed(ip, port, protocol, state, service, version, banner).await {
-                            eprintln!(
-                                "Failed to store service {}:{}/{}: {}",
-                                ip, port, protocol, e
-                            );
+                
+                // Periodic flush every 5 seconds to ensure data freshness
+                _ = flush_interval.tick() => {
+                    if !batch.is_empty() {
+                        if let Err(e) = self.flush_batch(&mut batch).await {
+                            log::error!("Failed to flush periodic batch: {}", e);
                             self.metrics.increment_errors().await;
                         }
                     }
                 }
-                ObservationKind::Error => {
-                    if let Some(message) =
-                        observation.fields.get("message").and_then(|v| v.as_str())
-                    {
-                        eprintln!("Database sink encountered scan error: {}", message);
-                        self.metrics.increment_errors().await;
-                    }
-                }
-                _ => {
-                    // Other observation types (Banner, TopologyEdge, Metric) don't need DB storage for now
-                }
             }
-
-            self.metrics.increment_observations().await;
         }
 
         Ok(())

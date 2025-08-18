@@ -1,22 +1,5 @@
-// LEGION2 - A free and open-source penetration testing tool.
-// Copyright (c) 2025 NubleX / Igor Dunaev
-
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
+/* LEGION2 - A free and open-source penetration testing tool.
+   Copyright (c) 2025 NubleX / Igor Dunaev */
 
 
 import { invoke } from '@tauri-apps/api/core';
@@ -255,8 +238,8 @@ const EnhancedScannerPanel = () => {
           <button
             onClick={() => setActiveTab('scanner')}
             className={`px-4 py-2 rounded-md transition-all duration-200 flex items-center space-x-2 ${activeTab === 'scanner'
-                ? 'bg-blue-600 text-white shadow-lg'
-                : 'text-gray-400 hover:text-white hover:bg-gray-700'
+              ? 'bg-blue-600 text-white shadow-lg'
+              : 'text-gray-400 hover:text-white hover:bg-gray-700'
               }`}
           >
             <Zap className="w-4 h-4" />
@@ -265,8 +248,8 @@ const EnhancedScannerPanel = () => {
           <button
             onClick={() => setActiveTab('topology')}
             className={`px-4 py-2 rounded-md transition-all duration-200 flex items-center space-x-2 ${activeTab === 'topology'
-                ? 'bg-blue-600 text-white shadow-lg'
-                : 'text-gray-400 hover:text-white hover:bg-gray-700'
+              ? 'bg-blue-600 text-white shadow-lg'
+              : 'text-gray-400 hover:text-white hover:bg-gray-700'
               }`}
           >
             <Wifi className="w-4 h-4" />
@@ -275,8 +258,8 @@ const EnhancedScannerPanel = () => {
           <button
             onClick={() => setActiveTab('hosts-results')}
             className={`px-4 py-2 rounded-md transition-all duration-200 flex items-center space-x-2 ${activeTab === 'hosts-results'
-                ? 'bg-blue-600 text-white shadow-lg'
-                : 'text-gray-400 hover:text-white hover:bg-gray-700'
+              ? 'bg-blue-600 text-white shadow-lg'
+              : 'text-gray-400 hover:text-white hover:bg-gray-700'
               }`}
           >
             <Database className="w-4 h-4" />
