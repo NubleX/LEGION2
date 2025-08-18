@@ -5,3 +5,5 @@ pub mod validation;
 pub mod os;
 pub mod parsing;
 pub mod process;
+pub mod xml_parser;
+pub mod netsniffer;

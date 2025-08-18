@@ -21,6 +21,7 @@ import { listen } from '@tauri-apps/api/event';
 import { create } from 'zustand';
 import type { Plan, ScanConfig } from '../types/scanning';
 
+
 // Simple state reflecting backend events
 interface AppState {
   // Live data from UiSink events
@@ -100,14 +101,14 @@ const useAppStore = create<AppState & AppActions>((set) => {
     await listen('obs:vulnerability', (event: any) => {
       const vuln = event.payload;
       const vulnMsg = `🔍 Vulnerability: ${vuln.name} on ${vuln.host_ip}:${vuln.port} (${vuln.severity})`;
-      set((state) => ({ 
+      set((state) => ({
         liveOutput: [...state.liveOutput, vulnMsg],
         vulnerabilities: [...(state.vulnerabilities || []), vuln]
       }));
     });
 
     await listen('obs:done', () => {
-      set((state) => ({ 
+      set((state) => ({
         scanInProgress: false,
         liveOutput: [...state.liveOutput, 'Scan completed. Ready for new scan.']
       }));
@@ -234,11 +235,10 @@ const useAppStore = create<AppState & AppActions>((set) => {
           await invoke('engine_execute', { plan });
           console.log('Plan executed successfully');
         }
-        
-        // Mark scan as complete after all plans are executed
+
+        // Don't set scanInProgress to false here - let the backend handle it via obs:done event
         set((state) => ({
-          scanInProgress: false,
-          liveOutput: [...state.liveOutput, 'All scan plans completed successfully. Ready for new scan.']
+          liveOutput: [...state.liveOutput, 'All scan plans submitted to backend.']
         }));
       } catch (error) {
         console.error('Scan execution failed:', error);
@@ -253,13 +253,13 @@ const useAppStore = create<AppState & AppActions>((set) => {
     cancelScan: async () => {
       try {
         await invoke('engine_cancel_scan');
-        set((state) => ({ 
+        set((state) => ({
           scanInProgress: false,
           liveOutput: [...state.liveOutput, 'Scan cancelled by user.']
         }));
       } catch (error) {
         console.error('Failed to cancel scan:', error);
-        set((state) => ({ 
+        set((state) => ({
           liveOutput: [...state.liveOutput, 'ERROR: Failed to cancel scan.']
         }));
       }
@@ -273,7 +273,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
       set({
         scanInProgress: false,
         liveOutput: ['Previous scan data preserved. Ready for new scan.'],
-        // Keep existing data persistent:
+        keep_existing_data_persistent: true,
         // recentHosts: [],
         // recentServices: [],
         // vulnerabilities: [],

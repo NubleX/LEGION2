@@ -35,8 +35,6 @@ const EnhancedScannerPanel = () => {
     scanInProgress,
     liveOutput,
     metrics,
-    vulnerabilities,
-    recentServices,
     startScan,
     cancelScan,
     resetScan
