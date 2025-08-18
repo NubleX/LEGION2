@@ -58,14 +58,14 @@ pub struct MasscanScanner {
 impl MasscanScanner {
     pub fn new() -> Result<Self> {
         let bin = crate::utils::os::get_masscan_binary_path();
-        Ok(Self { 
+        Ok(Self {
             bin,
             options: MasscanOptions::default(),
         })
     }
-    
+
     async fn check_masscan_available(&self) -> bool {
-        std::path::Path::new(&self.bin).exists()
+        is_command_available(&self.bin).await
     }
     
     async fn build_masscan_command(&self, plan: &Plan) -> (Command, String) {
@@ -123,137 +123,159 @@ impl MasscanScanner {
         log::info!("Masscan command: {:?}", cmd);
         (cmd, xml_file)
     }
-    
+
     pub async fn scan_target(
         &self,
-    target: &ScanTarget,
-    progress_tx: mpsc::Sender<ScanProgress>,
-    event_tx: mpsc::Sender<ScanEvent>,
-) -> Result<Vec<u16>> {
-    if !self.check_masscan_available().await {
-        return Err(anyhow!("masscan binary not found. Please install masscan."));
-    }
+        target: &ScanTarget,
+        progress_tx: mpsc::Sender<ScanProgress>,
+        event_tx: mpsc::Sender<ScanEvent>,
+    ) -> Result<Vec<u16>> {
+        if !self.check_masscan_available().await {
+            let _ = event_tx
+                .send(ScanEvent {
+                    scan_id: target.id.clone(),
+                    event_type: EventType::Error,
+                    timestamp: Utc::now(),
+                    data: json!({
+                        "message": "masscan binary not found. Please install masscan."
+                    }),
+                })
+                .await;
+            return Err(anyhow!("masscan binary not found. Please install masscan."));
+        }
 
-    let ports_arg = if let Some(ports) = &target.ports {
-        ports
-            .iter()
-            .map(|p| p.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    } else {
-        "1-65535".to_string()
-    };
+        let ports_arg = if let Some(ports) = &target.ports {
+            ports
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        } else {
+            "1-65535".to_string()
+        };
 
-    let mut cmd = Command::new(&self.bin);
-    cmd.arg("-p")
-        .arg(&ports_arg)
-        .args(["--open", "--wait", "0"])
-        .arg("--rate")
-        .arg(self.options.rate.to_string())
-        .arg(&target.ip.to_string()) // Target goes LAST
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        let mut cmd = Command::new(&self.bin);
+        cmd.arg("-p")
+            .arg(&ports_arg)
+            .args(["--open", "--wait", "0"])
+            .arg("--rate")
+            .arg(self.options.rate.to_string())
+            .arg("--output-format")
+            .arg("list")
+            .arg(&target.ip.to_string()) // Target goes LAST
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
 
-    let mut child = cmd.spawn()?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("Failed to get stdout"))?;
-    let mut lines = BufReader::new(stdout).lines();
+        let mut child = cmd.spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("Failed to get stdout"))?;
+        let mut lines = BufReader::new(stdout).lines();
 
-    let mut open_ports = Vec::new();
-    let now = Utc::now();
-    let _ = progress_tx
-        .send(ScanProgress {
-            scan_id: target.id.clone(),
-            status: ScanStatus::Running,
-            percentage: 0.0,
-            stage: "Masscan".to_string(),
-            targets_completed: 0,
-            targets_total: 1,
-            hosts_found: 0,
-            services_found: 0,
-            eta_seconds: None,
-            started_at: now,
-            updated_at: now,
-            rate: None,
-            details: HashMap::new(),
-            progress: 0.0,
-            current_target: Some(target.ip.to_string()),
-            hosts_discovered: 0,
-            ports_found: 0,
-            vulnerabilities: 0,
-            elapsed_time: 0,
-            estimated_remaining: None,
-            message: Some("Starting masscan".to_string()),
-            start_time: now,
-            current_phase: "Masscan".to_string(),
-        })
-        .await;
+        let mut open_ports = Vec::new();
+        let now = Utc::now();
+        let _ = progress_tx
+            .send(ScanProgress {
+                scan_id: target.id.clone(),
+                status: ScanStatus::Running,
+                percentage: 0.0,
+                stage: "Masscan".to_string(),
+                targets_completed: 0,
+                targets_total: 1,
+                hosts_found: 0,
+                services_found: 0,
+                eta_seconds: None,
+                started_at: now,
+                updated_at: now,
+                rate: None,
+                details: HashMap::new(),
+                progress: 0.0,
+                current_target: Some(target.ip.to_string()),
+                hosts_discovered: 0,
+                ports_found: 0,
+                vulnerabilities: 0,
+                elapsed_time: 0,
+                estimated_remaining: None,
+                message: Some("Starting masscan".to_string()),
+                start_time: now,
+                current_phase: "Masscan".to_string(),
+            })
+            .await;
 
-    let scan_uuid = uuid::Uuid::parse_str(&target.id)?;
-    while let Some(line) = lines.next_line().await? {
-        if let Some(obs) = parse_masscan_line(&line, scan_uuid) {
-            if let Some(port_val) = obs.fields.get("port").and_then(|v| v.as_u64()) {
-                open_ports.push(port_val as u16);
-                let _ = event_tx
-                    .send(ScanEvent {
-                        scan_id: target.id.clone(),
-                        event_type: EventType::ServiceDiscovered,
-                        timestamp: Utc::now(),
-                        data: json!({
-                            "ip": target.ip.to_string(),
-                            "port": port_val,
-                            "protocol": obs
-                                .fields
-                                .get("protocol")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("tcp"),
-                        }),
-                    })
-                    .await;
+        let scan_uuid = uuid::Uuid::parse_str(&target.id)?;
+        while let Some(line) = lines.next_line().await? {
+            if let Some(obs) = parse_masscan_line(&line, scan_uuid) {
+                if let Some(port_val) = obs.fields.get("port").and_then(|v| v.as_u64()) {
+                    open_ports.push(port_val as u16);
+                    let _ = event_tx
+                        .send(ScanEvent {
+                            scan_id: target.id.clone(),
+                            event_type: EventType::ServiceDiscovered,
+                            timestamp: Utc::now(),
+                            data: json!({
+                                "ip": target.ip.to_string(),
+                                "port": port_val,
+                                "protocol": obs
+                                    .fields
+                                    .get("protocol")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("tcp"),
+                            }),
+                        })
+                        .await;
+
+                    let _ = event_tx
+                        .send(ScanEvent {
+                            scan_id: target.id.clone(),
+                            event_type: EventType::ScanProgress,
+                            timestamp: Utc::now(),
+                            data: json!({
+                                "message": format!(
+                                    "Masscan found open port {} on {}",
+                                    port_val, target.ip
+                                ),
+                                "ports_found": open_ports.len()
+                            }),
+                        })
+                        .await;
+                }
             }
         }
+
+        let _ = child.wait().await?;
+
+        let now = Utc::now();
+        let _ = progress_tx
+            .send(ScanProgress {
+                scan_id: target.id.clone(),
+                status: ScanStatus::Running,
+                percentage: 100.0,
+                stage: "Masscan".to_string(),
+                targets_completed: 1,
+                targets_total: 1,
+                hosts_found: 0,
+                services_found: open_ports.len(),
+                eta_seconds: None,
+                started_at: now,
+                updated_at: now,
+                rate: None,
+                details: HashMap::new(),
+                progress: 100.0,
+                current_target: Some(target.ip.to_string()),
+                hosts_discovered: 0,
+                ports_found: open_ports.len() as u32,
+                vulnerabilities: 0,
+                elapsed_time: 0,
+                estimated_remaining: None,
+                message: Some("Masscan completed".to_string()),
+                start_time: now,
+                current_phase: "Masscan".to_string(),
+            })
+            .await;
+
+        Ok(open_ports)
     }
-
-    let _ = child.wait().await?;
-
-    let now = Utc::now();
-    let _ = progress_tx
-        .send(ScanProgress {
-            scan_id: target.id.clone(),
-            status: ScanStatus::Running,
-            percentage: 100.0,
-            stage: "Masscan".to_string(),
-            targets_completed: 1,
-            targets_total: 1,
-            hosts_found: 0,
-            services_found: open_ports.len(),
-            eta_seconds: None,
-            started_at: now,
-            updated_at: now,
-            rate: None,
-            details: HashMap::new(),
-            progress: 100.0,
-            current_target: Some(target.ip.to_string()),
-            hosts_discovered: 0,
-            ports_found: open_ports.len() as u32,
-            vulnerabilities: 0,
-            elapsed_time: 0,
-            estimated_remaining: None,
-            message: Some("Masscan completed".to_string()),
-            start_time: now,
-            current_phase: "Masscan".to_string(),
-        })
-        .await;
-
-    Ok(open_ports)
-    }
-}
-
-// Use the proper OS utilities to find masscan (checks local /bin first)
-fn get_masscan_binary_path() -> Result<PathBuf> {
-    Ok(crate::utils::os::get_masscan_binary_path())
 }
 
 #[async_trait::async_trait]
@@ -264,7 +286,22 @@ impl Source for MasscanScanner {
 
     async fn start(&self, plan: &Plan) -> Result<ObsStream> {
         if !self.check_masscan_available().await {
-            return Err(anyhow!("masscan binary not found. Please install masscan."));
+            let obs = Observation {
+                scan_id: plan.scan_id,
+                kind: ObservationKind::Error,
+                fields: {
+                    let mut fields = serde_json::Map::new();
+                    fields.insert(
+                        "message".to_string(),
+                        "masscan binary not found. Please install masscan.".into(),
+                    );
+                    fields
+                },
+                ts: Utc::now(),
+                key: "masscan-error".to_string(),
+                raw: None,
+            };
+            return Ok(stream::once(async move { obs }).boxed());
         }
 
         let (mut cmd, xml_file) = self.build_masscan_command(plan).await;
@@ -285,6 +322,7 @@ impl Source for MasscanScanner {
         log::info!("Starting masscan stream processing");
 
         let stream = stream::unfold(
+
             (lines, discovered_count, child, xml_file.clone(), false),
             move |(mut lines, mut count, mut child, xml_file, xml_parsed)| async move {
                 match lines.next_line().await {
@@ -308,6 +346,7 @@ impl Source for MasscanScanner {
                         if let Some(obs) = parse_masscan_line(&line, scan_id) {
                             count += 1;
                             log::info!("Parsed masscan observation: {:?}", obs);
+
                             // Create a progress observation every 10 discoveries
                             if count % 10 == 0 {
                                 let progress_obs =
@@ -316,9 +355,9 @@ impl Source for MasscanScanner {
                             } else {
                                 Some((obs, (lines, count, child, xml_file, xml_parsed)))
                             }
+
                         } else {
                             log::debug!("Non-service masscan line: {}", line);
-                            // Skip this line and continue
                             Some((
                                 Observation {
                                     scan_id,
@@ -335,13 +374,13 @@ impl Source for MasscanScanner {
                                     key: "masscan-output".to_string(),
                                     raw: Some(line),
                                 },
+
                                 (lines, count, child, xml_file, xml_parsed),
                             ))
                         }
                     }
                     Ok(None) => {
                         log::info!("Masscan stream ended - waiting for process to complete");
-                        // Wait for the child process to finish
                         match child.wait().await {
                             Ok(status) => {
                                 log::info!("Masscan process completed with status: {}", status);
@@ -397,7 +436,6 @@ impl Source for MasscanScanner {
                     }
                     Err(e) => {
                         log::error!("Error reading masscan output: {}", e);
-                        // Kill the child process if there was an error
                         let _ = child.kill().await;
                         None
                     }
@@ -410,30 +448,68 @@ impl Source for MasscanScanner {
 }
 
 /// Parse a line from masscan output in list format
-/// Expected format: "open tcp 80 192.168.1.1" or "open udp 53 192.168.1.2"
+/// Supports both "open tcp 80 192.168.1.1" and "open tcp 192.168.1.1 80" as well as
+/// the default output "Discovered open port 22/tcp on 10.0.0.5"
 fn parse_masscan_line(line: &str, scan_id: uuid::Uuid) -> Option<Observation> {
     let parts: Vec<&str> = line.trim().split_whitespace().collect();
 
-    // Expected format: ["open", "tcp"/"udp", "port", "ip"]
     if parts.len() >= 4 && parts[0] == "open" {
         let protocol = parts[1];
-        if let (Ok(port), Ok(ip)) = (parts[2].parse::<u16>(), parts[3].parse::<IpAddr>()) {
-            let mut fields = serde_json::Map::new();
-            fields.insert("ip".to_string(), ip.to_string().into());
-            fields.insert("port".to_string(), port.into());
-            fields.insert("protocol".to_string(), protocol.into());
-            fields.insert("state".to_string(), "open".into());
-            fields.insert("reason".to_string(), "syn-ack".into()); // masscan default reason
+        let (port_str, ip_str) =
+            if parts[2].parse::<u16>().is_ok() && parts[3].parse::<IpAddr>().is_ok() {
+                (parts[2], parts[3])
+            } else if parts[2].parse::<IpAddr>().is_ok() && parts[3].parse::<u16>().is_ok() {
+                (parts[3], parts[2])
+            } else {
+                return None;
+            };
+        let port = port_str.parse::<u16>().ok()?;
+        let ip: IpAddr = ip_str.parse().ok()?;
 
-            return Some(Observation {
-                scan_id,
-                kind: ObservationKind::Service,
-                fields,
-                ts: Utc::now(),
-                key: format!("{}:{}/{}", ip, port, protocol),
-                raw: Some(line.to_string()),
-            });
-        }
+        let mut fields = serde_json::Map::new();
+        fields.insert("ip".to_string(), ip.to_string().into());
+        fields.insert("port".to_string(), port.into());
+        fields.insert("protocol".to_string(), protocol.into());
+        fields.insert("state".to_string(), "open".into());
+        fields.insert("reason".to_string(), "syn-ack".into());
+
+        return Some(Observation {
+            scan_id,
+            kind: ObservationKind::Service,
+            fields,
+            ts: Utc::now(),
+            key: format!("{}:{}/{}", ip, port, protocol),
+            raw: Some(line.to_string()),
+        });
+    }
+
+    if line.starts_with("Discovered open port ") {
+        let rest = line.trim_start_matches("Discovered open port ");
+        let mut parts = rest.split_whitespace();
+        let port_proto = parts.next()?; // e.g., 22/tcp
+        let _on = parts.next()?; // "on"
+        let ip_str = parts.next()?; // e.g., 10.0.0.5
+
+        let mut it = port_proto.split('/');
+        let port = it.next()?.parse::<u16>().ok()?;
+        let protocol = it.next().unwrap_or("tcp");
+        let ip: IpAddr = ip_str.parse().ok()?;
+
+        let mut fields = serde_json::Map::new();
+        fields.insert("ip".to_string(), ip.to_string().into());
+        fields.insert("port".to_string(), port.into());
+        fields.insert("protocol".to_string(), protocol.into());
+        fields.insert("state".to_string(), "open".into());
+        fields.insert("reason".to_string(), "syn-ack".into());
+
+        return Some(Observation {
+            scan_id,
+            kind: ObservationKind::Service,
+            fields,
+            ts: Utc::now(),
+            key: format!("{}:{}/{}", ip, port, protocol),
+            raw: Some(line.to_string()),
+        });
     }
 
     None
@@ -460,5 +536,46 @@ fn create_progress_observation(
         ts: Utc::now(),
         key: format!("masscan-progress-{}", discovered_count),
         raw: Some(line.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_port_then_ip() {
+        let scan_id = uuid::Uuid::nil();
+        let line = "open tcp 80 192.168.1.1";
+        let obs = parse_masscan_line(line, scan_id).expect("should parse");
+        assert_eq!(
+            obs.fields.get("ip").and_then(|v| v.as_str()),
+            Some("192.168.1.1")
+        );
+        assert_eq!(obs.fields.get("port").and_then(|v| v.as_u64()), Some(80));
+    }
+
+    #[test]
+    fn parses_ip_then_port() {
+        let scan_id = uuid::Uuid::nil();
+        let line = "open tcp 192.168.1.1 443";
+        let obs = parse_masscan_line(line, scan_id).expect("should parse");
+        assert_eq!(
+            obs.fields.get("ip").and_then(|v| v.as_str()),
+            Some("192.168.1.1")
+        );
+        assert_eq!(obs.fields.get("port").and_then(|v| v.as_u64()), Some(443));
+    }
+
+    #[test]
+    fn parses_default_discovered_format() {
+        let scan_id = uuid::Uuid::nil();
+        let line = "Discovered open port 22/tcp on 10.0.0.5";
+        let obs = parse_masscan_line(line, scan_id).expect("should parse");
+        assert_eq!(
+            obs.fields.get("ip").and_then(|v| v.as_str()),
+            Some("10.0.0.5")
+        );
+        assert_eq!(obs.fields.get("port").and_then(|v| v.as_u64()), Some(22));
     }
 }
