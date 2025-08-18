@@ -22,6 +22,7 @@
 import { AlertTriangle, Download, Shield, Network, Server } from 'lucide-react';
 import React, { useMemo, useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import useAppStore from '../stores/appStore';
 import useHostStore, { type Host } from '../stores/hostStore';
 
@@ -55,7 +56,7 @@ interface ResultViewerProps {
 const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHost }) => {
   const { vulnerabilities } = useAppStore();
   const hosts = useHostStore(state => state.hosts);
-  
+
   const [selectedTab, setSelectedTab] = useState<'ports' | 'vulnerabilities' | 'details'>('ports');
   const [hostPorts, setHostPorts] = useState<PortInfo[]>([]);
   const [loadingPorts, setLoadingPorts] = useState(false);
@@ -64,25 +65,45 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
 
   // Get the host either from selectedHost prop or by selectedScanId (treating it as host ID)
   const currentHost = selectedHost || (selectedScanId ? hosts.find(h => h.id === selectedScanId) : null);
+  const loadPorts = (ip: string) => {
+    console.log('Loading ports for host:', ip);
+    setLoadingPorts(true);
+    invoke<PortInfo[]>('get_host_ports_detailed', { host_ip: ip })
+      .then(ports => {
+        console.log('Loaded ports:', ports);
+        setHostPorts(ports);
+      })
+      .catch(err => {
+        console.error('Failed to load ports:', err);
+        setHostPorts([]);
+      })
+      .finally(() => setLoadingPorts(false));
+  };
 
   // Load ports when host changes
   useEffect(() => {
     if (currentHost?.ip) {
-      console.log('Loading ports for host:', currentHost.ip);
-      setLoadingPorts(true);
-      invoke<PortInfo[]>('get_host_ports_detailed', { host_ip: currentHost.ip })
-        .then(ports => {
-          console.log('Loaded ports:', ports);
-          setHostPorts(ports);
-        })
-        .catch(err => {
-          console.error('Failed to load ports:', err);
-          setHostPorts([]);
-        })
-        .finally(() => setLoadingPorts(false));
+      loadPorts(currentHost.ip);
     } else {
       setHostPorts([]);
     }
+  }, [currentHost?.ip]);
+
+  // Refresh ports when notified of updates for the selected host
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      unlisten = await listen<string>('refresh_host_ports', event => {
+        if (currentHost?.ip && event.payload === currentHost.ip) {
+          loadPorts(currentHost.ip);
+        }
+      });
+    })();
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
   }, [currentHost?.ip]);
 
   // Load vulnerabilities when host changes
