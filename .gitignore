@@ -159,6 +159,7 @@ CLAUDE.md
 src-tauri/*
 AGENTS.md
 
-src-tauri/.claude/*
+src-tauri/.claude
 src-tauri/.logs/*
 src-tauri/gen/schemas/*
+src-tauri/claude/*
