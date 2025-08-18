@@ -106,8 +106,13 @@ const useAppStore = create<AppState & AppActions>((set) => {
       }));
     });
 
-    await listen('obs:done', () => {
-      set((state) => ({ 
+    await listen('obs:done', async () => {
+      try {
+        await invoke('engine_reset');
+      } catch (e) {
+        console.error('Failed to reset engine:', e);
+      }
+      set((state) => ({
         scanInProgress: false,
         liveOutput: [...state.liveOutput, 'Scan completed. Ready for new scan.']
       }));
@@ -179,6 +184,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
               scanId,
               targets,
               ports,
+              scanType: 'quick',
               extraArgs: ['-T4', '-F'],
             });
             break;

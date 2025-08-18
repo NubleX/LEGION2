@@ -20,6 +20,7 @@ use crate::shared::{ObsStream, Observation, ObservationKind};
 use serde_json::json;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
+use crate::commands::engine_commands; // for cancellation polling
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MasscanOptions {
@@ -274,6 +275,21 @@ impl Source for MasscanScanner {
             move |(mut lines, mut count, mut child)| async move {
                 match lines.next_line().await {
                     Ok(Some(line)) => {
+                        if engine_commands::is_scan_cancelled() {
+                            log::warn!("Masscan scan cancelled by user");
+                            let _ = child.kill().await;
+                            let mut fields = serde_json::Map::new();
+                            fields.insert("status".to_string(), "cancelled".into());
+                            let cancel_obs = Observation {
+                                scan_id,
+                                kind: ObservationKind::Metric,
+                                fields,
+                                ts: Utc::now(),
+                                key: "scan-status".to_string(),
+                                raw: None,
+                            };
+                            return Some((cancel_obs, (lines, count, child)));
+                        }
                         log::info!("Masscan output line: {}", line);
                         if let Some(obs) = parse_masscan_line(&line, scan_id) {
                             count += 1;
