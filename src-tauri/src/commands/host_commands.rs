@@ -71,7 +71,11 @@ pub async fn delete_host(host_id: String, db: State<'_, Arc<Db>>) -> Result<(), 
 #[tauri::command]
 pub async fn batch_import_hosts(hosts: Vec<String>, db: State<'_, Arc<Db>>) -> Result<(), String> {
     for ip in hosts {
-        if let Err(e) = db.inner().upsert_host(&ip, None, None).await {
+        if let Err(e) = db
+            .inner()
+            .upsert_host(&ip, None, None, None, None, None, None, None)
+            .await
+        {
             return Err(format!("Failed to import host {}: {}", ip, e));
         }
     }
@@ -127,27 +131,19 @@ pub async fn get_host_ports_detailed(
 ) -> Result<Vec<PortInfo>, String> {
     log::info!("Getting ports for host IP: {}", host_ip);
 
-    // First get the host ID by IP
-    let hosts = db
-        .inner()
-        .get_all_hosts()
-        .await
-        .map_err(|e| e.to_string())?;
-    log::info!("Found {} total hosts in database", hosts.len());
+    // Ensure the host exists in the database. If it was just created during a scan,
+    // this will insert it so we can still query its ports without errors.
+    if let Err(e) = db.inner().upsert_host(&host_ip, None, None).await {
+        log::warn!("Failed to upsert host {}: {}", host_ip, e);
+    }
 
-    let host = hosts
-        .into_iter()
-        .find(|h| h.ip == host_ip)
-        .ok_or_else(|| format!("Host not found for IP: {}", host_ip))?;
-
-    log::info!("Found host with ID: {} for IP: {}", host.id, host_ip);
-
+    // Ports are keyed by host IP, so we can query them directly.
     let ports = db
         .inner()
-        .get_host_ports_detailed(&host.id)
+        .get_host_ports_detailed(&host_ip)
         .await
         .map_err(|e| e.to_string())?;
-    log::info!("Found {} ports for host ID: {}", ports.len(), host.id);
+    log::info!("Found {} ports for host IP: {}", ports.len(), host_ip);
 
     Ok(ports)
 }

@@ -31,16 +31,16 @@ const EnhancedScannerPanel = () => {
   const { hosts, setHosts } = useHostStore();
   const terminalRef = useRef<HTMLDivElement>(null);
 
+
   const {
     scanInProgress,
     liveOutput,
     metrics,
-    vulnerabilities,
     recentServices,
     startScan,
-    cancelScan,
     resetScan
   } = useAppStore();
+  
   // Load existing hosts from database on mount
   useEffect(() => {
     const loadExistingHosts = async () => {
@@ -112,10 +112,6 @@ const EnhancedScannerPanel = () => {
       console.error('Failed to start scan:', error);
     }
   }, [startScan]);
-
-  const handleCancelScan = useCallback(async () => {
-    await cancelScan();
-  }, [cancelScan]);
 
   const handleHostSelect = useCallback((host: Host) => {
     setSelectedHost(host);
@@ -289,7 +285,6 @@ const EnhancedScannerPanel = () => {
               <div className="flex-1 p-4 overflow-y-auto">
                 <ScanForm
                   onStartScan={handleStartScan}
-                  onCancelScan={handleCancelScan}
                   isScanning={scanInProgress}
                   className="h-full"
                 />
