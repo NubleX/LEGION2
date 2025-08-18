@@ -642,6 +642,29 @@ impl Db {
         }).await?
     }
 
+    /// Update port count for a host based on current ports
+    pub async fn update_host_port_count(&self, ip: &str) -> Result<()> {
+        let conn = self.conn.clone();
+        let ip = ip.to_string();
+        let timestamp = to_rfc3339(Utc::now());
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock();
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM ports WHERE host_id = ?1",
+                [&ip],
+                |row| row.get(0),
+            )?;
+            conn.execute(
+                "UPDATE hosts SET port_count = ?, updated_at = ? WHERE id = ?",
+                params![count, &timestamp, &ip],
+            )?;
+            Ok::<(), anyhow::Error>(())
+        }).await??;
+
+        Ok(())
+    }
+
     /// Increment vulnerability count for a host
     pub async fn increment_host_vulnerability_count(&self, ip: &str) -> Result<()> {
         let ip_encrypted = self.encryption.encrypt(ip)?;

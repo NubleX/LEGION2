@@ -967,6 +967,7 @@ impl DbSink {
         let db = self.db.clone();
         let batch_items = batch.to_vec();
 
+        
         tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async {
                 for item in batch_items {
@@ -982,18 +983,18 @@ impl DbSink {
                         )
                         .await
                     {
+                        log::error!("Failed to batch store service {}:{}: {}", item.ip, item.port, e);
+                    } else if let Err(e) = db.update_host_port_count(&item.ip).await {
                         log::error!(
-                            "Failed to batch store service {}:{}: {}",
+                            "Failed to update port count for {} after service insert: {}",
                             item.ip,
-                            item.port,
                             e
                         );
                     }
                 }
                 Ok::<(), anyhow::Error>(())
             })
-        })
-        .await??;
+        }).await??;
 
         log::debug!("Batch processed {} services", batch.len());
         Ok(())
