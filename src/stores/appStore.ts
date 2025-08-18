@@ -106,8 +106,9 @@ const useAppStore = create<AppState & AppActions>((set) => {
       }));
     });
 
-    await listen('obs:done', () => {
-      set((state) => ({ 
+    await listen('obs:done', async () => {
+      await invoke('engine_reset');
+      set((state) => ({
         scanInProgress: false,
         liveOutput: [...state.liveOutput, 'Scan completed. Ready for new scan.']
       }));
@@ -150,9 +151,18 @@ const useAppStore = create<AppState & AppActions>((set) => {
     scanInProgress: false,
 
     // Actions
-    startScan: async (config: ScanConfig) => {
-      const targets = config.targets;
-      const ports = config.ports && config.ports.trim() !== '' ? config.ports : '1-65535';
+      startScan: async (config: ScanConfig) => {
+        try {
+          const engineState = await invoke<string>('engine_get_state');
+          if (engineState !== 'Idle') {
+            set((state) => ({
+              liveOutput: [...state.liveOutput, `Engine busy (${engineState}). Cannot start new scan.`]
+            }));
+            return;
+          }
+
+          const targets = config.targets;
+          const ports = config.ports && config.ports.trim() !== '' ? config.ports : '1-65535';
 
       // Build plans based on selected tools
       const plans: Plan[] = [];
@@ -223,22 +233,21 @@ const useAppStore = create<AppState & AppActions>((set) => {
         plans.push(nmapPlan);
       }
 
-      set((state) => ({
-        scanInProgress: true,
-        liveOutput: [...state.liveOutput, `Starting scan for ${targets} using ${plans.map(p => p.source_type).join(' & ')}...`],
-      }));
+        set((state) => ({
+          scanInProgress: true,
+          liveOutput: [...state.liveOutput, `Starting scan for ${targets} using ${plans.map(p => p.source_type).join(' & ')}...`],
+        }));
 
-      try {
         for (const plan of plans) {
           console.log('Executing scan plan:', plan);
           await invoke('engine_execute', { plan });
           console.log('Plan executed successfully');
         }
-        
+
         // Mark scan as complete after all plans are executed
         set((state) => ({
           scanInProgress: false,
-          liveOutput: [...state.liveOutput, 'All scan plans completed successfully. Ready for new scan.']
+          liveOutput: [...state.liveOutput, 'All scan plans completed successfully. Ready for new scan.'],
         }));
       } catch (error) {
         console.error('Scan execution failed:', error);
