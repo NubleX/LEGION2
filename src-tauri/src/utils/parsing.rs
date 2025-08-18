@@ -4,9 +4,11 @@
 use crate::shared::{Observation, ObservationKind};
 use anyhow::Result;
 use regex::Regex;
+use roxmltree::Document;
 use std::collections::HashMap;
 use uuid::Uuid;
-use roxmltree::Document;
+use serde::{Deserialize, Serialize};
+
 
 #[derive(Debug, Clone)]
 pub struct MacInfo {
@@ -77,17 +79,25 @@ pub struct NmapParser {
 }
 
 impl NmapParser {
-    pub fn new(scan_id: Uuid) -> Self {
-        Self {
-            current_host: None,
-            scan_id,
-            host_status_reported: HashMap::new(),
-        }
-    }
-
-    /// Parse a line of nmap output and return an observation if applicable
     pub fn parse_line(&mut self, line: &str) -> Option<Observation> {
-        let line = line.trim();
+        // Parse "Nmap scan report for X.X.X.X"
+        if line.contains("Nmap scan report for") {
+            let ip = extract_ip_from_line(line)?;
+            return Some(Observation {
+                scan_id: self.scan_id,
+                kind: ObservationKind::Host,
+                fields: {
+                    let mut fields = serde_json::Map::new();
+                    fields.insert("ip".to_string(), ip.into());
+                    fields.insert("status".to_string(), "up".into());
+                    fields
+                },
+                ts: chrono::Utc::now(),
+                key: format!("host-{}", ip),
+                raw: Some(line.to_string()),
+            });
+        }
+    
 
         if line.is_empty() {
             return None;
@@ -107,6 +117,7 @@ impl NmapParser {
                 return None;
             }
         }
+
         // Check for host status lines
         else if line.contains("Host is up") || line.contains("Host is down") {
             if let Some(ref current_ip) = self.current_host {
@@ -172,12 +183,11 @@ impl NmapParser {
             }
         }
         // Check for OS detection lines
-        else if line.contains("OS details:")
-            || line.contains("Running:")
-            || line.contains("OS CPE:")
+        else if line.contains("OS details:") 
+            || line.contains("Running:") 
+            || line.contains("OS CPE:") 
             || line.contains("Aggressive OS guesses:")
-        {
-            if let Some(ref current_ip) = self.current_host {
+            ||  if let Some(ref current_ip) = self.current_host {
                 if let Some(os_info) = self.parse_os_detection(line) {
                     return Some(Observation {
                         scan_id: self.scan_id,
@@ -209,7 +219,7 @@ impl NmapParser {
                     });
                 }
             }
-        }
+        
         // Check for hostname resolution lines
         else if line.contains("rDNS record for")
             || (self.current_host.is_some()
@@ -308,6 +318,7 @@ impl NmapParser {
         else if line.contains("Scanning")
             || line.contains("Completed")
             || line.contains("Initiating")
+            || line.contains("Nmap done")
         {
             return Some(Observation {
                 scan_id: self.scan_id,
@@ -322,24 +333,26 @@ impl NmapParser {
                 key: "scan-progress".to_string(),
                 raw: Some(line.to_string()),
             });
+        } else {
+            // For lines that don't match specific patterns, create raw output metric
+            return Some(Observation {
+                scan_id: self.scan_id,
+                kind: ObservationKind::Metric,
+                fields: {
+                    let mut fields = serde_json::Map::new();
+                    fields.insert("message".to_string(), line.into());
+                    fields.insert("type".to_string(), "raw_output".into());
+                    fields
+                },
+                ts: chrono::Utc::now(),
+                key: format!("raw-{}", chrono::Utc::now().timestamp_nanos()),
+                raw: Some(line.to_string()),
+            });
         }
-
-        // For lines that don't match specific patterns, create raw output metric
-        Some(Observation {
-            scan_id: self.scan_id,
-            kind: ObservationKind::Metric,
-            fields: {
-                let mut fields = serde_json::Map::new();
-                fields.insert("message".to_string(), line.into());
-                fields.insert("type".to_string(), "raw_output".into());
-                fields
-            },
-            ts: chrono::Utc::now(),
-            key: format!("raw-{}", chrono::Utc::now().timestamp_nanos()),
-            raw: Some(line.to_string()),
-        })
+        
+        None
     }
-
+        
     /// Parse MAC address lines from nmap output
     fn parse_mac_address(&self, line: &str) -> Option<MacInfo> {
         // Parse "MAC Address: 00:11:22:33:44:55 (Vendor Name)"
@@ -358,11 +371,11 @@ impl NmapParser {
 
         None
     }
-
+}
     /// Parse OS detection information from nmap output with enhanced patterns
     fn parse_os_detection(&self, line: &str) -> Option<OsInfo> {
         use regex::Regex;
-        
+
         // "OS details: Linux 3.2 - 4.9"
         if line.starts_with("OS details:") {
             let details = line.strip_prefix("OS details:")?.trim().to_string();
@@ -391,7 +404,9 @@ impl NmapParser {
 
         // Enhanced Windows pattern matching
         if let Some(caps) = Regex::new(r"(?i)microsoft\s+windows\s+(nt\s+)?(\d+\.?\d*|\w+)")
-            .unwrap().captures(line) {
+            .unwrap()
+            .captures(line)
+        {
             if let Some(version) = caps.get(2) {
                 let version_str = version.as_str();
                 let name = format!("Microsoft Windows {}", version_str);
@@ -407,7 +422,9 @@ impl NmapParser {
 
         // Enhanced Linux pattern matching
         if let Some(caps) = Regex::new(r"(?i)linux\s+(kernel\s+)?(\d+\.\d+\.?\d*)")
-            .unwrap().captures(line) {
+            .unwrap()
+            .captures(line)
+        {
             if let Some(version) = caps.get(2) {
                 let version_str = version.as_str();
                 let name = format!("Linux {}", version_str);
@@ -421,9 +438,11 @@ impl NmapParser {
             }
         }
 
-        // Enhanced macOS pattern matching  
+        // Enhanced macOS pattern matching
         if let Some(caps) = Regex::new(r"(?i)(mac\s*os\s*x?|darwin)\s*(\d+\.?\d*\.?\d*)?")
-            .unwrap().captures(line) {
+            .unwrap()
+            .captures(line)
+        {
             let version = caps.get(2).map(|m| m.as_str().to_string());
             let name = if let Some(ref v) = version {
                 format!("Apple macOS {}", v)
@@ -441,7 +460,9 @@ impl NmapParser {
 
         // FreeBSD pattern
         if let Some(caps) = Regex::new(r"(?i)freebsd\s*(\d+\.?\d*\.?\d*)?")
-            .unwrap().captures(line) {
+            .unwrap()
+            .captures(line)
+        {
             let version = caps.get(1).map(|m| m.as_str().to_string());
             let name = if let Some(ref v) = version {
                 format!("FreeBSD {}", v)
@@ -524,7 +545,7 @@ impl NmapParser {
         let (name, family, accuracy) = match ttl {
             // Linux/Unix systems typically use TTL 64
             64 => ("Linux/Unix", "Linux", 85.0),
-            // Windows systems typically use TTL 128  
+            // Windows systems typically use TTL 128
             128 => ("Microsoft Windows", "Windows", 90.0),
             // Network devices/routers often use TTL 255
             255 => ("Network Device/Router", "Network", 80.0),
@@ -548,9 +569,14 @@ impl NmapParser {
     }
 
     /// Enhanced TCP signature analysis for passive OS detection
-    pub fn analyze_tcp_signature(&self, window_size: u16, ttl: u8, tcp_options: &[String]) -> Option<OsInfo> {
+    pub fn analyze_tcp_signature(
+        &self,
+        window_size: u16,
+        ttl: u8,
+        tcp_options: &[String],
+    ) -> Option<OsInfo> {
         // Advanced fingerprinting based on TCP stack behavior
-        
+
         // Windows-specific signatures
         if ttl == 128 && window_size == 65535 {
             return Some(OsInfo {
@@ -569,7 +595,10 @@ impl NmapParser {
                 family: Some("Linux".to_string()),
                 version: None,
                 accuracy: Some(85.0),
-                details: Some(format!("TCP signature: TTL={}, WIN={}, WSCALE", ttl, window_size)),
+                details: Some(format!(
+                    "TCP signature: TTL={}, WIN={}, WSCALE",
+                    ttl, window_size
+                )),
             });
         }
 
@@ -589,12 +618,18 @@ impl NmapParser {
     }
 
     /// HTTP header-based OS detection
-    pub fn detect_os_from_http_headers(&self, server_header: &str, _other_headers: &std::collections::HashMap<String, String>) -> Option<OsInfo> {
+    pub fn detect_os_from_http_headers(
+        &self,
+        server_header: &str,
+        _other_headers: &std::collections::HashMap<String, String>,
+    ) -> Option<OsInfo> {
         use regex::Regex;
 
         // IIS detection (Windows)
         if let Some(caps) = Regex::new(r"(?i)microsoft-iis/(\d+\.?\d*)")
-            .unwrap().captures(server_header) {
+            .unwrap()
+            .captures(server_header)
+        {
             let version = caps.get(1).map(|m| m.as_str().to_string());
             return Some(OsInfo {
                 name: Some("Microsoft Windows (IIS)".to_string()),
@@ -606,8 +641,9 @@ impl NmapParser {
         }
 
         // Apache on Ubuntu/Linux
-        if server_header.to_lowercase().contains("apache") && 
-           server_header.to_lowercase().contains("ubuntu") {
+        if server_header.to_lowercase().contains("apache")
+            && server_header.to_lowercase().contains("ubuntu")
+        {
             return Some(OsInfo {
                 name: Some("Ubuntu Linux".to_string()),
                 family: Some("Linux".to_string()),
@@ -634,44 +670,58 @@ impl NmapParser {
     /// Parse comprehensive host information from nmap XML output
     pub fn parse_host_xml(&self, xml_content: &str) -> Result<Vec<Observation>> {
         let mut observations = Vec::new();
-        
+
         // Parse XML document
         let doc = Document::parse(xml_content)?;
-        
-        // Find all host elements  
+
+        // Find all host elements
         for host_node in doc.descendants().filter(|n| n.tag_name().name() == "host") {
             if let Ok(host_obs) = self.create_comprehensive_host_observation(&host_node) {
                 observations.push(host_obs);
-                
+
                 // Also create service observations for each port
-                for port_node in host_node.descendants().filter(|n| n.tag_name().name() == "port") {
-                    if let Ok(service_obs) = self.create_service_observation_from_xml(&host_node, &port_node) {
+                for port_node in host_node
+                    .descendants()
+                    .filter(|n| n.tag_name().name() == "port")
+                {
+                    if let Ok(service_obs) =
+                        self.create_service_observation_from_xml(&host_node, &port_node)
+                    {
                         observations.push(service_obs);
                     }
                 }
             }
         }
-        
+
         Ok(observations)
     }
-    
+
     /// Create comprehensive host observation from XML node (like legacy Host.rs)
-    fn create_comprehensive_host_observation(&self, host_node: &roxmltree::Node) -> Result<Observation> {
+    fn create_comprehensive_host_observation(
+        &self,
+        host_node: &roxmltree::Node,
+    ) -> Result<Observation> {
         let mut fields = serde_json::Map::new();
-        
+
         // Parse host status
-        if let Some(status_node) = host_node.children().find(|n| n.tag_name().name() == "status") {
+        if let Some(status_node) = host_node
+            .children()
+            .find(|n| n.tag_name().name() == "status")
+        {
             if let Some(status) = status_node.attribute("state") {
                 fields.insert("status".to_string(), status.into());
             }
         }
-        
+
         // Parse addresses (IPv4, IPv6, MAC)
         let mut primary_ip = String::new();
-        for addr_node in host_node.children().filter(|n| n.tag_name().name() == "address") {
+        for addr_node in host_node
+            .children()
+            .filter(|n| n.tag_name().name() == "address")
+        {
             let addr_type = addr_node.attribute("addrtype").unwrap_or("");
             let addr = addr_node.attribute("addr").unwrap_or("");
-            
+
             match addr_type {
                 "ipv4" => {
                     fields.insert("ipv4".to_string(), addr.into());
@@ -696,7 +746,7 @@ impl NmapParser {
                 _ => {}
             }
         }
-        
+
         // Parse hostname
         if let Some(hostname_node) = host_node
             .children()
@@ -707,9 +757,12 @@ impl NmapParser {
                 fields.insert("hostname".to_string(), hostname.into());
             }
         }
-        
+
         // Parse uptime information
-        if let Some(uptime_node) = host_node.children().find(|n| n.tag_name().name() == "uptime") {
+        if let Some(uptime_node) = host_node
+            .children()
+            .find(|n| n.tag_name().name() == "uptime")
+        {
             if let Some(seconds) = uptime_node.attribute("seconds") {
                 fields.insert("uptime".to_string(), seconds.into());
             }
@@ -717,16 +770,22 @@ impl NmapParser {
                 fields.insert("lastboot".to_string(), lastboot.into());
             }
         }
-        
+
         // Parse distance
-        if let Some(distance_node) = host_node.children().find(|n| n.tag_name().name() == "distance") {
+        if let Some(distance_node) = host_node
+            .children()
+            .find(|n| n.tag_name().name() == "distance")
+        {
             if let Some(distance) = distance_node.attribute("value") {
                 fields.insert("distance".to_string(), distance.into());
             }
         }
-        
+
         // Parse OS information
-        for osclass_node in host_node.children().filter(|n| n.tag_name().name() == "osclass") {
+        for osclass_node in host_node
+            .children()
+            .filter(|n| n.tag_name().name() == "osclass")
+        {
             if let Some(os_family) = osclass_node.attribute("osfamily") {
                 fields.insert("os_family".to_string(), os_family.into());
             }
@@ -740,8 +799,11 @@ impl NmapParser {
                 fields.insert("os_accuracy".to_string(), accuracy.into());
             }
         }
-        
-        for osmatch_node in host_node.children().filter(|n| n.tag_name().name() == "osmatch") {
+
+        for osmatch_node in host_node
+            .children()
+            .filter(|n| n.tag_name().name() == "osmatch")
+        {
             if let Some(os_name) = osmatch_node.attribute("name") {
                 fields.insert("os_name".to_string(), os_name.into());
             }
@@ -749,9 +811,12 @@ impl NmapParser {
                 fields.insert("os_accuracy".to_string(), accuracy.into());
             }
         }
-        
+
         // Parse extraports
-        if let Some(extraports_node) = host_node.children().find(|n| n.tag_name().name() == "extraports") {
+        if let Some(extraports_node) = host_node
+            .children()
+            .find(|n| n.tag_name().name() == "extraports")
+        {
             if let Some(state) = extraports_node.attribute("state") {
                 fields.insert("extraports_state".to_string(), state.into());
             }
@@ -759,9 +824,9 @@ impl NmapParser {
                 fields.insert("extraports_count".to_string(), count.into());
             }
         }
-        
+
         let key = format!("host-{}", primary_ip);
-        
+
         Ok(Observation {
             scan_id: self.scan_id,
             kind: ObservationKind::Host,
@@ -771,11 +836,15 @@ impl NmapParser {
             raw: None, // XML is too large to store as raw
         })
     }
-    
+
     /// Create service observation from XML port node
-    fn create_service_observation_from_xml(&self, host_node: &roxmltree::Node, port_node: &roxmltree::Node) -> Result<Observation> {
+    fn create_service_observation_from_xml(
+        &self,
+        host_node: &roxmltree::Node,
+        port_node: &roxmltree::Node,
+    ) -> Result<Observation> {
         let mut fields = serde_json::Map::new();
-        
+
         // Get host IP
         let host_ip = host_node
             .children()
@@ -783,7 +852,7 @@ impl NmapParser {
             .and_then(|n| n.attribute("addr"))
             .unwrap_or("");
         fields.insert("ip".to_string(), host_ip.into());
-        
+
         // Get port information
         if let Some(portid) = port_node.attribute("portid") {
             fields.insert("port".to_string(), portid.into());
@@ -791,9 +860,12 @@ impl NmapParser {
         if let Some(protocol) = port_node.attribute("protocol") {
             fields.insert("protocol".to_string(), protocol.into());
         }
-        
+
         // Get state information
-        if let Some(state_node) = port_node.children().find(|n| n.tag_name().name() == "state") {
+        if let Some(state_node) = port_node
+            .children()
+            .find(|n| n.tag_name().name() == "state")
+        {
             if let Some(state) = state_node.attribute("state") {
                 fields.insert("state".to_string(), state.into());
             }
@@ -801,9 +873,12 @@ impl NmapParser {
                 fields.insert("reason".to_string(), reason.into());
             }
         }
-        
+
         // Get service information
-        if let Some(service_node) = port_node.children().find(|n| n.tag_name().name() == "service") {
+        if let Some(service_node) = port_node
+            .children()
+            .find(|n| n.tag_name().name() == "service")
+        {
             if let Some(name) = service_node.attribute("name") {
                 fields.insert("service".to_string(), name.into());
             }
@@ -817,11 +892,11 @@ impl NmapParser {
                 fields.insert("extrainfo".to_string(), extrainfo.into());
             }
         }
-        
+
         let port = port_node.attribute("portid").unwrap_or("0");
         let protocol = port_node.attribute("protocol").unwrap_or("tcp");
         let key = format!("service-{}-{}-{}", host_ip, port, protocol);
-        
+
         Ok(Observation {
             scan_id: self.scan_id,
             kind: ObservationKind::Service,
@@ -991,7 +1066,6 @@ impl NmapParser {
     pub fn current_host(&self) -> Option<&String> {
         self.current_host.as_ref()
     }
-}
 
 #[derive(Debug)]
 struct DiscoveredPort {
