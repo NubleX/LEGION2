@@ -67,7 +67,9 @@ pub async fn run_masscan_stream_and_store<R: tauri::Runtime>(
         while let Some(line) = lines.next_line().await? {
             if let Some(evt) = parse_masscan_line(&line) {
                 // store
-                db.upsert_host(&evt.ip, None, None).await?;
+                db
+                    .upsert_host(&evt.ip, None, None, None, None, None, None, None)
+                    .await?;
                 db.upsert_service(&evt.ip, evt.port, &evt.proto, evt.reason.as_deref())
                     .await?;
                 // emit

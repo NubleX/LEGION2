@@ -4,15 +4,16 @@
 import { AlertCircle, Network, Play, Settings, Shield, Square, Zap } from 'lucide-react';
 import React, { useState } from 'react';
 import { ScanConfig } from '../types/scanning';
+import useAppStore from '../stores/appStore';
 
 interface ScanFormProps {
   onStartScan: (config: ScanConfig) => Promise<void>;
-  onCancelScan?: () => Promise<void>;
   isScanning: boolean;
   className?: string;
 }
 
-const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, onCancelScan, isScanning }) => {
+const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, isScanning }) => {
+  const cancelScan = useAppStore(state => state.cancelScan);
   const [config, setConfig] = useState<ScanConfig>({
     targets: '',
     scanType: 'quick',
@@ -315,14 +316,14 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, onCancelScan, isScanni
             )}
           </button>
 
-          {isScanning && onCancelScan && (
+          {isScanning && (
             <button
               type="button"
-              onClick={onCancelScan}
+              onClick={cancelScan}
               className="bg-red-600 hover:bg-red-700 text-white font-medium py-3 px-4 rounded transition-colors flex items-center justify-center gap-2"
             >
               <Square className="w-4 h-4" />
-              Stop
+              Pause / Cancel
             </button>
           )}
         </div>
