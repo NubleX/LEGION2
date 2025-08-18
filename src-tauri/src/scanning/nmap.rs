@@ -221,12 +221,24 @@ impl Source for NmapScanner {
         let scan_id = plan.scan_id;
 
         // Use stateful parser with Arc<Mutex<>> to allow sharing across async closure
+
+        use std::collections::VecDeque;
         use std::sync::{Arc, Mutex};
         let parser = Arc::new(Mutex::new(NmapParser::new(scan_id)));
 
         let stream = stream::unfold(
-            (lines, parser, child, xml_file.clone(), false),
-            move |(mut lines, parser, mut child, xml_file, xml_parsed)| async move {
+            (
+                lines,
+                parser,
+                child,
+                xml_file.clone(),
+                false,
+                VecDeque::new(),
+            ),
+            move |(mut lines, parser, mut child, xml_file, xml_parsed, mut pending)| async move {
+                if let Some(obs) = pending.pop_front() {
+                    return Some((obs, (lines, parser, child, xml_file, xml_parsed, pending)));
+                }
                 match lines.next_line().await {
                     Ok(Some(line)) => {
                         log::info!("Nmap output line: {}", line);
@@ -237,10 +249,11 @@ impl Source for NmapScanner {
 
                         if let Some(observation) = obs {
                             log::info!("Parsed nmap observation: {:?}", observation);
-                            Some((observation, (lines, parser, child, xml_file, xml_parsed)))
+                            Some((
+                                observation,
+                                (lines, parser, child, xml_file, xml_parsed, pending),
+                            ))
                         } else {
-                            // Even if no observation was created, continue parsing
-                            // This happens for lines that set context but don't create observations
                             Some((
                                 Observation {
                                     scan_id,
@@ -255,18 +268,15 @@ impl Source for NmapScanner {
                                     key: "nmap-output".to_string(),
                                     raw: Some(line),
                                 },
-                                (lines, parser, child, xml_file, xml_parsed),
+                                (lines, parser, child, xml_file, xml_parsed, pending),
                             ))
                         }
                     }
                     Ok(None) => {
                         log::info!("Nmap stream ended - waiting for process to complete");
-                        // Wait for the child process to finish
                         match child.wait().await {
                             Ok(status) => {
                                 log::info!("Nmap process completed with status: {}", status);
-
-                                // Parse XML output for comprehensive host information
                                 if !xml_parsed {
                                     log::info!("Reading XML output from: {}", xml_file);
                                     match tokio::fs::read_to_string(&xml_file).await {
@@ -278,15 +288,18 @@ impl Source for NmapScanner {
                                             };
                                             match observations {
                                                 Ok(observations) => {
-                                                    log::info!("Parsed {} comprehensive observations from XML", observations.len());
-                                                    // Return the first observation and continue with the rest
-                                                    if let Some(first_obs) =
-                                                        observations.into_iter().next()
-                                                    {
-                                                        // Note: This is simplified - in a full implementation you'd want to emit all observations
+                                                    log::info!(
+                                                "Parsed {} comprehensive observations from XML",
+                                                observations.len()
+                                            );
+                                                    pending = observations.into();
+                                                    if let Some(first_obs) = pending.pop_front() {
                                                         return Some((
                                                             first_obs,
-                                                            (lines, parser, child, xml_file, true),
+                                                            (
+                                                                lines, parser, child, xml_file,
+                                                                true, pending,
+                                                            ),
                                                         ));
                                                     }
                                                 }
@@ -303,8 +316,6 @@ impl Source for NmapScanner {
                                             );
                                         }
                                     }
-
-                                    // Clean up XML file
                                     let _ = tokio::fs::remove_file(&xml_file).await;
                                 }
                             }
@@ -316,7 +327,6 @@ impl Source for NmapScanner {
                     }
                     Err(e) => {
                         log::error!("Error reading nmap output: {}", e);
-                        // Kill the child process if there was an error
                         let _ = child.kill().await;
                         None
                     }
