@@ -142,6 +142,12 @@ fn main() {
             commands::scanner_commands::start_masscan_scan,
             commands::scanner_commands::start_nmap_scan,
             commands::scanner_commands::get_scanner_status,
+            commands::netsniffer_commands::lookup_mac_vendor,
+            commands::netsniffer_commands::log_network_artifact,
+            commands::netsniffer_commands::start_network_monitoring,
+            commands::netsniffer_commands::stop_network_monitoring,
+            commands::netsniffer_commands::get_vendor_statistics,
+            commands::netsniffer_commands::parse_xml_for_mac_enrichment,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -31,6 +31,7 @@ pub struct Plan {
     pub modules: Vec<String>,
     pub source_type: String,
     pub sink_types: Vec<String>,
+    pub interface: Option<String>,
 }
 
 impl Plan {
@@ -45,6 +46,7 @@ impl Plan {
             modules: vec![],
             source_type: "masscan".to_string(),
             sink_types: vec!["ui".to_string(), "db".to_string(), "vulnerability".to_string()],
+            interface: None,
         }
     }
 
@@ -59,6 +61,7 @@ impl Plan {
             modules: vec![],
             source_type: "nmap".to_string(),
             sink_types: vec!["ui".to_string(), "db".to_string(), "vulnerability".to_string()],
+            interface: None,
         }
     }
 
@@ -115,6 +118,7 @@ impl Plan {
             modules: vec![],
             source_type: "nmap".to_string(),
             sink_types: vec!["ui".to_string(), "db".to_string(), "vulnerability".to_string()],
+            interface: None,
         }
     }
 
@@ -126,18 +130,25 @@ impl Plan {
             ports: "1-1000".to_string(), // Common ports for OS detection
             rate: None,
             extra: vec![
-                "-O".to_string(), 
-                "-sS".to_string(), 
+                "-O".to_string(),
+                "-sS".to_string(),
                 "-T4".to_string(),
                 "-PS80,443,22".to_string(), // TCP SYN ping to common ports
-                "-PA80,443,22".to_string(), // TCP ACK ping to common ports  
+                "-PA80,443,22".to_string(), // TCP ACK ping to common ports
                 "--max-rtt-timeout".to_string(), "2s".to_string(), // Reasonable timeout
                 "--initial-rtt-timeout".to_string(), "500ms".to_string()
             ],
             modules: vec![],
             source_type: "nmap".to_string(),
             sink_types: vec!["ui".to_string(), "db".to_string(), "vulnerability".to_string()],
+            interface: None,
         }
+    }
+
+    /// Set network interface for scanners
+    pub fn with_interface(mut self, interface: String) -> Self {
+        self.interface = Some(interface);
+        self
     }
 }
 
