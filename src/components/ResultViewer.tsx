@@ -311,10 +311,15 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
                     <span className="text-gray-400">IP Address</span>
                     <span className="font-mono text-white">{currentHost.ip}</span>
                   </div>
-                  
+
                   <div className="flex justify-between py-2 border-b border-gray-700">
                     <span className="text-gray-400">Hostname</span>
                     <span className="text-white">{currentHost.hostname || 'Unknown'}</span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">Vendor</span>
+                    <span className="text-white">{currentHost.vendor || 'Unknown'}</span>
                   </div>
 
                   <div className="flex justify-between py-2 border-b border-gray-700">
@@ -327,11 +332,6 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
                   <div className="flex justify-between py-2 border-b border-gray-700">
                     <span className="text-gray-400">MAC Address</span>
                     <span className="font-mono text-white">{currentHost.mac_address || 'Unknown'}</span>
-                  </div>
-
-                  <div className="flex justify-between py-2 border-b border-gray-700">
-                    <span className="text-gray-400">Vendor</span>
-                    <span className="text-white">{currentHost.vendor || 'Unknown'}</span>
                   </div>
 
                   <div className="flex justify-between py-2 border-b border-gray-700">
