@@ -71,6 +71,8 @@ pub struct Host {
     pub hostname: Option<String>,
     pub mac_address: Option<String>,
     pub vendor: Option<String>,
+    pub nic_vendor: Option<String>,
+    pub nic_model: Option<String>,
     pub os_name: Option<String>,
     pub os_family: Option<String>,
     pub os_accuracy: Option<f32>,

@@ -450,7 +450,8 @@ struct HostBatchItem {
     hostname: Option<String>,
     status: Option<String>,
     mac_address: Option<String>,
-    vendor: Option<String>,
+    nic_vendor: Option<String>,
+    nic_model: Option<String>,
     os_name: Option<String>,
     os_family: Option<String>,
     os_accuracy: Option<f32>,
@@ -756,7 +757,7 @@ impl DbSink {
         self.metrics.increment_hosts().await;
         Ok(())
     }
-  
+
     async fn store_host_network_info(
         &self,
         ip: &str,
@@ -846,6 +847,7 @@ impl DbSink {
                         log::error!("Failed to batch store host {}: {}", item.ip, e);
                         continue;
                     }
+
                 }
 
                 Ok::<(), anyhow::Error>(())

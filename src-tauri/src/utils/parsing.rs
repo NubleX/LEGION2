@@ -170,7 +170,11 @@ impl NmapParser {
                             fields.insert("ip".to_string(), current_ip.clone().into());
                             fields.insert("mac_address".to_string(), mac_info.mac.into());
                             if let Some(vendor) = mac_info.vendor {
+                                fields.insert("nic_vendor".to_string(), vendor.clone().into());
                                 fields.insert("vendor".to_string(), vendor.into());
+                            }
+                            if let Some(model) = mac_info.model {
+                                fields.insert("nic_model".to_string(), model.into());
                             }
                             fields.insert("type".to_string(), "mac_discovery".into());
                             fields
@@ -358,7 +362,6 @@ impl NmapParser {
         // Parse "MAC Address: 00:11:22:33:44:55 (Vendor Name)"
         // Also handle formats like "MAC Address: XX:XX:XX:XX:XX:XX (Unknown)"
         let mac_regex = Regex::new(r"MAC Address:\s+([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})(?:\s+\(([^)]+)\))?").unwrap();
-
         if let Some(captures) = mac_regex.captures(line) {
             let mac = captures.get(1)?.as_str().to_string();
             let vendor = captures

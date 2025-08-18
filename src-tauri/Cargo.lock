@@ -2019,6 +2019,7 @@ dependencies = [
  "libc",
  "local-ip-address",
  "log",
+ "once_cell",
  "parking_lot",
  "pcap",
  "quick-xml",
