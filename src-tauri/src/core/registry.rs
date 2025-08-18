@@ -124,6 +124,12 @@ impl Registry {
         self.register_transform("ip_enrichment".to_string());
         self.register_transform("service_parsing".to_string());
         self.register_transform("progress_tracking".to_string());
+        
+        // Register new enhanced transforms
+        self.register_transform("xml_parsing".to_string());
+        self.register_transform("mac_enrichment".to_string());
+        self.register_transform("network_fingerprinting".to_string());
+        self.register_transform("vulnerability_analysis".to_string());
 
         // Register standard sinks
         self.register_sink("ui".to_string());
