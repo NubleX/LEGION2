@@ -1,29 +1,9 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
-
-
 import { AlertTriangle, Download, Shield, Network, Server } from 'lucide-react';
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import useAppStore from '../stores/appStore';
 import useHostStore, { type Host } from '../stores/hostStore';
 
 interface PortInfo {
@@ -54,10 +34,10 @@ interface ResultViewerProps {
   className?: string;
 }
 
-const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHost }) => {
-  const { vulnerabilities } = useAppStore();
-  const hosts = useHostStore(state => state.hosts);
 
+const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHost }) => {
+  const hosts = useHostStore(state => state.hosts);
+  
   const [selectedTab, setSelectedTab] = useState<'ports' | 'vulnerabilities' | 'details'>('ports');
   const [hostPorts, setHostPorts] = useState<PortInfo[]>([]);
   const [loadingPorts, setLoadingPorts] = useState(false);
@@ -127,37 +107,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
     }
   }, [currentHost?.ip]);
 
-  const allVulnerabilities = useMemo(() => {
-    if (!currentHost) return [];
-    
-    // Combine database vulnerabilities with live event vulnerabilities
-    const combined = [...hostVulnerabilities];
-    
-    // Add any live vulnerabilities that aren't already in the database
-    if (vulnerabilities) {
-      const liveVulns = vulnerabilities.filter(vuln => vuln.host_ip === currentHost.ip);
-      for (const liveVuln of liveVulns) {
-        // Check if this vulnerability is already in our database results
-        const exists = combined.some(dbVuln => dbVuln.id === liveVuln.id);
-        if (!exists) {
-          // Convert live vulnerability to our interface format
-          combined.push({
-            id: liveVuln.id,
-            host_ip: liveVuln.host_ip,
-            name: liveVuln.name,
-            severity: liveVuln.severity,
-            description: liveVuln.description,
-            cve_id: undefined,
-            cvss_score: liveVuln.cvss_score,
-            discovered_at: liveVuln.timestamp,
-            last_seen: liveVuln.timestamp,
-          });
-        }
-      }
-    }
-    
-    return combined;
-  }, [currentHost, hostVulnerabilities, vulnerabilities]);
+  const allVulnerabilities = hostVulnerabilities;
 
   const allPorts = useMemo(() => {
     if (!hostPorts) return [];

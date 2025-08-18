@@ -1,4 +1,3 @@
-
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
@@ -135,6 +134,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
       processing_rate: 0,
       observations_processed: 0,
     },
+    
     scanInProgress: false,
 
     // Actions
