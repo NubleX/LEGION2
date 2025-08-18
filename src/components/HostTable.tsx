@@ -64,6 +64,7 @@ const HostTable: React.FC<HostTableProps> = ({ onHostSelect, className = '' }) =
             <tr className="text-left text-gray-400 border-b border-gray-700">
               <th className="px-3 py-2">IP Address</th>
               <th className="px-3 py-2">Hostname</th>
+              <th className="px-3 py-2">Vendor</th>
               <th className="px-3 py-2">OS</th>
               <th className="px-3 py-2">Ports</th>
               <th className="px-3 py-2">Vulns</th>
@@ -86,6 +87,11 @@ const HostTable: React.FC<HostTableProps> = ({ onHostSelect, className = '' }) =
                 <td className="px-3 py-2">
                   <span className="text-gray-300">
                     {host.hostname || '-'}
+                  </span>
+                </td>
+                <td className="px-3 py-2">
+                  <span className="text-gray-300">
+                    {host.vendor || '-'}
                   </span>
                 </td>
                 <td className="px-3 py-2">
@@ -121,7 +127,7 @@ const HostTable: React.FC<HostTableProps> = ({ onHostSelect, className = '' }) =
             ))}
             {hosts.length === 0 && (
               <tr>
-                <td className="px-3 py-8 text-center text-gray-400" colSpan={6}>
+                <td className="px-3 py-8 text-center text-gray-400" colSpan={7}>
                   No hosts found
                 </td>
               </tr>

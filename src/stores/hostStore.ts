@@ -56,11 +56,16 @@ const useHostStore = create<HostStore>((set, get) => {
   listen('obs:host', (event: any) => {
     const hostEvent = event.payload;
     console.log('Received obs:host event:', hostEvent);
-    
+
     // Convert basic HostEvent to partial Host object
     const partialHost: Partial<Host> = {
       ip: hostEvent.ip,
       hostname: hostEvent.hostname,
+      mac_address: hostEvent.mac_address,
+      vendor: hostEvent.vendor,
+      os_name: hostEvent.os_name,
+      os_family: hostEvent.os_family,
+      os_accuracy: hostEvent.os_accuracy,
       id: hostEvent.ip, // Use IP as temporary ID
       status: 'up', // Assume host is up if discovered
       created_at: hostEvent.timestamp,
