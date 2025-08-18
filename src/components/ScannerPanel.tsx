@@ -31,6 +31,7 @@ const EnhancedScannerPanel = () => {
   const { hosts, setHosts } = useHostStore();
   const terminalRef = useRef<HTMLDivElement>(null);
 
+
   const {
     scanInProgress,
     liveOutput,
@@ -40,6 +41,7 @@ const EnhancedScannerPanel = () => {
     startScan,
     resetScan
   } = useAppStore();
+  
   // Load existing hosts from database on mount
   useEffect(() => {
     const loadExistingHosts = async () => {

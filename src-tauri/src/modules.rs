@@ -74,7 +74,7 @@
 
 use crate::core::traits::Transform;
 use crate::core::transformer::{
-    IpEnrichmentTransform, ProgressTrackingTransform, ServiceParsingTransform,
+    IpEnrichmentTransform, ProgressTrackingTransform, ServiceParsingTransform, VulnerabilityTransform,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -115,6 +115,25 @@ impl ModuleRegistry {
             Box::new(|| Box::new(ProgressTrackingTransform::new())),
         );
 
+        // XML and MAC enrichment transforms
+        self.register_transform(
+            "xml-parsing",
+            Box::new(|| Box::new(ServiceParsingTransform::new())), // Uses enhanced service parsing with XML
+        );
+
+        self.register_transform(
+            "mac-enrichment", 
+            Box::new(|| Box::new(IpEnrichmentTransform::new())), // MAC vendor lookup integrated
+        );
+
+        // Vulnerability analysis transforms 
+        // Note: VulnerabilityTransform requires CveDatabase and ExploitDb dependencies
+        // For now, we comment this out until the dependencies are properly injected
+        // self.register_transform(
+        //     "vulnerability-analysis",
+        //     Box::new(|| Box::new(VulnerabilityTransform::new())),
+        // );
+
         // Additional semantic aliases
         self.register_transform(
             "port-classifier",
@@ -128,6 +147,11 @@ impl ModuleRegistry {
             Box::new(|| {
                 Box::new(ServiceParsingTransform::new()) // Alias for service parsing
             }),
+        );
+
+        self.register_transform(
+            "network-fingerprinting",
+            Box::new(|| Box::new(IpEnrichmentTransform::new())), // Network analysis capabilities
         );
 
         log::info!("Registered {} transform modules", self.transforms.len());
