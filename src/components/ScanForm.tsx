@@ -4,15 +4,16 @@
 import { AlertCircle, Network, Play, Settings, Shield, Square, Zap } from 'lucide-react';
 import React, { useState } from 'react';
 import { ScanConfig } from '../types/scanning';
+import useAppStore from '../stores/appStore';
 
 interface ScanFormProps {
   onStartScan: (config: ScanConfig) => Promise<void>;
-  onCancelScan?: () => Promise<void>;
   isScanning: boolean;
   className?: string;
 }
 
-const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, onCancelScan, isScanning }) => {
+const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, isScanning }) => {
+  const cancelScan = useAppStore(state => state.cancelScan);
   const [config, setConfig] = useState<ScanConfig>({
     targets: '',
     scanType: 'quick',
@@ -25,6 +26,7 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, onCancelScan, isScanni
     detectOS: false,
     detectVersions: true,
     skipPing: false,
+    interface: '',
   });
 
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -211,6 +213,20 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, onCancelScan, isScanni
                 </div>
               </div>
 
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Network Interface
+                </label>
+                <input
+                  type="text"
+                  value={config.interface}
+                  onChange={(e) => setConfig(prev => ({ ...prev, interface: e.target.value }))}
+                  placeholder="eth0"
+                  className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white focus:ring-2 focus:ring-blue-500"
+                  disabled={isScanning}
+                />
+              </div>
+
               {config.useMasscan && (
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-1">
@@ -300,14 +316,14 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, onCancelScan, isScanni
             )}
           </button>
 
-          {isScanning && onCancelScan && (
+          {isScanning && (
             <button
               type="button"
-              onClick={onCancelScan}
+              onClick={cancelScan}
               className="bg-red-600 hover:bg-red-700 text-white font-medium py-3 px-4 rounded transition-colors flex items-center justify-center gap-2"
             >
               <Square className="w-4 h-4" />
-              Stop
+              Pause / Cancel
             </button>
           )}
         </div>

@@ -1,17 +1,5 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -215,10 +203,20 @@ impl Db {
         })
     }
 
-    pub async fn upsert_host(&self, ip: &str, hostname: Option<&str>, status: Option<&str>) -> Result<()> {
+    pub async fn upsert_host(
+        &self,
+        ip: &str,
+        hostname: Option<&str>,
+        status: Option<&str>,
+        mac_address: Option<&str>,
+        vendor: Option<&str>,
+        os_name: Option<&str>,
+        os_family: Option<&str>,
+        os_accuracy: Option<f32>,
+    ) -> Result<()> {
         let ts = Utc::now();
         let t = to_rfc3339(ts);
-        
+
         // Encrypt sensitive data
         let ip_encrypted = self.encryption.encrypt(ip)?;
         let hostname_encrypted = if let Some(h) = hostname {
@@ -226,26 +224,51 @@ impl Db {
         } else {
             None
         };
-        
+        let mac_encrypted = if let Some(m) = mac_address {
+            Some(self.encryption.encrypt(m)?)
+        } else {
+            None
+        };
+
         let conn = self.conn.clone();
         let ip = ip.to_string();
+        let vendor = vendor.map(|s| s.to_string());
+        let os_name = os_name.map(|s| s.to_string());
+        let os_family = os_family.map(|s| s.to_string());
         let status = status.unwrap_or("unknown").to_string();
-        
+        let os_accuracy = os_accuracy;
+
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock();
             conn.execute(
-                r#"INSERT INTO hosts(id, ip_encrypted, hostname, status, first_seen, last_seen, created_at, updated_at, port_count, vulnerability_count)
-                   VALUES(?1, ?2, ?3, ?4, ?5, ?5, ?5, ?5, 0, 0)
-                   ON CONFLICT(ip_encrypted) DO UPDATE SET 
+                r#"INSERT INTO hosts(id, ip_encrypted, hostname, mac_address, vendor, os_name, os_family, os_accuracy, status, first_seen, last_seen, created_at, updated_at, port_count, vulnerability_count)
+                   VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10, ?10, 0, 0)
+                   ON CONFLICT(ip_encrypted) DO UPDATE SET
                        hostname = COALESCE(excluded.hostname, hosts.hostname),
+                       mac_address = COALESCE(excluded.mac_address, hosts.mac_address),
+                       vendor = COALESCE(excluded.vendor, hosts.vendor),
+                       os_name = COALESCE(excluded.os_name, hosts.os_name),
+                       os_family = COALESCE(excluded.os_family, hosts.os_family),
+                       os_accuracy = COALESCE(excluded.os_accuracy, hosts.os_accuracy),
                        status = COALESCE(excluded.status, hosts.status),
                        last_seen = excluded.last_seen,
                        updated_at = excluded.updated_at"#,
-                params![&ip, &ip_encrypted, hostname_encrypted, &status, &t],
+                params![
+                    &ip,
+                    &ip_encrypted,
+                    hostname_encrypted,
+                    mac_encrypted,
+                    vendor,
+                    os_name,
+                    os_family,
+                    os_accuracy,
+                    &status,
+                    &t
+                ],
             )?;
             Ok::<(), anyhow::Error>(())
         }).await??;
-        
+
         Ok(())
     }
 
@@ -342,7 +365,7 @@ impl Db {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock();
             let mut stmt = conn.prepare(
-                "SELECT id, ip_encrypted, hostname, mac_address, vendor, os_name, os_family, os_accuracy,
+                "SELECT id, ip_encrypted, hostname, mac_address, vendor, nic_vendor, nic_model, os_name, os_family, os_accuracy,
                         status, first_seen, last_seen, created_at, updated_at, port_count, vulnerability_count, notes, tags, scan_progress
                  FROM hosts ORDER BY last_seen DESC",
             )?;
@@ -352,19 +375,21 @@ impl Db {
                 let hostname_encrypted: Option<String> = row.get(2)?;
                 let mac_address: Option<String> = row.get(3)?;
                 let vendor: Option<String> = row.get(4)?;
-                let os_name: Option<String> = row.get(5)?;
-                let os_family: Option<String> = row.get(6)?;
-                let os_accuracy: Option<f32> = row.get(7)?;
-                let status_s: String = row.get(8)?;
-                let _first_seen: String = row.get(9)?;
-                let last_seen: String = row.get(10)?;
-                let created_at: String = row.get(11)?;
-                let updated_at: String = row.get(12)?;
-                let port_count: i32 = row.get(13)?;
-                let vulnerability_count: i32 = row.get(14)?;
-                let notes_encrypted: Option<String> = row.get(15)?;
-                let tags_s: Option<String> = row.get(16)?;
-                let scan_progress: Option<f32> = row.get(17)?;
+                let nic_vendor: Option<String> = row.get(5)?;
+                let nic_model: Option<String> = row.get(6)?;
+                let os_name: Option<String> = row.get(7)?;
+                let os_family: Option<String> = row.get(8)?;
+                let os_accuracy: Option<f32> = row.get(9)?;
+                let status_s: String = row.get(10)?;
+                let _first_seen: String = row.get(11)?;
+                let last_seen: String = row.get(12)?;
+                let created_at: String = row.get(13)?;
+                let updated_at: String = row.get(14)?;
+                let port_count: i32 = row.get(15)?;
+                let vulnerability_count: i32 = row.get(16)?;
+                let notes_encrypted: Option<String> = row.get(17)?;
+                let tags_s: Option<String> = row.get(18)?;
+                let scan_progress: Option<f32> = row.get(19)?;
 
                 // Decrypt sensitive fields
                 let ip = encryption.decrypt(&ip_encrypted).unwrap_or_else(|_| "DECRYPTION_ERROR".to_string());
@@ -385,6 +410,8 @@ impl Db {
                     hostname,
                     mac_address,
                     vendor,
+                    nic_vendor,
+                    nic_model,
                     os_name,
                     os_family,
                     os_accuracy,
@@ -500,16 +527,23 @@ impl Db {
         }).await?
     }
 
-    pub async fn update_host_network_info(&self, ip: &str, mac_address: Option<&str>, vendor: Option<&str>) -> Result<()> {
+    pub async fn update_host_network_info(
+        &self,
+        ip: &str,
+        mac_address: Option<&str>,
+        nic_vendor: Option<&str>,
+        nic_model: Option<&str>,
+    ) -> Result<()> {
         let conn = self.conn.clone();
         let ip = ip.to_string();
         let mac_address = mac_address.map(|s| s.to_string());
-        let vendor = vendor.map(|s| s.to_string());
+        let nic_vendor = nic_vendor.map(|s| s.to_string());
+        let nic_model = nic_model.map(|s| s.to_string());
         
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock();
             
-            // Update the host with MAC address and vendor information
+            // Update the host with MAC address and NIC information
             let mut query = "UPDATE hosts SET updated_at = CURRENT_TIMESTAMP".to_string();
             let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
             
@@ -518,9 +552,15 @@ impl Db {
                 params.push(Box::new(mac_address.clone()));
             }
             
-            if vendor.is_some() {
-                query.push_str(", vendor = ?");
-                params.push(Box::new(vendor.clone()));
+            if let Some(ref v) = nic_vendor {
+                query.push_str(", nic_vendor = ?, vendor = ?");
+                params.push(Box::new(v.clone()));
+                params.push(Box::new(v.clone()));
+            }
+
+            if let Some(ref m) = nic_model {
+                query.push_str(", nic_model = ?");
+                params.push(Box::new(m.clone()));
             }
             
             query.push_str(" WHERE ip = ?");
@@ -652,6 +692,29 @@ impl Db {
             )?;
             Ok::<(), anyhow::Error>(())
         }).await?
+    }
+
+    /// Update port count for a host based on current ports
+    pub async fn update_host_port_count(&self, ip: &str) -> Result<()> {
+        let conn = self.conn.clone();
+        let ip = ip.to_string();
+        let timestamp = to_rfc3339(Utc::now());
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock();
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM ports WHERE host_id = ?1",
+                [&ip],
+                |row| row.get(0),
+            )?;
+            conn.execute(
+                "UPDATE hosts SET port_count = ?, updated_at = ? WHERE id = ?",
+                params![count, &timestamp, &ip],
+            )?;
+            Ok::<(), anyhow::Error>(())
+        }).await??;
+
+        Ok(())
     }
 
     /// Increment vulnerability count for a host

@@ -20,6 +20,7 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import { Network, ZoomIn, ZoomOut, RotateCcw, Eye, EyeOff } from 'lucide-react';
+import { listen } from '@tauri-apps/api/event';
 import type { Host } from '../stores/hostStore';
 
 interface NetworkMapProps {
@@ -42,6 +43,7 @@ interface NetworkNode {
 const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHostIp }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [nodes, setNodes] = useState<NetworkNode[]>([]);
+  const [liveHosts, setLiveHosts] = useState<Host[]>(hosts);
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -49,6 +51,39 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
   const [showLabels, setShowLabels] = useState(true);
   const [showServices, setShowServices] = useState(false);
   const [showLegend, setShowLegend] = useState(true);
+
+  useEffect(() => {
+    setLiveHosts(hosts);
+  }, [hosts]);
+
+  useEffect(() => {
+    let unlistenHost: (() => void) | undefined;
+    let unlistenService: (() => void) | undefined;
+
+    listen<Host>('obs:host', (event) => {
+      const host = event.payload;
+      setLiveHosts((prev) => {
+        if (prev.find((h) => h.ip === host.ip)) return prev;
+        return [...prev, host];
+      });
+    }).then((f) => (unlistenHost = f));
+
+    listen<any>('obs:service', (event) => {
+      const svc = event.payload as { ip: string };
+      setLiveHosts((prev) =>
+        prev.map((h) =>
+          h.ip === svc.ip
+            ? { ...h, port_count: (h.port_count || 0) + 1 }
+            : h
+        )
+      );
+    }).then((f) => (unlistenService = f));
+
+    return () => {
+      if (unlistenHost) unlistenHost();
+      if (unlistenService) unlistenService();
+    };
+  }, []);
 
   // Determine host role based on ports and IP patterns
   const getHostRole = (host: Host): 'gateway' | 'server' | 'client' | 'unknown' => {
@@ -108,7 +143,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
 
   // Initialize network layout - update when hosts change
   useEffect(() => {
-    if (hosts.length === 0) {
+    if (liveHosts.length === 0) {
       setNodes([]);
       return;
     }
@@ -119,7 +154,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     const rect = canvas.getBoundingClientRect();
     const centerX = rect.width / 2;
     const centerY = rect.height / 2;
-    const subnets = groupBySubnet(hosts);
+    const subnets = groupBySubnet(liveHosts);
     const subnetEntries = Array.from(subnets.entries());
     
     let newNodes: NetworkNode[] = [];
@@ -167,7 +202,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     }
 
     setNodes(newNodes);
-  }, [hosts]);
+  }, [liveHosts]);
 
   // Drawing functions
   const getNodeColor = (host: Host, role: string) => {
@@ -458,7 +493,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
           onWheel={handleWheel}
         />
 
-        {hosts.length === 0 && (
+        {liveHosts.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center text-gray-400">
             <div className="text-center">
               <Network className="w-12 h-12 mx-auto mb-2 opacity-50" />

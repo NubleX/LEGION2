@@ -1,0 +1,5 @@
+{
+  "00:11:22": { "vendor": "Acme Networks", "model": "UltraNIC" },
+  "AA:BB:CC": { "vendor": "Globex", "model": "NetAdapter 2000" },
+  "DE:AD:BE": { "vendor": "ExampleTech", "model": "X1" }
+}

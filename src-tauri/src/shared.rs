@@ -1,6 +1,7 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
+use crate::analysis::{RiskLevel, ServiceInfo};
 use crate::core::registry::Registry;
 use anyhow;
 use chrono::{DateTime, Utc};
@@ -70,6 +71,8 @@ pub struct Host {
     pub hostname: Option<String>,
     pub mac_address: Option<String>,
     pub vendor: Option<String>,
+    pub nic_vendor: Option<String>,
+    pub nic_model: Option<String>,
     pub os_name: Option<String>,
     pub os_family: Option<String>,
     pub os_accuracy: Option<f32>,
@@ -198,6 +201,23 @@ impl FromStr for Severity {
             "high" => Ok(Severity::High),
             "critical" => Ok(Severity::Critical),
             _ => Err(anyhow::anyhow!("Invalid Severity: {}", s)),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ServiceInfo {
+    pub name: &'static str,
+    pub category: &'static str,
+    pub risk: RiskLevel,
+}
+
+impl ServiceInfo {
+    pub const fn new(name: &'static str, category: &'static str, risk: RiskLevel) -> Self {
+        Self {
+            name,
+            category,
+            risk,
         }
     }
 }
