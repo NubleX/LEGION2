@@ -7,67 +7,44 @@ use uuid::Uuid;
 /// Create a masscan plan using the builder pattern
 #[tauri::command]
 pub fn create_masscan_plan(
+    scan_id: Option<String>,
     targets: String,
     ports: String,
     rate: Option<u64>,
+    interface: Option<String>,
 ) -> Result<Plan, String> {
-    let scan_id = Uuid::new_v4();
-    let plan = Plan::masscan(scan_id, targets, ports, rate);
+    let scan_id = scan_id
+        .map(|s| Uuid::parse_str(&s))
+        .transpose()
+        .map_err(|e| format!("Invalid UUID: {}", e))?
+        .unwrap_or_else(Uuid::new_v4);
+
+    let mut plan = Plan::masscan(scan_id, targets, ports, rate);
+    if let Some(iface) = interface {
+        plan = plan.with_interface(iface);
+    }
     Ok(plan)
 }
 
 /// Create an nmap plan using the builder pattern
 #[tauri::command]
 pub async fn create_nmap_plan(
+    scan_id: Option<String>,
     targets: String,
     ports: String,
-    scan_type: String,
     extra_args: Vec<String>,
+    interface: Option<String>,
 ) -> Result<Plan, String> {
-    let mut plan = Plan {
-        scan_id: Uuid::new_v4(),
-        targets,
-        ports,
-        rate: None,
-        extra: Vec::new(),
-        modules: vec![],
-        source_type: "nmap".to_string(),
-        sink_types: vec![
-            "ui".to_string(),
-            "db".to_string(),
-            "vulnerability".to_string(),
-        ],
-    };
+    let scan_id = scan_id
+        .map(|s| Uuid::parse_str(&s))
+        .transpose()
+        .map_err(|e| format!("Invalid UUID: {}", e))?
+        .unwrap_or_else(Uuid::new_v4);
 
-    // Add scan type arguments
-    match scan_type.as_str() {
-        "quick" => {
-            plan.extra.push("-T4".to_string());
-            plan.extra.push("-F".to_string());
-        }
-        "comprehensive" => {
-            plan.extra.push("-sS".to_string());
-            plan.extra.push("-sV".to_string());
-            plan.extra.push("-O".to_string());
-            plan.extra.push("-A".to_string());
-            plan.extra.push("-T4".to_string());
-        }
-        "stealth" => {
-            plan.extra.push("-sS".to_string());
-            plan.extra.push("-T2".to_string());
-            plan.extra.push("-f".to_string());
-            plan.extra.push("--randomize-hosts".to_string());
-        }
-        _ => {
-            // Default scan
-            plan.extra.push("-sS".to_string());
-            plan.extra.push("-T3".to_string());
-        }
+    let mut plan = Plan::nmap(scan_id, targets, ports, extra_args);
+    if let Some(iface) = interface {
+        plan = plan.with_interface(iface);
     }
-
-    // Add any additional user-specified arguments
-    plan.extra.extend(extra_args);
-
     Ok(plan)
 }
 
@@ -77,6 +54,7 @@ pub fn create_comprehensive_plan(
     scan_id: Option<String>,
     targets: String,
     ports: String,
+    interface: Option<String>,
 ) -> Result<Plan, String> {
     let scan_id = scan_id
         .map(|s| Uuid::parse_str(&s))
@@ -84,7 +62,10 @@ pub fn create_comprehensive_plan(
         .map_err(|e| format!("Invalid UUID: {}", e))?
         .unwrap_or_else(Uuid::new_v4);
 
-    let plan = Plan::comprehensive(scan_id, targets, ports);
+    let mut plan = Plan::comprehensive(scan_id, targets, ports);
+    if let Some(iface) = interface {
+        plan = plan.with_interface(iface);
+    }
     Ok(plan)
 }
 

@@ -106,6 +106,17 @@ impl MasscanScanner {
             cmd.arg(arg);
         }
 
+        // Detect private 10.* targets and append interface if provided
+        let targets_private = plan
+            .targets
+            .split(|c| c == ' ' || c == ',' || c == '\n')
+            .any(|t| t.trim_start().starts_with("10."));
+        if targets_private {
+            if let Some(iface) = &plan.interface {
+                cmd.arg("-e").arg(iface);
+            }
+        }
+
         // Target specification (must be last)
         cmd.arg(&plan.targets);
 
@@ -258,7 +269,6 @@ impl Source for MasscanScanner {
 
         let (mut cmd, xml_file) = self.build_masscan_command(plan).await;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
         log::info!("Executing masscan command: {:?}", cmd);
 
         let mut child = cmd.spawn()?;

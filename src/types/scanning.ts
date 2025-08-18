@@ -29,6 +29,7 @@ export interface ScanConfig {
   detectOS?: boolean;
   detectVersions?: boolean;
   skipPing?: boolean;
+  interface?: string;
 }
 
 // Plan types from backend
@@ -41,6 +42,7 @@ export interface Plan {
   modules: string[];
   source_type: string;
   sink_types: string[];
+  interface?: string;
 }
 
 export type ScanType =

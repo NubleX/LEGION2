@@ -147,10 +147,13 @@ const useAppStore = create<AppState & AppActions>((set) => {
 
       if (config.useMasscan) {
         // Use Plan::masscan builder method
+        const scanId = crypto.randomUUID();
         const masscanPlan = await invoke<Plan>('create_masscan_plan', {
+          scanId,
           targets,
           ports,
           rate: config.rate || 1000,
+          interface: config.interface,
         });
         plans.push(masscanPlan);
       }
