@@ -1,5 +1,4 @@
 pub mod models;
-pub mod coordinator;
 pub mod masscan;
 pub mod nmap;
 
