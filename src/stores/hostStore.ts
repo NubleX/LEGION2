@@ -19,7 +19,7 @@
 //     If not, see <http://www.gnu.org/licenses/>.
 
 import { create } from 'zustand';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
 
 export interface Host {
   id: string;
@@ -85,34 +85,14 @@ const useHostStore = create<HostStore>((set, get) => {
     });
   }).catch(console.error);
 
-  // Listen for service events and update port counts
+
+  // When a service is observed, notify listeners to refresh that host's ports
   listen('obs:service', (event: any) => {
-    const svc = event.payload;
-    console.log('Received obs:service event:', svc);
-
-    set(state => {
-      const hostIdx = state.hosts.findIndex(h => h.ip === svc.ip);
-      if (hostIdx === -1) {
-        return state; // Host not yet known
-      }
-
-      const ports = { ...state.ports };
-      const hostPorts = new Set(ports[svc.ip] || []);
-
-      if (hostPorts.has(svc.port)) {
-        return state; // Already counted
-      }
-
-      hostPorts.add(svc.port);
-      ports[svc.ip] = hostPorts;
-
-      const updatedHosts = [...state.hosts];
-      const host = { ...updatedHosts[hostIdx] };
-      host.port_count = (host.port_count || 0) + 1;
-      updatedHosts[hostIdx] = host;
-
-      return { hosts: updatedHosts, ports };
-    });
+    const serviceEvent = event.payload;
+    if (serviceEvent?.ip) {
+      console.log('Received obs:service event for', serviceEvent.ip);
+      emit('refresh_host_ports', serviceEvent.ip).catch(console.error);
+    }
   }).catch(console.error);
 
   // Listen for refresh signals and fetch detailed host data
