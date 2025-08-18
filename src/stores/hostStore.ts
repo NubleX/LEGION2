@@ -112,7 +112,8 @@ const useHostStore = create<HostStore>((set, get) => {
         const idx = state.hosts.findIndex(h => h.ip === ip);
         if (idx !== -1) {
           const updated = [...state.hosts];
-          updated[idx] = detailedHost;
+          // Merge refreshed data with any existing fields
+          updated[idx] = { ...updated[idx], ...detailedHost };
           console.log('Updated host with detailed data:', updated[idx]);
           return { hosts: updated };
         }

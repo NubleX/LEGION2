@@ -328,52 +328,9 @@ impl Sink for UiSink {
                         "unknown".to_string()
                     };
 
-                    // Extract rich service information
-                    let service = obs
-                        .fields
-                        .get("service")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let product = obs
-                        .fields
-                        .get("product")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let service_version = obs
-                        .fields
-                        .get("version")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let vulnerabilities = obs.fields.get("vulnerabilities");
 
-                    // Emit comprehensive service event with all rich data
-                    let service_event = ServiceEvent {
-                        ip: ip.to_string(),
-                        port,
-                        protocol: protocol.to_string(),
-                        reason: _reason.to_string(),
-                        service: service.clone(),
-                        product: product.clone(),
-                        version: service_version.clone(),
-                        vulnerabilities: vulnerabilities.cloned(),
-                        timestamp: Utc::now().to_rfc3339(),
-                    };
-
-                    log::info!(
-                        "Emitting comprehensive obs:service event for: {}:{}/{}",
-                        service_event.ip,
-                        service_event.port,
-                        service_event.protocol
-                    );
-                    if let Err(e) = self.app.emit("obs:service", &service_event) {
-                        log::error!("Failed to emit obs:service event: {}", e);
-                        self.metrics.increment_errors().await;
-                    } else {
-                        self.metrics.increment_services().await;
-                    }
-
-                    // Emit host first if new (for proper hierarchy)
-                    self.emit_host_if_new(ip, None).await?;
+                    // Emit host first if new
+                    self.emit_host_if_new(ip, None, false).await?;
 
                     // Also emit as progress to show in live output
                     let progress_msg = format!(
@@ -395,57 +352,25 @@ impl Sink for UiSink {
                         .get("hostname")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
-                    let mac = obs
-                        .fields
-                        .get("mac_address")
-                        .or_else(|| obs.fields.get("mac"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let vendor = obs
-                        .fields
-                        .get("vendor")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let os = obs
-                        .fields
-                        .get("os_name")
-                        .or_else(|| obs.fields.get("os"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
+
                     let status = obs
                         .fields
                         .get("status")
                         .and_then(|v| v.as_str())
                         .unwrap_or("up");
 
-                    // Emit comprehensive host event with all rich data
-                    let host_event = HostEvent {
-                        ip: ip.to_string(),
-                        hostname: hostname.clone(),
-                        mac: mac.clone(),
-                        vendor: vendor.clone(),
-                        os: os.clone(),
-                        status: status.to_string(),
-                        timestamp: Utc::now().to_rfc3339(),
-                    };
+                    // Determine if this host observation includes MAC or OS info
+                    let has_mac_or_os = obs.fields.get("mac_address").is_some()
+                        || obs.fields.get("vendor").is_some()
+                        || obs.fields.get("os_name").is_some()
+                        || obs.fields.get("os_family").is_some()
+                        || obs.fields.get("os_accuracy").is_some();
 
-                    log::info!(
-                        "Emitting comprehensive obs:host event for: {}",
-                        host_event.ip
-                    );
-                    if let Err(e) = self.app.emit("obs:host", &host_event) {
-                        log::error!("Failed to emit obs:host event: {}", e);
-                        self.metrics.increment_errors().await;
-                    } else {
-                        self.metrics.increment_hosts().await;
+                    self.emit_host_if_new(ip, hostname.clone(), has_mac_or_os)
+                        .await?;
+                    
+                    // Also emit as progress to show in live output
 
-                        // Also emit refresh signal for database sync
-                        if let Err(e) = self.app.emit("refresh_host_data", &ip) {
-                            log::warn!("Failed to emit refresh_host_data event: {}", e);
-                        }
-                    }
-
-                    // Also emit as progress to show in live output with rich details
                     let progress_msg = if let Some(ref hn) = hostname {
                         if let Some(ref os_info) = os {
                             format!(
@@ -757,7 +682,7 @@ impl Sink for VulnerabilityAnalysisSink {
                             {
                                 Ok(vulnerabilities) => {
                                     log::info!(
-                                        "✅ Found {} vulnerabilities for {}:{}",
+                                        "Found {} vulnerabilities for {}:{}",
                                         vulnerabilities.len(),
                                         ip,
                                         port
@@ -765,7 +690,7 @@ impl Sink for VulnerabilityAnalysisSink {
 
                                     if vulnerabilities.is_empty() {
                                         log::debug!(
-                                            "✅ No vulnerabilities found for {}:{} ({})",
+                                            "No vulnerabilities found for {}:{} ({})",
                                             ip,
                                             port,
                                             service_name
@@ -821,18 +746,17 @@ impl Sink for VulnerabilityAnalysisSink {
     }
 }
 
+
 impl DbSink {
-    async fn store_host(
-        &self,
-        ip: &str,
-        hostname: Option<&str>,
-        status: Option<&str>,
-    ) -> Result<()> {
-        self.db.upsert_host(ip, hostname, status).await?;
+    async fn store_host(&self, ip: &str, hostname: Option<&str>, status: Option<&str>) -> Result<()> {
+        self
+            .db
+            .upsert_host(ip, hostname, status, None, None, None, None, None)
+            .await?;
         self.metrics.increment_hosts().await;
         Ok(())
     }
-
+  
     async fn store_host_network_info(
         &self,
         ip: &str,
@@ -903,52 +827,27 @@ impl DbSink {
 
         tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async {
+
                 for item in batch_items {
                     // Store host with all information at once
                     if let Err(e) = db
-                        .upsert_host(&item.ip, item.hostname.as_deref(), item.status.as_deref())
+                        .upsert_host(
+                            &item.ip,
+                            item.hostname.as_deref(),
+                            item.status.as_deref(),
+                            item.mac_address.as_deref(),
+                            item.vendor.as_deref(),
+                            item.os_name.as_deref(),
+                            item.os_family.as_deref(),
+                            item.os_accuracy,
+                        )
                         .await
                     {
                         log::error!("Failed to batch store host {}: {}", item.ip, e);
                         continue;
                     }
-
-                    // Store network info if available
-                    if item.mac_address.is_some() || item.vendor.is_some() {
-                        if let Err(e) = db
-                            .update_host_network_info(
-                                &item.ip,
-                                item.mac_address.as_deref(),
-                                item.vendor.as_deref(),
-                            )
-                            .await
-                        {
-                            log::error!(
-                                "Failed to batch store network info for {}: {}",
-                                item.ip,
-                                e
-                            );
-                        }
-                    }
-
-                    // Store OS info if available
-                    if item.os_name.is_some()
-                        || item.os_family.is_some()
-                        || item.os_accuracy.is_some()
-                    {
-                        if let Err(e) = db
-                            .update_host_os(
-                                &item.ip,
-                                item.os_name.as_deref(),
-                                item.os_family.as_deref(),
-                                item.os_accuracy,
-                            )
-                            .await
-                        {
-                            log::error!("Failed to batch store OS info for {}: {}", item.ip, e);
-                        }
-                    }
                 }
+
                 Ok::<(), anyhow::Error>(())
             })
         })
