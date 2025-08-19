@@ -5,7 +5,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::analysis::types::{AttackPath, AttackStep, Difficulty, Finding, Severity};
+use crate::shared::types::{AttackPath, AttackStep, Difficulty, Finding, Severity};
 use crate::database::Db;
 
 /// Correlation engine for connecting findings and generating attack paths

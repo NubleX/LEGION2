@@ -3,7 +3,6 @@ use std::sync::Arc;
 use tauri::AppHandle;
 
 use super::registry::Registry;
-use crate::analysis::AnalysisEngine;
 use crate::database::Db;
 
 /// Bootstrap function to create and configure the registry

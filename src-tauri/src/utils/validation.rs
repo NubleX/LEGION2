@@ -1,7 +1,6 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
-use crate::core::registry::Registry;
 use anyhow::{anyhow, Result};
 use std::net::IpAddr;
 use std::str::FromStr;

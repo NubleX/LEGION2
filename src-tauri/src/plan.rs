@@ -1,23 +1,7 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
 
-use anyhow;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fmt;
-use std::str::FromStr;
 use uuid::Uuid;
 
 /// Plan defines what the engine should execute - moved from core/types.rs
@@ -45,7 +29,11 @@ impl Plan {
             extra: vec![],
             modules: vec![],
             source_type: "masscan".to_string(),
-            sink_types: vec!["ui".to_string(), "db".to_string(), "vulnerability".to_string()],
+            sink_types: vec![
+                "ui".to_string(),
+                "db".to_string(),
+                "vulnerability".to_string(),
+            ],
             interface: None,
         }
     }
@@ -60,7 +48,11 @@ impl Plan {
             extra: extra_args,
             modules: vec![],
             source_type: "nmap".to_string(),
-            sink_types: vec!["ui".to_string(), "db".to_string(), "vulnerability".to_string()],
+            sink_types: vec![
+                "ui".to_string(),
+                "db".to_string(),
+                "vulnerability".to_string(),
+            ],
             interface: None,
         }
     }
@@ -117,7 +109,11 @@ impl Plan {
             ],
             modules: vec![],
             source_type: "nmap".to_string(),
-            sink_types: vec!["ui".to_string(), "db".to_string(), "vulnerability".to_string()],
+            sink_types: vec![
+                "ui".to_string(),
+                "db".to_string(),
+                "vulnerability".to_string(),
+            ],
             interface: None,
         }
     }
@@ -135,12 +131,18 @@ impl Plan {
                 "-T4".to_string(),
                 "-PS80,443,22".to_string(), // TCP SYN ping to common ports
                 "-PA80,443,22".to_string(), // TCP ACK ping to common ports
-                "--max-rtt-timeout".to_string(), "2s".to_string(), // Reasonable timeout
-                "--initial-rtt-timeout".to_string(), "500ms".to_string()
+                "--max-rtt-timeout".to_string(),
+                "2s".to_string(), // Reasonable timeout
+                "--initial-rtt-timeout".to_string(),
+                "500ms".to_string(),
             ],
             modules: vec![],
             source_type: "nmap".to_string(),
-            sink_types: vec!["ui".to_string(), "db".to_string(), "vulnerability".to_string()],
+            sink_types: vec![
+                "ui".to_string(),
+                "db".to_string(),
+                "vulnerability".to_string(),
+            ],
             interface: None,
         }
     }
@@ -149,111 +151,5 @@ impl Plan {
     pub fn with_interface(mut self, interface: String) -> Self {
         self.interface = Some(interface);
         self
-    }
-}
-
-// Useful types consolidated from models.rs and shared/models.rs
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum ScanType {
-    Discovery,
-    PortScan,
-    ServiceDetection,
-    Vulnerability,
-    Comprehensive,
-    Quick,
-    Stealth,
-    Custom { options: String },
-}
-
-impl fmt::Display for ScanType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            ScanType::Discovery => write!(f, "Discovery"),
-            ScanType::PortScan => write!(f, "PortScan"),
-            ScanType::ServiceDetection => write!(f, "ServiceDetection"),
-            ScanType::Vulnerability => write!(f, "Vulnerability"),
-            ScanType::Comprehensive => write!(f, "Comprehensive"),
-            ScanType::Quick => write!(f, "Quick"),
-            ScanType::Stealth => write!(f, "Stealth"),
-            ScanType::Custom { options } => write!(f, "Custom ({})", options),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ScanTiming {
-    Paranoid,   // T0
-    Sneaky,     // T1
-    Polite,     // T2
-    Normal,     // T3
-    Aggressive, // T4
-    Insane,     // T5
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PortRange {
-    pub start: u16,
-    pub end: u16,
-    pub top_ports: Option<u16>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Protocol {
-    Tcp,
-    Udp,
-}
-
-impl Protocol {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Protocol::Tcp => "tcp",
-            Protocol::Udp => "udp",
-        }
-    }
-}
-
-impl FromStr for Protocol {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "tcp" => Ok(Protocol::Tcp),
-            "udp" => Ok(Protocol::Udp),
-            _ => Err(anyhow::anyhow!("Invalid Protocol: {}", s)),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum PortState {
-    Open,
-    Closed,
-    Filtered,
-    Unknown,
-}
-
-impl PortState {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            PortState::Open => "open",
-            PortState::Closed => "closed",
-            PortState::Filtered => "filtered",
-            PortState::Unknown => "unknown",
-        }
-    }
-}
-
-impl FromStr for PortState {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "open" => Ok(PortState::Open),
-            "closed" => Ok(PortState::Closed),
-            "filtered" => Ok(PortState::Filtered),
-            "unknown" => Ok(PortState::Unknown),
-            _ => Err(anyhow::anyhow!("Invalid PortState: {}", s)),
-        }
     }
 }

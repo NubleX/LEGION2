@@ -1,15 +1,18 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
+use crate::analysis::correlation::CorrelationEngine;
+// use crate::analysis::types::{AnalysisSummary, Finding, Vulnerability}; // Temporarily disabled - types module needs refactoring
+use crate::analysis::vulnerability::VulnerabilityEngine;
+use crate::database::Db;
+use crate::shared::types::{
+    AnalysisResult, AnalysisSummary, Finding, NetworkTopology, Vulnerability,
+};
 use anyhow::Result;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
-
-use crate::analysis::correlation::CorrelationEngine;
-use crate::analysis::types::{AnalysisResult, Finding, NetworkTopology, Vulnerability};
-use crate::analysis::vulnerability::VulnerabilityEngine;
-use crate::database::Db;
 
 /// Central analysis engine that coordinates all analysis activities
 pub struct AnalysisEngine {
@@ -206,16 +209,37 @@ impl AnalysisEngine {
 
     async fn generate_summary(
         &self,
-        _findings: &[Finding],
-        _vulnerabilities: &[Vulnerability],
-    ) -> Result<crate::analysis::types::AnalysisSummary> {
-        // TODO: Generate proper analysis summary
-        Ok(crate::analysis::types::AnalysisSummary {
-            total_hosts: 0,
-            total_services: 0,
-            vulnerability_count_by_severity: std::collections::HashMap::new(),
-            top_risks: Vec::new(),
-            recommended_actions: Vec::new(),
+        findings: &[Finding],
+        vulnerabilities: &[Vulnerability],
+    ) -> Result<AnalysisSummary, Box<dyn std::error::Error>> {
+        // Count vulnerabilities by severity
+        let mut vulnerability_count_by_severity: HashMap<String, usize> = HashMap::new();
+
+        for vuln in vulnerabilities {
+            *vulnerability_count_by_severity
+                .entry(vuln.severity.clone())
+                .or_insert(0) += 1;
+        }
+
+        // Extract top risks (e.g., high/critical vulnerabilities)
+        let top_risks: Vec<String> = vulnerabilities
+            .iter()
+            .filter(|v| v.severity == "High" || v.severity == "Critical")
+            .map(|v| v.title.clone())
+            .collect();
+
+        // Recommended actions based on findings
+        let recommended_actions: Vec<String> = findings
+            .iter()
+            .filter_map(|f| f.recommendation.clone())
+            .collect();
+
+        Ok(AnalysisSummary {
+            total_hosts: findings.len(),
+            total_services: vulnerabilities.len(),
+            vulnerability_count_by_severity,
+            top_risks,
+            recommended_actions,
         })
     }
 

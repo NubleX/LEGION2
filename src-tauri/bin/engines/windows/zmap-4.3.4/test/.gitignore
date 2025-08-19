@@ -1,0 +1,7 @@
+*.*-t*
+*-t*
+tempfile
+outfile
+!.gitignore
+!integration-tests/
+shardfile

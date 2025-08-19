@@ -1,0 +1,66 @@
+ziterate(1) - ZMap IP permutation generation file
+=================================================
+
+## SYNOPSIS
+
+ziterate [ -b &lt;blocklist&gt; ] [ -w &lt;allowlist&gt; ] [ OPTIONS... ]
+
+## DESCRIPTION
+
+*ZIterate* is a network tool that will produce IPv4 addresses in a psuedorandom
+order similar to how ZMap generates random addresses to be scanned.
+
+## OPTIONS
+
+### BASIC OPTIONS ###
+
+   * `-p`, `--target-ports=port(s)`:
+     List of TCP/UDP ports and/or port ranges to scan. (e.g., 80,443,100-105).
+     Use '*' to scan all ports, including port 0. If no port is specified,
+     ziterate will output only IPs.
+
+   * `-b`, `--blocklist-file=path`:
+     File of subnets to exclude, in CIDR notation, one-per line. It is
+     recommended you use this to exclude RFC 1918 addresses, multicast, IANA
+     reserved space, and other IANA special-purpose addresses. An example
+     blocklist file **blocklist.conf** for this purpose.
+
+  * `-w`, `--allowlist-file=name`:
+    File of subnets to include, in CIDR notation, one-per line. All other
+    subnets will be excluded.
+
+  * `-l`, `--log-file=name`:
+    File to log to.
+
+  * `--disable-syslog`:
+    Disable logging messages to syslog.
+
+  * `-v`, `--verbosity`:
+    Level of log detail (0-5, default=3)
+
+  * `--ignore-blocklist-errors`:
+    Ignore invalid entries in the blocklist. Default is false.
+
+  * `--seed=n`:
+    Seed used to select address permutation.
+
+  * `-n`, `--max-targets=n`:
+    Cap number of IPs to generate (as a number or a percentage of the address space)
+
+
+### SHARDING ###
+
+  * `--shards=n`:
+    Total number of shards.
+
+  * `--shard=n`:
+    Shard this scan is targeting. Zero indexed.
+
+
+### ADDITIONAL OPTIONS ###
+
+  * `-h`, `--help`:
+    Print help text and exit.
+
+  * `-V`, `--version`:
+    Print version and exit.

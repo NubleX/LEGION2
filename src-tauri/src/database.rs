@@ -1,11 +1,12 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
+extern crate etherparse;
+extern crate pcap;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use std::sync::Arc;
-use crate::shared::{Host, HostStatus};
 use sha2::{Sha256, Digest};
 use hex;
 use aes_gcm::{Aes256Gcm, Key, Nonce, aead::{Aead, KeyInit}};
@@ -358,7 +359,7 @@ impl Db {
         Ok(())
     }
 
-    pub async fn get_all_hosts(&self) -> Result<Vec<crate::shared::Host>> {
+    pub async fn get_all_hosts(&self) -> Result<Vec<crate::shared::shared::Host>> {
         let conn = self.conn.clone();
         let encryption = EncryptionManager::new(); // Create new instance for decryption
         
@@ -404,7 +405,7 @@ impl Db {
                     None
                 };
 
-                Ok(crate::shared::Host {
+                Ok(crate::shared::shared::Host {
                     id,
                     ip,
                     hostname,
@@ -431,7 +432,7 @@ impl Db {
             for host in iter {
                 hosts.push(host?);
             }
-            Ok::<Vec<crate::shared::Host>, anyhow::Error>(hosts)
+            Ok::<Vec<crate::shared::shared::Host>, anyhow::Error>(hosts)
         }).await?
     }
 

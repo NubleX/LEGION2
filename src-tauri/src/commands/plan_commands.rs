@@ -1,7 +1,8 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
-use crate::plan::{Plan, PortRange, PortState, Protocol, ScanTiming, ScanType};
+use crate::plan::Plan;
+use crate::shared::{ScanTypes::{PortRange, ScanType}, shared::{PortState, Protocol}};
 use uuid::Uuid;
 
 /// Create a masscan plan using the builder pattern
@@ -202,15 +203,16 @@ pub fn create_plan_with_modules(
         .map_err(|e| format!("Invalid UUID: {}", e))?
         .unwrap_or_else(Uuid::new_v4);
 
-    let plan::start_nmap_scan::Plan {
+    let plan = Plan {
         scan_id,
         targets,
         ports,
         rate: None,
         extra: Vec::new(),
-        modules, // Use the provided modules
+        modules,
         source_type,
         sink_types,
+        interface: None,
     };
 
     Ok(plan)

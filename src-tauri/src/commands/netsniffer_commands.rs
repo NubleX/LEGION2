@@ -1,7 +1,7 @@
 // LEGION2 - Network Sniffer Commands
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
-use crate::utils::netsniffer::{log_artifact, oui_lookup_vendor};
+use crate::network::netsniffer::{log_artifact, oui_lookup_vendor};
 use anyhow::Result;
 use serde_json::{json, Value};
 use tauri::command;
@@ -11,11 +11,11 @@ use tauri::command;
 pub async fn lookup_mac_vendor(mac_address: String) -> Result<Option<String>, String> {
     // Parse MAC address from string format (e.g., "aa:bb:cc:dd:ee:ff")
     let mac_parts: Vec<&str> = mac_address.split(':').collect();
-    
+
     if mac_parts.len() != 6 {
         return Err("Invalid MAC address format. Expected: aa:bb:cc:dd:ee:ff".to_string());
     }
-    
+
     let mut mac_bytes = [0u8; 6];
     for (i, part) in mac_parts.iter().enumerate() {
         match u8::from_str_radix(part, 16) {
@@ -23,7 +23,7 @@ pub async fn lookup_mac_vendor(mac_address: String) -> Result<Option<String>, St
             Err(_) => return Err("Invalid MAC address format. Use hexadecimal values.".to_string()),
         }
     }
-    
+
     Ok(oui_lookup_vendor(mac_bytes))
 }
 
@@ -46,7 +46,7 @@ pub async fn log_network_artifact(
         "os": os,
         "source": source
     });
-    
+
     log_artifact(artifact);
     Ok(())
 }
@@ -61,11 +61,15 @@ pub async fn start_network_monitoring(
     // In a full implementation, this would start the packet capture from netsniffer.rs
     let iface = interface.unwrap_or_else(|| "default".to_string());
     let bpf_filter = filter.unwrap_or_else(|| "tcp".to_string());
-    
-    log::info!("Network monitoring request for interface: {}, filter: {}", iface, bpf_filter);
-    
+
+    log::info!(
+        "Network monitoring request for interface: {}, filter: {}",
+        iface,
+        bpf_filter
+    );
+
     Ok(format!(
-        "Network monitoring configured for interface '{}' with filter '{}'", 
+        "Network monitoring configured for interface '{}' with filter '{}'",
         iface, bpf_filter
     ))
 }
@@ -95,14 +99,12 @@ pub async fn get_vendor_statistics() -> Result<Value, String> {
 pub async fn parse_xml_for_mac_enrichment(xml_content: String) -> Result<Vec<Value>, String> {
     // This would use the parse_host_xml function from transformer.rs
     // For now, return placeholder to indicate the capability
-    let artifacts = vec![
-        json!({
-            "ip": "192.168.1.100",
-            "mac": "aa:bb:cc:dd:ee:ff", 
-            "vendor": "Example Vendor",
-            "source": "xml_parser"
-        })
-    ];
-    
+    let artifacts = vec![json!({
+        "ip": "192.168.1.100",
+        "mac": "aa:bb:cc:dd:ee:ff",
+        "vendor": "Example Vendor",
+        "source": "xml_parser"
+    })];
+
     Ok(artifacts)
 }

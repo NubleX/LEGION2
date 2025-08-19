@@ -1,12 +1,11 @@
 // LEGION2 - Transform components for data processing pipeline
 // Copyright (c) 2025 NubleX / Igor Dunaev
-
-use crate::analysis::types::{Confidence, Finding, Severity, Vulnerability};
-use crate::core::traits::Transform;
-use crate::database::{CveDatabase, ExploitDb};
-use crate::shared::{ObsStream, Observation, ObservationKind, ServiceInfo};
-use crate::utils::netsniffer::log_artifact;
-use crate::utils::parsing::lookup_vendor;
+// use crate::analysis::types::{Confidence, Finding, Severity, Vulnerability}; // Temporarily disabled - needs refactoring
+use crate::shared::traits::Transform;
+// CveDatabase and ExploitDb removed - using main Db instead
+use crate::network::netsniffer::log_artifact;
+// use crate::utils::parsing::lookup_vendor; // Function doesn't exist yet
+use crate::shared::shared::{classify_service_by_port, ServiceInfo, ObsStream, Observation, ObservationKind};
 use crate::utils::parsing::OutputParser;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -14,7 +13,6 @@ use futures::StreamExt;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use serde_json::json;
-use std::sync::Arc;
 
 /// Transform that enriches observations with parsed IP addresses
 pub struct IpEnrichmentTransform;
@@ -140,102 +138,25 @@ fn extract_product_from_banner(banner: &str) -> Option<String> {
     }
 }
 
-/// Classifies network service by port number with security context
-fn classify_service_by_port(port: u16) -> ServiceInfo {
-    match port {
-        // Remote Access
-        22 => ServiceInfo::new("SSH", "remote_access", Severity::Medium),
-        23 => ServiceInfo::new("Telnet", "remote_access", Severity::High), // Insecure
-        3389 => ServiceInfo::new("RDP", "remote_desktop", Severity::High),
-
-        // Email Services
-        25 => ServiceInfo::new("SMTP", "email", Severity::Medium),
-        110 => ServiceInfo::new("POP3", "email", Severity::Medium),
-        143 => ServiceInfo::new("IMAP", "email", Severity::Medium),
-        465 => ServiceInfo::new("SMTPS", "email_secure", Severity::Low),
-        587 => ServiceInfo::new("SMTP (Submission)", "email", Severity::Medium),
-        993 => ServiceInfo::new("IMAPS", "email_secure", Severity::Low),
-        995 => ServiceInfo::new("POP3S", "email_secure", Severity::Low),
-
-        // Web Services
-        80 => ServiceInfo::new("HTTP", "web", Severity::Medium),
-        443 => ServiceInfo::new("HTTPS", "web_secure", Severity::Low),
-        8080 | 8000 | 8443 | 8888 => {
-            ServiceInfo::new("Web Proxy/Alt HTTP", "web", Severity::Medium)
-        }
-
-        // DNS
-        53 => ServiceInfo::new("DNS", "dns", Severity::Medium),
-
-        // File Transfer
-        21 => ServiceInfo::new("FTP", "file_transfer", Severity::High),
-        69 => ServiceInfo::new("TFTP", "file_transfer", Severity::High),
-
-        // Databases
-        3306 => ServiceInfo::new("MySQL", "database", Severity::High),
-        5432 => ServiceInfo::new("PostgreSQL", "database", Severity::High),
-        1433 => ServiceInfo::new("MSSQL", "database", Severity::High),
-        1521 => ServiceInfo::new("Oracle DB", "database", Severity::High),
-        27017 => ServiceInfo::new("MongoDB", "database", Severity::Medium),
-
-        // Cache / Messaging
-        6379 => ServiceInfo::new("Redis", "cache", Severity::Medium),
-        11211 => ServiceInfo::new("Memcached", "cache", Severity::Medium),
-
-        // System / Infrastructure
-        2222 => ServiceInfo::new("DirectAdmin", "admin_panel", Severity::Medium),
-        3344 => ServiceInfo::new("PDProxy", "proxy", Severity::Medium),
-        5900 => ServiceInfo::new("VNC", "remote_desktop", Severity::High),
-        5000 => ServiceInfo::new("UPnP", "discovery", Severity::Medium),
-
-        // Default range for system ports
-        _ if port >= 1 && port <= 1023 => {
-            ServiceInfo::new("System Service", "system_service", Severity::Medium)
-        }
-
-        // Application-specific or dynamic ports
-        _ => ServiceInfo::new("Unknown", "application", Severity::Unknown),
-    }
+pub struct VulnerabilityTransform {
+    // TODO: Implement vulnerability database integration
+    // Currently disabled pending proper database structure
 }
 
-pub struct VulnerabilityTransform {
-    cve_db: Arc<CveDatabase>,
-    exploit_db: Arc<ExploitDb>,
+impl VulnerabilityTransform {
+    pub fn new() -> Self {
+        Self {}
+    }
 }
 
 impl Transform for VulnerabilityTransform {
     fn name(&self) -> &'static str {
         "vulnerability_enrichment"
     }
-    fn apply(&self, mut obs: Observation) -> Option<Observation> {
-        if obs.kind != ObservationKind::Service {
-            return Some(obs);
-        }
 
-        // Check for vulnerabilities
-        if let (Some(product), Some(version)) =
-            (obs.fields.get("product"), obs.fields.get("version"))
-        {
-            let cves = self
-                .cve_db
-                .search_by_product_version(product.as_str()?, version.as_str()?);
-
-            if !cves.is_empty() {
-                obs.fields.insert(
-                    "vulnerabilities".into(),
-                    serde_json::to_value(cves).unwrap(),
-                );
-
-                // Check for exploits
-                for cve in &cves {
-                    if let Some(exploit) = self.exploit_db.search_cve(&cve.id) {
-                        obs.fields
-                            .insert("exploits".into(), serde_json::to_value(exploit).unwrap());
-                    }
-                }
-            }
-        }
-
+    fn apply(&self, obs: Observation) -> Option<Observation> {
+        // TODO: Implement vulnerability checking
+        // For now, just pass through observations unchanged
         Some(obs)
     }
 }
@@ -345,12 +266,7 @@ pub fn parse_host_xml(xml_content: &str) {
                     .map(|s| u8::from_str_radix(s, 16).unwrap_or(0))
                     .collect();
 
-                let vendor = if mac_bytes.len() == 6 {
-                    let mac_array: [u8; 6] = mac_bytes.try_into().unwrap();
-                    lookup_vendor(&mac_array).unwrap_or("Unknown")
-                } else {
-                    "Unknown"
-                };
+                let vendor = "Unknown"; // TODO: Implement lookup_vendor function
 
                 let artifact = json!({
                     "ts": chrono::Utc::now().to_rfc3339(),
@@ -373,10 +289,10 @@ pub fn parse_host_xml(xml_content: &str) {
     }
 }
 
-fn main() {
-    let xml_content = std::fs::read_to_string("roxmltree::Node").unwrap();
-    create_comprehensive_host_observation(&xml_content);
-}
+// fn main() {
+//     let xml_content = std::fs::read_to_string("roxmltree::Node").unwrap();
+//     create_comprehensive_host_observation(&xml_content);
+// }
 
 #[async_trait]
 impl Transform for CompositeTransform {

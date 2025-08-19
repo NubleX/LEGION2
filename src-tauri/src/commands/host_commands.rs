@@ -2,7 +2,8 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 use crate::database::Db;
-use crate::shared::Host;
+use crate::shared::shared::Host;
+use crate::shared::ScanTypes::OSDetection;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
@@ -80,7 +81,7 @@ pub async fn update_host_tags(
 #[tauri::command]
 pub async fn update_host_os_detection(
     host_ip: String,
-    os_detection: crate::scanning::models::OSDetection,
+    os_detection: OSDetection,
     db: State<'_, Arc<Db>>,
 ) -> Result<(), String> {
     db.inner()

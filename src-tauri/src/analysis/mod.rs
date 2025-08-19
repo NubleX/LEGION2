@@ -1,7 +1,6 @@
+pub mod correlation;
 pub mod engine;
 pub mod vulnerability;
-pub mod correlation;
-pub mod types;
 
 pub use engine::AnalysisEngine;
-pub use types::{Finding, Vulnerability, AttackPath, NetworkTopology, AnalysisResult};
+pub use crate::shared::types::{AnalysisResult, AttackPath, Finding, NetworkTopology, Vulnerability};

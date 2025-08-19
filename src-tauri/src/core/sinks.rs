@@ -1,20 +1,18 @@
 ﻿use std::collections::HashMap;
 use std::sync::Arc;
-
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
-
+use crate::shared::types;
 use crate::analysis::vulnerability::VulnerabilityEngine;
-use crate::core::traits::Sink;
+use crate::shared::traits::Sink;
 use crate::database::Db;
-use crate::shared::{ObsStream, ObservationKind};
+use crate::shared::shared::{ObsStream, ObservationKind};
 
 // Event structures for frontend communication
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -561,7 +559,7 @@ impl VulnerabilityAnalysisSink {
 
     async fn emit_vulnerability(
         &self,
-        vulnerability: &crate::analysis::types::Vulnerability,
+        vulnerability: &crate::shared::types::Vulnerability,
     ) -> Result<()> {
         #[derive(Serialize)]
         struct VulnerabilityEvent {

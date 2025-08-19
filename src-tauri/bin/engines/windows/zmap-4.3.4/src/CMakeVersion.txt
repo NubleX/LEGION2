@@ -1,0 +1,15 @@
+set(GIT_CMD "git")
+set(GIT_ARGS "log" "-n" "1" "--pretty=format:%h - %ad")
+execute_process(COMMAND ${GIT_CMD} ${GIT_ARGS}
+    RESULT_VARIABLE GIT_RESULT
+    OUTPUT_VARIABLE GIT_COMMIT)
+    if (GIT_RESULT)
+        set (GIT_COMMIT "UNKNOWN")
+    endif()
+set(ZMAP_VERSION "Development Build. Commit ${GIT_COMMIT}")
+
+configure_file("${ORIG_SRC_DIR}/src/topt.ggo.in" "${CMAKE_BINARY_DIR}/topt.ggo" @ONLY)
+configure_file("${ORIG_SRC_DIR}/src/zbopt.ggo.in" "${CMAKE_BINARY_DIR}/zbopt.ggo" @ONLY)
+configure_file("${ORIG_SRC_DIR}/src/zitopt.ggo.in" "${CMAKE_BINARY_DIR}/zitopt.ggo" @ONLY)
+configure_file("${ORIG_SRC_DIR}/src/zopt.ggo.in" "${CMAKE_BINARY_DIR}/zopt.ggo" @ONLY)
+configure_file("${ORIG_SRC_DIR}/src/ztopt.ggo.in" "${CMAKE_BINARY_DIR}/ztopt.ggo" @ONLY)

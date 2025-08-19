@@ -1,7 +1,7 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
-use crate::shared::{Observation, ObservationKind};
+use crate::shared::shared::{Observation, ObservationKind};
 use anyhow::Result;
 use roxmltree::Document;
 use serde_json::{Map, Value};

@@ -1,7 +1,7 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
-use crate::shared::{Observation, ObservationKind};
+use crate::shared::shared::{Observation, ObservationKind};
 use anyhow::Result;
 use regex::Regex;
 use roxmltree::Document;
@@ -89,6 +89,7 @@ impl NmapParser {
         // Parse "Nmap scan report for X.X.X.X"
         if line.contains("Nmap scan report for") {
             let ip = extract_ip_from_line(line)?;
+            let ip_key = format!("host-{}", ip);
             return Some(Observation {
                 scan_id: self.scan_id,
                 kind: ObservationKind::Host,
@@ -99,7 +100,7 @@ impl NmapParser {
                     fields
                 },
                 ts: chrono::Utc::now(),
-                key: format!("host-{}", ip),
+                key: ip_key,
                 raw: Some(line.to_string()),
             });
         }
@@ -166,7 +167,7 @@ impl NmapParser {
         }
         // Check for MAC address lines
         else if line.contains("MAC Address:") {
-            if let Some(ref current_ip) = self.current_host {
+            if let Some(current_ip) = self.current_host.clone() {
                 if let Some(mac_info) = self.parse_mac_address(line) {
                     return Some(Observation {
                         scan_id: self.scan_id,
@@ -198,7 +199,7 @@ impl NmapParser {
             || line.contains("OS CPE:") 
             || line.contains("Aggressive OS guesses:")
         {
-            if let Some(ref current_ip) = self.current_host {
+            if let Some(current_ip) = self.current_host.clone() {
                 if let Some(os_info) = self.parse_os_detection(line) {
                     return Some(Observation {
                         scan_id: self.scan_id,
@@ -239,7 +240,7 @@ impl NmapParser {
                 && !line.contains("/")
                 && !line.contains("open"))
         {
-            if let Some(ref current_ip) = self.current_host {
+            if let Some(current_ip) = self.current_host.clone() {
                 if let Some(hostname) = self.parse_hostname(line) {
                     return Some(Observation {
                         scan_id: self.scan_id,

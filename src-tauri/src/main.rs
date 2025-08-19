@@ -1,25 +1,12 @@
 // Backup of original main.rs
 // LEGION2 - A free and open-source penetration testing tool.
-// Copyright (c) 2025 NubleX / Igor Dunaev
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-// This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-// License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-// version.
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-// warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//details.
-// You should have received a copy of the GNU General Public License along with this program.
-// If not, see <http://www.gnu.org/licenses/>.
 
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
 
-use crate::database::{DatabaseOperations, Db};
+use crate::database::Db;
 use anyhow::Result;
 use rusqlite;
 use std::sync::Arc;
@@ -29,8 +16,10 @@ mod commands;
 mod core;
 mod database;
 mod modules;
+mod network;
+mod os;
 mod plan;
-mod scanning;
+mod scanners;
 mod shared;
 mod utils;
 
@@ -61,17 +50,8 @@ fn main() {
     // Initialize database
     let db = Arc::new(open_db().expect("Failed to open database"));
 
-    // Initialize database operations for scanning
-    // ...
-    let db_path = app_data_dir().join("LEGION2").join("network.db");
-    let database_ops = Arc::new(
-        DatabaseOperations::open(db_path.to_str().unwrap())
-            .await
-            .expect("Failed to open database operations"),
-    );
     tauri::Builder::default()
         .manage(db.clone())
-        .manage(database_ops.clone())
         .invoke_handler(tauri::generate_handler![
             commands::engine_commands::engine_execute,
             commands::engine_commands::engine_cancel_scan,
@@ -85,8 +65,6 @@ fn main() {
             commands::host_commands::batch_import_hosts,
             commands::host_commands::update_host_os_detection,
             commands::host_commands::get_host_by_ip,
-            commands::scanner_commands::start_scan,
-            commands::scanner_commands::get_scanner_status,
             commands::netsniffer_commands::lookup_mac_vendor,
             commands::netsniffer_commands::log_network_artifact,
             commands::netsniffer_commands::start_network_monitoring,

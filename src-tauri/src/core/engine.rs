@@ -1,8 +1,8 @@
 use crate::core::registry::Registry;
-use crate::core::traits::Transform;
+use crate::shared::traits::Transform;
 use crate::core::transformer::CompositeTransform;
 use crate::plan::Plan;
-use crate::shared::{ObsStream, Observation};
+use crate::shared::shared::{ObsStream, Observation};
 use anyhow::Result;
 use futures::{stream, StreamExt};
 use tokio::sync::broadcast;

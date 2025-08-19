@@ -8,13 +8,13 @@ use std::sync::Arc;
 use tauri::AppHandle;
 
 use super::sinks::{DbSink, UiSink, VulnerabilityAnalysisSink};
-use super::traits::{Sink, Source, Transform};
+use crate::shared::traits::{Sink, Source, Transform};
 use super::transformer::VulnerabilityTransform;
 use crate::analysis::AnalysisEngine;
 use crate::database::Db;
 use crate::plan::Plan;
-use crate::scanning::masscan::MasscanScanner;
-use crate::scanning::nmap::NmapScanner;
+use crate::scanners::masscan::MasscanScanner;
+use crate::scanners::nmap::NmapScanner;
 
 /// Registry for managing scanning components and their lifecycle
 
