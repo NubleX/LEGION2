@@ -143,7 +143,12 @@ impl UiSink {
     }
 
     /// Emit a host event if not already cached
-    async fn emit_host_if_new(&self, ip: &str, hostname: Option<String>) -> Result<()> {
+    async fn emit_host_if_new(
+        &self,
+        ip: &str,
+        hostname: Option<String>,
+        _has_enhanced_data: bool,
+    ) -> Result<()> {
         let mut cache = self.host_cache.lock().await;
         if !cache.contains_key(ip) {
             let host_event = HostEvent {
@@ -328,7 +333,6 @@ impl Sink for UiSink {
                         "unknown".to_string()
                     };
 
-
                     // Emit host first if new
                     self.emit_host_if_new(ip, None, false).await?;
 
@@ -368,20 +372,21 @@ impl Sink for UiSink {
 
                     self.emit_host_if_new(ip, hostname.clone(), has_mac_or_os)
                         .await?;
-                    
+
                     // Also emit as progress to show in live output
 
+                    let os_info = obs.fields.get("os_name").and_then(|v| v.as_str());
                     let progress_msg = if let Some(ref hn) = hostname {
-                        if let Some(ref os_info) = os {
+                        if let Some(ref os_name) = os_info {
                             format!(
                                 "Host discovered: {} ({}) - {} [{}]",
-                                ip, hn, status, os_info
+                                ip, hn, status, os_name
                             )
                         } else {
                             format!("Host discovered: {} ({}) - {}", ip, hn, status)
                         }
-                    } else if let Some(ref os_info) = os {
-                        format!("Host discovered: {} - {} [{}]", ip, status, os_info)
+                    } else if let Some(ref os_name) = os_info {
+                        format!("Host discovered: {} - {} [{}]", ip, status, os_name)
                     } else {
                         format!("Host discovered: {} - {}", ip, status)
                     };
@@ -747,11 +752,14 @@ impl Sink for VulnerabilityAnalysisSink {
     }
 }
 
-
 impl DbSink {
-    async fn store_host(&self, ip: &str, hostname: Option<&str>, status: Option<&str>) -> Result<()> {
-        self
-            .db
+    async fn store_host(
+        &self,
+        ip: &str,
+        hostname: Option<&str>,
+        status: Option<&str>,
+    ) -> Result<()> {
+        self.db
             .upsert_host(ip, hostname, status, None, None, None, None, None)
             .await?;
         self.metrics.increment_hosts().await;
@@ -765,7 +773,7 @@ impl DbSink {
         vendor: Option<&str>,
     ) -> Result<()> {
         self.db
-            .update_host_network_info(ip, mac_address, vendor)
+            .update_host_network_info(ip, mac_address, vendor, None)
             .await?;
         Ok(())
     }
@@ -828,7 +836,6 @@ impl DbSink {
 
         tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async {
-
                 for item in batch_items {
                     // Store host with all information at once
                     if let Err(e) = db
@@ -837,7 +844,7 @@ impl DbSink {
                             item.hostname.as_deref(),
                             item.status.as_deref(),
                             item.mac_address.as_deref(),
-                            item.vendor.as_deref(),
+                            item.nic_vendor.as_deref(),
                             item.os_name.as_deref(),
                             item.os_family.as_deref(),
                             item.os_accuracy,
@@ -847,7 +854,6 @@ impl DbSink {
                         log::error!("Failed to batch store host {}: {}", item.ip, e);
                         continue;
                     }
-
                 }
 
                 Ok::<(), anyhow::Error>(())
@@ -868,7 +874,6 @@ impl DbSink {
         let db = self.db.clone();
         let batch_items = batch.to_vec();
 
-        
         tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async {
                 for item in batch_items {
@@ -884,7 +889,12 @@ impl DbSink {
                         )
                         .await
                     {
-                        log::error!("Failed to batch store service {}:{}: {}", item.ip, item.port, e);
+                        log::error!(
+                            "Failed to batch store service {}:{}: {}",
+                            item.ip,
+                            item.port,
+                            e
+                        );
                     } else if let Err(e) = db.update_host_port_count(&item.ip).await {
                         log::error!(
                             "Failed to update port count for {} after service insert: {}",
@@ -895,7 +905,8 @@ impl DbSink {
                 }
                 Ok::<(), anyhow::Error>(())
             })
-        }).await??;
+        })
+        .await??;
 
         log::debug!("Batch processed {} services", batch.len());
         Ok(())
@@ -975,7 +986,8 @@ impl Sink for DbSink {
                                             hostname,
                                             status,
                                             mac_address,
-                                            vendor,
+                                            nic_vendor: vendor,
+                                            nic_model: None,
                                             os_name,
                                             os_family,
                                             os_accuracy,

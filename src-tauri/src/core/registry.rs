@@ -9,7 +9,7 @@ use tauri::AppHandle;
 
 use super::sinks::{DbSink, UiSink, VulnerabilityAnalysisSink};
 use super::traits::{Sink, Source, Transform};
-use super::transformer::{IpEnrichmentTransform, ServiceParsingTransform, ProgressTrackingTransform};
+use super::transformer::VulnerabilityTransform;
 use crate::analysis::AnalysisEngine;
 use crate::database::Db;
 use crate::plan::Plan;
@@ -68,11 +68,12 @@ impl Registry {
 
         for sink_type in &plan.sink_types {
             match sink_type.as_str() {
-                "ui" => {
-                    sinks.push(Box::new(UiSink::new(self.app_handle.clone())) as Box<dyn Sink>)
-                }
+                "ui" => sinks.push(Box::new(UiSink::new(self.app_handle.clone())) as Box<dyn Sink>),
                 "db" => sinks.push(Box::new(DbSink::new(self.db.clone())) as Box<dyn Sink>),
-                "vulnerability" => sinks.push(Box::new(VulnerabilityAnalysisSink::new(self.db.clone(), self.app_handle.clone())) as Box<dyn Sink>),
+                "vulnerability" => sinks.push(Box::new(VulnerabilityAnalysisSink::new(
+                    self.db.clone(),
+                    self.app_handle.clone(),
+                )) as Box<dyn Sink>),
                 _ => log::warn!("Unknown sink type: {}", sink_type),
             }
         }
@@ -119,12 +120,12 @@ impl Registry {
         // Register standard sources
         self.register_source("masscan".to_string());
         self.register_source("nmap".to_string());
-        
+
         // Register standard transforms
         self.register_transform("ip_enrichment".to_string());
         self.register_transform("service_parsing".to_string());
         self.register_transform("progress_tracking".to_string());
-        
+
         // Register new enhanced transforms
         self.register_transform("xml_parsing".to_string());
         self.register_transform("mac_enrichment".to_string());

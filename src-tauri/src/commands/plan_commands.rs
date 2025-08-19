@@ -202,7 +202,7 @@ pub fn create_plan_with_modules(
         .map_err(|e| format!("Invalid UUID: {}", e))?
         .unwrap_or_else(Uuid::new_v4);
 
-    let plan = Plan {
+    let plan::start_nmap_scan::Plan {
         scan_id,
         targets,
         ports,

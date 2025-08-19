@@ -1,8 +1,6 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
-use crate::analysis::{RiskLevel, ServiceInfo};
-use crate::core::registry::Registry;
 use anyhow;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

@@ -57,7 +57,7 @@ impl EncryptionManager {
     
     fn generate_key() -> Key<Aes256Gcm> {
         // Generate a deterministic key based on system info + app constants
-        let mut hasher = Sha256::new();
+        let mut hasher = <Sha256 as Digest>::new();
         hasher.update(b"LEGION2_PENTESTING_TOOL_2025_ENCRYPTION_KEY");
         
         // Add system-specific entropy

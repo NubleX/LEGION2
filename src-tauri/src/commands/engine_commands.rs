@@ -1,24 +1,12 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
 
 use crate::analysis::AnalysisEngine;
 use crate::core::{engine::Engine, registry::Registry};
 use crate::database::Db;
 use crate::plan::Plan;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 
@@ -55,16 +43,16 @@ pub async fn engine_execute(
         }
         None => {
             log::info!("Creating new engine instance");
-            
+
             // Build engine from registry, wire Arc<Db> into DbSink
             let mut registry = Registry::new(state_db.inner().clone(), app);
-            
+
             // Initialize all standard components in registry
             if let Err(e) = registry.initialize_standard_components().await {
                 log::error!("Failed to initialize registry components: {}", e);
                 return Err(format!("Registry initialization failed: {}", e));
             }
-            
+
             // Log available components
             let (sources, sinks, transforms) = registry.list_components();
             log::info!("Available sources: {:?}", sources);
@@ -77,7 +65,7 @@ pub async fn engine_execute(
             new_engine
         }
     };
-    
+
     // Release the lock
     drop(engine_guard);
 
@@ -124,7 +112,7 @@ pub async fn engine_cancel_scan() -> Result<(), String> {
 #[tauri::command]
 pub async fn engine_reset() -> Result<(), String> {
     log::info!("Engine reset requested");
-    
+
     let engine_guard = GLOBAL_ENGINE.lock().await;
     if let Some(engine) = engine_guard.as_ref() {
         engine.reset().await.map_err(|e| e.to_string())?;
@@ -132,7 +120,7 @@ pub async fn engine_reset() -> Result<(), String> {
     } else {
         log::info!("No engine instance to reset");
     }
-    
+
     Ok(())
 }
 

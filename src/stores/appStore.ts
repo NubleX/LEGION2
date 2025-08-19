@@ -134,7 +134,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
       processing_rate: 0,
       observations_processed: 0,
     },
-    
+
     scanInProgress: false,
 
     // Actions
@@ -264,7 +264,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
       set({
         scanInProgress: false,
         liveOutput: ['Previous scan data preserved. Ready for new scan.'],
-        keep_existing_data_persistent: true,
+        // Keep existing data persistent:
         // recentHosts: [],
         // recentServices: [],
         // vulnerabilities: [],

@@ -36,11 +36,10 @@ const EnhancedScannerPanel = () => {
     scanInProgress,
     liveOutput,
     metrics,
-    recentServices,
     startScan,
-    resetScan
+    resetScan,
   } = useAppStore();
-  
+
   // Load existing hosts from database on mount
   useEffect(() => {
     const loadExistingHosts = async () => {

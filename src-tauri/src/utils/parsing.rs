@@ -8,12 +8,18 @@ use roxmltree::Document;
 use std::collections::HashMap;
 use uuid::Uuid;
 use serde::{Deserialize, Serialize};
+use chrono::Utc;
+use std::sync::Arc;
+use crate::database::Db;
+// Removed circular import - these are defined in this file
+
 
 
 #[derive(Debug, Clone)]
 pub struct MacInfo {
     pub mac: String,
     pub vendor: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -191,7 +197,8 @@ impl NmapParser {
             || line.contains("Running:") 
             || line.contains("OS CPE:") 
             || line.contains("Aggressive OS guesses:")
-            ||  if let Some(ref current_ip) = self.current_host {
+        {
+            if let Some(ref current_ip) = self.current_host {
                 if let Some(os_info) = self.parse_os_detection(line) {
                     return Some(Observation {
                         scan_id: self.scan_id,
@@ -223,6 +230,7 @@ impl NmapParser {
                     });
                 }
             }
+        }
         
         // Check for hostname resolution lines
         else if line.contains("rDNS record for")
@@ -358,7 +366,7 @@ impl NmapParser {
     }
         
     /// Parse MAC address lines from nmap output
-    fn parse_mac_address(&self, line: &str) -> Option<MacInfo> {
+    fn parse_mac_address(&mut self, line: &str) -> Option<MacInfo> {
         // Parse "MAC Address: 00:11:22:33:44:55 (Vendor Name)"
         // Also handle formats like "MAC Address: XX:XX:XX:XX:XX:XX (Unknown)"
         let mac_regex = Regex::new(r"MAC Address:\s+([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})(?:\s+\(([^)]+)\))?").unwrap();
@@ -369,14 +377,14 @@ impl NmapParser {
                 .map(|m| m.as_str().to_string())
                 .filter(|v| !v.is_empty() && v != "Unknown" && v != "unknown");
 
-            return Some(MacInfo { mac, vendor });
+            return Some(MacInfo { mac, vendor, model: None });
         }
 
         None
     }
-}
+
     /// Parse OS detection information from nmap output with enhanced patterns
-    fn parse_os_detection(&self, line: &str) -> Option<OsInfo> {
+    fn parse_os_detection(&mut self, line: &str) -> Option<OsInfo> {
         use regex::Regex;
 
         // "OS details: Linux 3.2 - 4.9"
@@ -544,7 +552,7 @@ impl NmapParser {
 
     /// Extract OS family and version from OS description
     /// TTL-based OS detection for passive fingerprinting  
-    pub fn detect_os_by_ttl(&self, ttl: u8) -> Option<OsInfo> {
+    pub fn detect_os_by_ttl(&mut self, ttl: u8) -> Option<OsInfo> {
         let (name, family, accuracy) = match ttl {
             // Linux/Unix systems typically use TTL 64
             64 => ("Linux/Unix", "Linux", 85.0),
@@ -573,7 +581,7 @@ impl NmapParser {
 
     /// Enhanced TCP signature analysis for passive OS detection
     pub fn analyze_tcp_signature(
-        &self,
+        &mut self,
         window_size: u16,
         ttl: u8,
         tcp_options: &[String],
@@ -622,7 +630,7 @@ impl NmapParser {
 
     /// HTTP header-based OS detection
     pub fn detect_os_from_http_headers(
-        &self,
+        &mut self,
         server_header: &str,
         _other_headers: &std::collections::HashMap<String, String>,
     ) -> Option<OsInfo> {
@@ -671,7 +679,7 @@ impl NmapParser {
     }
 
     /// Parse comprehensive host information from nmap XML output
-    pub fn parse_host_xml(&self, xml_content: &str) -> Result<Vec<Observation>> {
+    pub fn parse_host_xml(&mut self, xml_content: &str) -> Result<Vec<Observation>> {
         let mut observations = Vec::new();
 
         // Parse XML document
@@ -701,7 +709,7 @@ impl NmapParser {
 
     /// Create comprehensive host observation from XML node (like legacy Host.rs)
     fn create_comprehensive_host_observation(
-        &self,
+        &mut self,
         host_node: &roxmltree::Node,
     ) -> Result<Observation> {
         let mut fields = serde_json::Map::new();
@@ -842,7 +850,7 @@ impl NmapParser {
 
     /// Create service observation from XML port node
     fn create_service_observation_from_xml(
-        &self,
+        &mut self,
         host_node: &roxmltree::Node,
         port_node: &roxmltree::Node,
     ) -> Result<Observation> {
@@ -910,7 +918,7 @@ impl NmapParser {
         })
     }
 
-    fn extract_os_family_and_version(&self, os_desc: &str) -> (String, Option<String>) {
+    fn extract_os_family_and_version(&mut self, os_desc: &str) -> (String, Option<String>) {
         let lower_desc = os_desc.to_lowercase();
 
         // Detect common OS families
@@ -944,7 +952,7 @@ impl NmapParser {
     }
 
     /// Extract version information from OS description
-    fn extract_version_from_description(&self, desc: &str) -> Option<String> {
+    fn extract_version_from_description(&mut self, desc: &str) -> Option<String> {
         // Pattern for version numbers like "3.2", "4.9", "10.15", etc.
         let version_regex = Regex::new(r"(\d+(?:\.\d+)*(?:\.\w+)?)").unwrap();
 
@@ -957,7 +965,7 @@ impl NmapParser {
     }
 
     /// Parse CPE (Common Platform Enumeration) strings
-    fn parse_cpe_string(&self, cpe: &str) -> Option<OsInfo> {
+    fn parse_cpe_string(&mut self, cpe: &str) -> Option<OsInfo> {
         // CPE format: cpe:/o:vendor:product:version
         let parts: Vec<&str> = cpe.split(':').collect();
         if parts.len() >= 4 && parts[0] == "cpe" && parts[1] == "/o" {
@@ -985,7 +993,7 @@ impl NmapParser {
     }
 
     /// Map vendor names to OS families
-    fn vendor_to_family(&self, vendor: &str) -> String {
+    fn vendor_to_family(&mut self, vendor: &str) -> String {
         match vendor.to_lowercase().as_str() {
             "linux" => "Linux".to_string(),
             "microsoft" => "Windows".to_string(),
@@ -1000,7 +1008,7 @@ impl NmapParser {
     }
 
     /// Parse hostname from nmap output
-    fn parse_hostname(&self, line: &str) -> Option<String> {
+    fn parse_hostname(&mut self, line: &str) -> Option<String> {
         // "rDNS record for 192.168.1.1: hostname.domain.com"
         if line.contains("rDNS record for") {
             if let Some(colon_pos) = line.find(':') {
@@ -1030,7 +1038,7 @@ impl NmapParser {
     }
 
     /// Parse masscan-style "Discovered open port" lines
-    fn parse_discovered_port_line(&self, line: &str) -> Option<DiscoveredPort> {
+    fn parse_discovered_port_line(&mut self, line: &str) -> Option<DiscoveredPort> {
         // "Discovered open port 80/tcp on 192.168.1.1"
         if let Some(port_start) = line.find("port ") {
             let after_port = &line[port_start + 5..];
@@ -1066,9 +1074,39 @@ impl NmapParser {
     }
 
     /// Get the current host being processed
-    pub fn current_host(&self) -> Option<&String> {
+    pub fn current_host(&mut self) -> Option<&String> {
         self.current_host.as_ref()
     }
+}
+
+/// Helper function to extract IP address from nmap scan report line
+fn extract_ip_from_line(line: &str) -> Option<String> {
+    // Extract IP from "Nmap scan report for X.X.X.X" or "Nmap scan report for hostname (X.X.X.X)"
+    if let Some(for_pos) = line.find("for ") {
+        let after_for = &line[for_pos + 4..];
+        
+        // Case 1: "for X.X.X.X"
+        let ip_part = after_for.trim().split_whitespace().next().unwrap_or("");
+        
+        // Check if it's an IP address
+        let ip_regex = regex::Regex::new(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$").unwrap();
+        if ip_regex.is_match(ip_part) {
+            return Some(ip_part.to_string());
+        }
+        
+        // Case 2: "for hostname (X.X.X.X)"
+        if let Some(paren_start) = after_for.find('(') {
+            if let Some(paren_end) = after_for.find(')') {
+                let ip_in_parens = &after_for[paren_start + 1..paren_end];
+                if ip_regex.is_match(ip_in_parens.trim()) {
+                    return Some(ip_in_parens.trim().to_string());
+                }
+            }
+        }
+    }
+    
+    None
+}
 
 #[derive(Debug)]
 struct DiscoveredPort {

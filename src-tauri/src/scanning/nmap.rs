@@ -1,6 +1,7 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
+use crate::commands::engine_commands;
 use crate::core::traits::Source;
 use crate::plan::Plan;
 use crate::scanning::events::{EventType, ScanEvent};
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-
+use tokio_stream::StreamExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -178,7 +179,7 @@ impl Source for NmapScanner {
 
         // Use stateful parser with Arc<Mutex<>> to allow sharing across async closure
         use std::sync::{Arc, Mutex};
-        let parser = Arc::new(Mutex::new(NmapParser::new(scan_id)));
+        let parser = Arc::new(Mutex::new(NmapParser::paln(scan_id)));
 
         let stream = stream::unfold(
             (lines, parser, child, xml_file.clone(), false),
@@ -198,7 +199,10 @@ impl Source for NmapScanner {
                                 key: "scan-status".to_string(),
                                 raw: None,
                             };
-                            return Some((cancel_obs, (lines, parser, child, xml_file, xml_parsed)));
+                            return Some((
+                                cancel_obs,
+                                (lines, parser, child, xml_file, xml_parsed),
+                            ));
                         }
                         log::info!("Nmap output line: {}", line);
                         let obs = {

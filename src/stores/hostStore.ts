@@ -1,25 +1,8 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-//
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-//
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-//
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-//
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-//
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
 
+import { emit, listen } from '@tauri-apps/api/event';
 import { create } from 'zustand';
-import { listen, emit } from '@tauri-apps/api/event';
 
 export interface Host {
   id: string;
@@ -76,7 +59,7 @@ const useHostStore = create<HostStore>((set, get) => {
       vulnerability_count: 0,
       tags: []
     };
-    
+
     set(state => {
       const idx = state.hosts.findIndex(h => h.ip === hostEvent.ip);
       if (idx !== -1) {
@@ -104,15 +87,15 @@ const useHostStore = create<HostStore>((set, get) => {
   listen('refresh_host_data', async (event: any) => {
     const ip = event.payload as string;
     console.log('Received refresh_host_data event for IP:', ip);
-    
+
     // Add a small delay to allow database to be updated first
     await new Promise(resolve => setTimeout(resolve, 500));
-    
+
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const detailedHost = await invoke<Host>('get_host_by_ip', { ip });
       console.log('Fetched detailed host data:', detailedHost);
-      
+
       set(state => {
         const idx = state.hosts.findIndex(h => h.ip === ip);
         if (idx !== -1) {

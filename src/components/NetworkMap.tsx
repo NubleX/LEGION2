@@ -1,26 +1,9 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
-
-import React, { useRef, useEffect, useState } from 'react';
-import { Network, ZoomIn, ZoomOut, RotateCcw, Eye, EyeOff } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
+import { Eye, EyeOff, Network, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { Host } from '../stores/hostStore';
 
 interface NetworkMapProps {
@@ -89,23 +72,23 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
   const getHostRole = (host: Host): 'gateway' | 'server' | 'client' | 'unknown' => {
     const ip = host.ip;
     const portCount = host.port_count || 0;
-    
+
     // Gateway patterns (router/firewall)
     if (ip.endsWith('.1') || ip.endsWith('.254')) return 'gateway';
-    
+
     // Server patterns (many open ports)
     if (portCount > 10) return 'server';
-    
+
     // Client patterns (few or no open ports)
     if (portCount <= 3) return 'client';
-    
+
     return 'unknown';
   };
 
   // Group hosts by subnet for better topology
   const groupBySubnet = (hosts: Host[]) => {
     const subnets = new Map<string, Host[]>();
-    
+
     hosts.forEach(host => {
       const subnet = host.ip.split('.').slice(0, 3).join('.');
       if (!subnets.has(subnet)) {
@@ -113,7 +96,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
       }
       subnets.get(subnet)!.push(host);
     });
-    
+
     return subnets;
   };
 
@@ -156,14 +139,14 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     const centerY = rect.height / 2;
     const subnets = groupBySubnet(liveHosts);
     const subnetEntries = Array.from(subnets.entries());
-    
+
     let newNodes: NetworkNode[] = [];
 
     if (subnetEntries.length === 1) {
       // Single subnet - circular layout
       const [subnet, subnetHosts] = subnetEntries[0];
       const radius = Math.min(centerX, centerY) * 0.6;
-      
+
       subnetHosts.forEach((host, index) => {
         const angle = (index / subnetHosts.length) * 2 * Math.PI;
         newNodes.push({
@@ -179,13 +162,13 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     } else {
       // Multiple subnets - hierarchical layout
       const subnetRadius = Math.min(centerX, centerY) * 0.3;
-      
+
       subnetEntries.forEach(([subnet, subnetHosts], subnetIndex) => {
         const subnetAngle = (subnetIndex / subnetEntries.length) * 2 * Math.PI;
         const subnetCenterX = centerX + Math.cos(subnetAngle) * subnetRadius;
         const subnetCenterY = centerY + Math.sin(subnetAngle) * subnetRadius;
         const hostRadius = 80;
-        
+
         subnetHosts.forEach((host, hostIndex) => {
           const hostAngle = (hostIndex / subnetHosts.length) * 2 * Math.PI;
           newNodes.push({
@@ -207,10 +190,10 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
   // Drawing functions
   const getNodeColor = (host: Host, role: string) => {
     if (host.status === 'down') return '#6b7280'; // gray
-    
+
     // Role-based colors with vulnerability overlay
     const vuln_count = host.vulnerability_count || 0;
-    
+
     if (vuln_count === 0) {
       switch (role) {
         case 'gateway': return '#8b5cf6'; // purple
@@ -219,7 +202,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
         default: return '#6b7280'; // gray
       }
     }
-    
+
     // Vulnerability-based colors (override role colors)
     if (vuln_count < 5) return '#eab308'; // yellow
     if (vuln_count < 10) return '#ea580c'; // orange
@@ -229,9 +212,9 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
   const drawNodeShape = (ctx: CanvasRenderingContext2D, node: NetworkNode, isSelected: boolean) => {
     const size = isSelected ? 12 : 8;
     const color = getNodeColor(node.host, node.role);
-    
+
     ctx.fillStyle = color;
-    
+
     switch (node.role) {
       case 'gateway':
         // Draw diamond for gateways
@@ -243,19 +226,19 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
         ctx.closePath();
         ctx.fill();
         break;
-        
+
       case 'server':
         // Draw square for servers
-        ctx.fillRect(node.x - size/2, node.y - size/2, size, size);
+        ctx.fillRect(node.x - size / 2, node.y - size / 2, size, size);
         break;
-        
+
       case 'client':
         // Draw circle for clients
         ctx.beginPath();
-        ctx.arc(node.x, node.y, size/2, 0, 2 * Math.PI);
+        ctx.arc(node.x, node.y, size / 2, 0, 2 * Math.PI);
         ctx.fill();
         break;
-        
+
       default:
         // Draw triangle for unknown
         ctx.beginPath();
@@ -265,7 +248,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
         ctx.closePath();
         ctx.fill();
     }
-    
+
     // Selection ring
     if (isSelected) {
       ctx.strokeStyle = '#3b82f6';
@@ -281,7 +264,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
 
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
+
     // Apply transforms
     ctx.save();
     ctx.translate(offset.x, offset.y);
@@ -290,7 +273,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     // Draw subnet connections and gateway links
     const subnets = groupBySubnet(nodes.map(n => n.host));
     const gateways = nodes.filter(n => n.role === 'gateway');
-    
+
     // Draw subnet boundaries
     subnets.forEach((_, subnet) => {
       const subnetNodes = nodes.filter(n => n.subnet === subnet);
@@ -298,7 +281,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
         ctx.strokeStyle = '#374151';
         ctx.lineWidth = 1;
         ctx.globalAlpha = 0.2;
-        
+
         // Draw connections between hosts in same subnet
         subnetNodes.forEach(nodeA => {
           subnetNodes.forEach(nodeB => {
@@ -312,13 +295,13 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
         });
       }
     });
-    
+
     // Draw inter-subnet connections through gateways
     if (gateways.length > 0 && subnets.size > 1) {
       ctx.strokeStyle = '#8b5cf6';
       ctx.lineWidth = 2;
       ctx.globalAlpha = 0.4;
-      
+
       gateways.forEach(gateway => {
         // Connect gateway to other subnet gateways
         gateways.forEach(otherGateway => {
@@ -331,7 +314,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
         });
       });
     }
-    
+
     ctx.globalAlpha = 1;
 
     // Draw nodes with role-based shapes
@@ -344,18 +327,18 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
         ctx.fillStyle = '#f9fafb';
         ctx.font = '10px monospace';
         ctx.textAlign = 'center';
-        
+
         const label = node.host.hostname || node.host.ip;
         const shortLabel = label.length > 15 ? label.substring(0, 12) + '...' : label;
-        
+
         ctx.fillText(shortLabel, node.x, node.y - 15);
-        
-          // Service count
-          if (showServices && (node.host.port_count || 0) > 0) {
-            ctx.font = '8px monospace';
-            ctx.fillStyle = '#9ca3af';
-            ctx.fillText(`${node.host.port_count || 0} ports`, node.x, node.y + 20);
-          }
+
+        // Service count
+        if (showServices && (node.host.port_count || 0) > 0) {
+          ctx.font = '8px monospace';
+          ctx.fillStyle = '#9ca3af';
+          ctx.fillText(`${node.host.port_count || 0} ports`, node.x, node.y + 20);
+        }
       }
     });
 
@@ -407,7 +390,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
 
     return nodes.find(node => {
       const distance = Math.sqrt(
-        Math.pow(transformedX - node.x, 2) + 
+        Math.pow(transformedX - node.x, 2) +
         Math.pow(transformedY - node.y, 2)
       );
       return distance <= 12;
@@ -436,19 +419,17 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
           <div className="flex items-center gap-2">
             <button
               onClick={() => setShowLabels(!showLabels)}
-              className={`p-2 rounded transition-colors ${
-                showLabels ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
+              className={`p-2 rounded transition-colors ${showLabels ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                }`}
               title="Toggle Labels"
             >
               {showLabels ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
             </button>
-            
+
             <button
               onClick={() => setShowServices(!showServices)}
-              className={`p-2 rounded transition-colors text-xs px-3 ${
-                showServices ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
+              className={`p-2 rounded transition-colors text-xs px-3 ${showServices ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                }`}
               title="Toggle Service Info"
             >
               SVC
@@ -512,7 +493,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
           >
             <Network className="w-4 h-4 text-gray-300" />
           </button>
-          
+
           {showLegend && (
             <div className="mt-2 bg-gray-800/90 p-3 rounded border border-gray-600 min-w-[140px]">
               <div className="text-xs text-gray-300 mb-2 font-medium">Host Types</div>
@@ -530,7 +511,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
                   <span className="text-gray-300">Client</span>
                 </div>
               </div>
-              
+
               <div className="text-xs text-gray-300 mb-1 font-medium">Risk Level</div>
               <div className="space-y-1 text-xs">
                 <div className="flex items-center gap-2">
