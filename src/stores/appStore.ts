@@ -1,35 +1,29 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
-
-// LEGION2 - Minimal event-driven frontend store
-// Backend handles all logic via UiSink events and DbSink storage
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { create } from 'zustand';
-import type { ScanConfig } from '../types/scanning';
+import type { Plan, ScanConfig } from '../types/scanning';
+
 
 // Simple state reflecting backend events
 interface AppState {
-  // Current active scans (from engine_execute calls)
-  activeScans: Set<string>;
-
   // Live data from UiSink events
   recentHosts: Array<{ ip: string; hostname?: string; timestamp: string }>;
   recentServices: Array<{ ip: string; port: number; protocol: string; timestamp: string }>;
   liveOutput: string[];
+  vulnerabilities?: Array<{
+    id: string;
+    host_ip: string;
+    port: number;
+    service: string;
+    name: string;
+    severity: string;
+    description: string;
+    cvss_score?: number;
+    timestamp: string;
+  }>;
 
   // Current metrics from backend
   metrics: {
@@ -46,8 +40,10 @@ interface AppState {
 interface AppActions {
   // Simple actions
   startScan: (config: ScanConfig) => Promise<void>;
-  cancelScan: (scanId: string) => Promise<void>;
+  cancelScan: () => Promise<void>;
   clearOutput: () => void;
+  resetScan: () => void;
+  loadExistingData: () => Promise<void>;
 }
 
 const useAppStore = create<AppState & AppActions>((set) => {
@@ -87,68 +83,216 @@ const useAppStore = create<AppState & AppActions>((set) => {
       }));
     });
 
+    await listen('obs:vulnerability', (event: any) => {
+      const vuln = event.payload;
+      const vulnMsg = `🔍 Vulnerability: ${vuln.name} on ${vuln.host_ip}:${vuln.port} (${vuln.severity})`;
+      set((state) => ({
+        liveOutput: [...state.liveOutput, vulnMsg],
+        vulnerabilities: [...(state.vulnerabilities || []), vuln]
+      }));
+    });
+
+
     await listen('obs:done', () => {
-      set({ scanInProgress: false });
+      set((state) => ({
+        scanInProgress: false,
+        liveOutput: [...state.liveOutput, 'Scan completed. Ready for new scan.']
+      }));
     });
   };
 
-  // Initialize listeners
+  // Initialize listeners and load existing data
   setupEventListeners().catch(console.error);
+
+  // Auto-load existing data on startup
+  setTimeout(async () => {
+    try {
+      const existingHosts = await invoke<any[]>('get_all_hosts');
+      if (existingHosts && existingHosts.length > 0) {
+        set((state) => ({
+          liveOutput: [...state.liveOutput, `Loaded ${existingHosts.length} hosts from previous scans.`],
+          metrics: {
+            ...state.metrics,
+            hosts_discovered: existingHosts.length
+          }
+        }));
+      }
+    } catch (error) {
+      console.error('Failed to load existing data on startup:', error);
+    }
+  }, 500); // Small delay to ensure backend is ready
 
   return {
     // Initial state
-    activeScans: new Set(),
     recentHosts: [],
     recentServices: [],
     liveOutput: [],
+    vulnerabilities: [],
     metrics: {
       hosts_discovered: 0,
       services_discovered: 0,
       processing_rate: 0,
       observations_processed: 0,
     },
+
     scanInProgress: false,
 
     // Actions
     startScan: async (config: ScanConfig) => {
-      // Convert frontend ScanConfig to backend ScanConfig format
-      const backendConfig = {
-        targets: config.targets,
-        scan_type: config.scanType || 'comprehensive',
-        ports: config.ports || undefined,
-        use_masscan: config.useMasscan || false,
-        masscan_rate: config.masscanRate || undefined,
-        nmap_options: config.nmapOptions || undefined,
-        modules: [], // Could be populated from frontend later
-      };
+      const targets = config.targets;
+      const ports = config.ports && config.ports.trim() !== '' ? config.ports : '1-65535';
 
-      set(state => ({
+      // Build plans based on selected tools
+      const plans: Plan[] = [];
+
+      if (config.useMasscan) {
+        // Use Plan::masscan builder method
+        const scanId = crypto.randomUUID();
+        const masscanPlan = await invoke<Plan>('create_masscan_plan', {
+          scanId,
+          targets,
+          ports,
+          rate: config.rate || 1000,
+          interface: config.interface,
+        });
+        plans.push(masscanPlan);
+      }
+
+      if (config.useNmap) {
+        // Use appropriate Plan builder based on scan type
+        let nmapPlan: Plan;
+        const scanId = crypto.randomUUID();
+
+        switch (config.scanType) {
+          case 'quick':
+            // Use basic nmap plan with quick args
+            nmapPlan = await invoke<Plan>('create_nmap_plan', {
+              scanId,
+              targets,
+              ports,
+              scanType: 'quick',
+              extraArgs: ['-T4', '-F'],
+            });
+            break;
+          case 'comprehensive':
+            // Use Plan::comprehensive builder
+            nmapPlan = await invoke<Plan>('create_comprehensive_plan', {
+              scanId,
+              targets,
+              ports,
+            });
+            break;
+          case 'stealth':
+            // Use nmap plan with stealth args
+            nmapPlan = await invoke<Plan>('create_nmap_plan', {
+              scanId,
+              targets,
+              ports,
+              extraArgs: ['-sS', '-T2', '-f', '--randomize-hosts'],
+            });
+            break;
+          default:
+            // Standard nmap plan
+            const nmapArgs: string[] = [];
+            if (config.detectOS) nmapArgs.push('-O');
+            if (config.detectVersions) nmapArgs.push('-sV');
+            if (config.skipPing) nmapArgs.push('-Pn');
+            if (config.extra) {
+              nmapArgs.push(...config.extra.split(' '));
+            }
+
+            nmapPlan = await invoke<Plan>('create_nmap_plan', {
+              scanId,
+              targets,
+              ports,
+              extraArgs: nmapArgs,
+            });
+        }
+
+        // OS detection is already handled in the comprehensive plan
+        // Module system will be implemented later
+
+        plans.push(nmapPlan);
+      }
+
+      set((state) => ({
         scanInProgress: true,
-        liveOutput: [`Starting ${backendConfig.use_masscan ? 'masscan' : 'nmap'} scan for ${backendConfig.targets}...`]
+        liveOutput: [...state.liveOutput, `Starting scan for ${targets} using ${plans.map(p => p.source_type).join(' & ')}...`],
       }));
 
-      // Use the new command that leverages Plan builders
-      const scanId = await invoke('start_scan_with_config', { config: backendConfig }) as string;
-      
-      set(state => ({
-        activeScans: new Set([...state.activeScans, scanId])
-      }));
+      try {
+        for (const plan of plans) {
+          console.log('Executing scan plan:', plan);
+          await invoke('engine_execute', { plan });
+          console.log('Plan executed successfully');
+        }
+
+        // Don't set scanInProgress to false here - let the backend handle it via obs:done event
+        set((state) => ({
+          liveOutput: [...state.liveOutput, 'All scan plans submitted to backend.']
+        }));
+      } catch (error) {
+        console.error('Scan execution failed:', error);
+        set((state) => ({
+          scanInProgress: false,
+          liveOutput: [...state.liveOutput, `ERROR: Scan failed - ${error}`]
+        }));
+        throw error;
+      }
     },
 
-    cancelScan: async (scanId: string) => {
-      await invoke('cancel_scan', { scan_id: scanId });
-      set(state => {
-        const newScans = new Set(state.activeScans);
-        newScans.delete(scanId);
-        return {
-          activeScans: newScans,
-          scanInProgress: newScans.size > 0
-        };
-      });
+    cancelScan: async () => {
+      try {
+        await invoke('engine_cancel_scan');
+        set((state) => ({
+          scanInProgress: false,
+          liveOutput: [...state.liveOutput, 'Scan cancelled by user.']
+        }));
+      } catch (error) {
+        console.error('Failed to cancel scan:', error);
+        set((state) => ({
+          liveOutput: [...state.liveOutput, 'ERROR: Failed to cancel scan.']
+        }));
+      }
     },
 
     clearOutput: () => {
       set({ liveOutput: [] });
+    },
+
+    resetScan: () => {
+      set({
+        scanInProgress: false,
+        liveOutput: ['Previous scan data preserved. Ready for new scan.'],
+        // Keep existing data persistent:
+        // recentHosts: [],
+        // recentServices: [],
+        // vulnerabilities: [],
+        metrics: {
+          hosts_discovered: 0,
+          services_discovered: 0,
+          processing_rate: 0,
+          observations_processed: 0,
+        }
+      });
+    },
+
+    loadExistingData: async () => {
+      try {
+        // Load existing hosts from database to show persistent data
+        const existingHosts = await invoke<any[]>('get_all_hosts');
+        if (existingHosts && existingHosts.length > 0) {
+          set((state) => ({
+            liveOutput: [...state.liveOutput, `Loaded ${existingHosts.length} hosts from previous scans.`],
+            metrics: {
+              ...state.metrics,
+              hosts_discovered: existingHosts.length
+            }
+          }));
+        }
+      } catch (error) {
+        console.error('Failed to load existing data:', error);
+      }
     }
   };
 });

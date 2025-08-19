@@ -13,204 +13,61 @@
 //     You should have received a copy of the GNU General Public License along with this program.
 //     If not, see <http://www.gnu.org/licenses/>.
 
-use crate::scanning::coordinator::ScanCoordinator;
-use crate::scanning::models::ScanType;
-use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
 use std::sync::Arc;
-use tauri::{AppHandle, Runtime, State};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanTarget {
-    pub id: String,
-    pub ip: IpAddr,
-    pub hostname: Option<String>,
-    pub ports: Option<Vec<u16>>,
-    pub scan_type: ScanType,
-}
+use tauri::{AppHandle, State};
 
-impl ScanTarget {
-    pub fn from_string(target: &str) -> anyhow::Result<Self> {
-        let ip: IpAddr = target
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid IP address: {}", target))?;
+use crate::database::Db;
+use crate::plan::ScanType;
+use crate::scanning::coordinator::{ScanCoordinator, ScanRequest, ScanOptions};
 
-        Ok(Self {
-            id: uuid::Uuid::new_v4().to_string(),
-            ip,
-            hostname: None,
-            ports: None,
-            scan_type: ScanType::Discovery, // Default scan type
-        })
-    }
-}
-
-#[derive(Deserialize)]
-pub struct ScanRequest {
-    pub target: String,
-    pub scan_type: ScanType,
-    pub options: Option<ScanOptions>,
-}
-
-#[derive(Deserialize)]
-pub struct ScanOptions {
-    pub ports: Option<String>,
-    pub rate: Option<u32>,
-    pub extra_args: Option<Vec<String>>,
-}
-
+/// Start a scan using the ScanCoordinator
 #[tauri::command]
-pub async fn start_scan<R: Runtime>(
-    app: AppHandle<R>,
+pub async fn start_scan(
+    app: AppHandle,
     coordinator: State<'_, Arc<ScanCoordinator>>,
     request: ScanRequest,
 ) -> Result<String, String> {
-    // Convert the request into a ScanTarget
-    let target = ScanTarget::from_string(&request.target).map_err(|e| e.to_string())?;
-
-    // Start the scan using the coordinator
-    let scan_id = coordinator
-        .start_scan(target)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(scan_id.to_string())
+    coordinator.start_scan(app, request).await
 }
 
+/// Cancel a running scan
 #[tauri::command]
 pub async fn cancel_scan(
     coordinator: State<'_, Arc<ScanCoordinator>>,
     scan_id: String,
 ) -> Result<(), String> {
-    let uuid = uuid::Uuid::parse_str(&scan_id).map_err(|e| e.to_string())?;
-
-    coordinator
-        .cancel_scan(uuid)
-        .await
-        .map_err(|e| e.to_string())
+    coordinator.cancel_scan(scan_id).await
 }
 
+/// Get list of active scans
 #[tauri::command]
 pub async fn get_active_scans(
     coordinator: State<'_, Arc<ScanCoordinator>>,
 ) -> Result<Vec<String>, String> {
-    let scans = coordinator
-        .get_active_scans()
-        .await
-        .into_iter()
-        .map(|(id, _)| id.to_string())
-        .collect();
-
-    Ok(scans)
+    coordinator.get_active_scans().await
 }
 
-#[tauri::command]
-pub async fn get_scan_status(
-    coordinator: State<'_, Arc<ScanCoordinator>>,
-    scan_id: String,
-) -> Result<String, String> {
-    let uuid = uuid::Uuid::parse_str(&scan_id).map_err(|e| e.to_string())?;
-
-    let active_scans = coordinator.get_active_scans().await;
-
-    // Look for the scan in active scans
-    for (id, status) in active_scans {
-        if id == uuid {
-            let status_str = match status {
-                crate::scanning::coordinator::CoordinatorScanStatus::Running => "running",
-                crate::scanning::coordinator::CoordinatorScanStatus::Completed => "completed",
-                crate::scanning::coordinator::CoordinatorScanStatus::Failed(_) => "failed",
-            };
-            return Ok(status_str.to_string());
-        }
-    }
-
-    // If not found in active scans, assume completed
-    Ok("completed".to_string())
-}
-
-#[tauri::command]
-pub async fn get_scan_results(
-    db: State<'_, Arc<crate::database::DatabaseOperations>>,
-    scan_id: String,
-) -> Result<String, String> {
-    // For now, return empty results since scan results are stored in database
-    // In the future, we could look up results by scan_id
-    let results = serde_json::json!({
-        "scan_id": scan_id,
-        "hosts": [],
-        "ports": [],
-        "vulnerabilities": []
-    });
-
-    Ok(results.to_string())
-}
-
-#[tauri::command]
-pub async fn get_scan_statistics(
-    coordinator: State<'_, Arc<ScanCoordinator>>,
-) -> Result<String, String> {
-    let stats = coordinator.get_scan_statistics().await;
-    Ok(serde_json::to_string(&stats).map_err(|e| e.to_string())?)
-}
-
+/// Retrieve progress information for a scan
 #[tauri::command]
 pub async fn get_scan_progress(
     coordinator: State<'_, Arc<ScanCoordinator>>,
     scan_id: String,
 ) -> Result<String, String> {
-    let uuid = uuid::Uuid::parse_str(&scan_id).map_err(|e| e.to_string())?;
-
-    let active_scans = coordinator.get_active_scans().await;
-
-    // Look for the scan in active scans to get progress
-    for (id, status) in active_scans {
-        if id == uuid {
-            let progress = match status {
-                crate::scanning::coordinator::CoordinatorScanStatus::Running => {
-                    serde_json::json!({
-                        "scan_id": scan_id,
-                        "status": "running",
-                        "percentage": 50.0,
-                        "stage": "scanning"
-                    })
-                }
-                crate::scanning::coordinator::CoordinatorScanStatus::Completed => {
-                    serde_json::json!({
-                        "scan_id": scan_id,
-                        "status": "completed",
-                        "percentage": 100.0,
-                        "stage": "completed"
-                    })
-                }
-                crate::scanning::coordinator::CoordinatorScanStatus::Failed(ref msg) => {
-                    serde_json::json!({
-                        "scan_id": scan_id,
-                        "status": "failed",
-                        "percentage": 0.0,
-                        "stage": "failed",
-                        "error": msg
-                    })
-                }
-            };
-            return Ok(progress.to_string());
-        }
-    }
-
-    // If not found in active scans, return completed progress
-    let completed_progress = serde_json::json!({
-        "scan_id": scan_id,
-        "status": "completed",
-        "percentage": 100.0,
-        "stage": "completed"
-    });
-
-    Ok(completed_progress.to_string())
+    coordinator.get_scan_progress(scan_id).await
 }
 
+/// Retrieve aggregated scan statistics
+#[tauri::command]
+pub async fn get_scan_statistics(
+    coordinator: State<'_, Arc<ScanCoordinator>>,
+) -> Result<String, String> {
+    coordinator.get_scan_statistics().await
+}
+
+/// Report availability of scanning tools
 #[tauri::command]
 pub async fn get_scanner_status() -> Result<String, String> {
-    // Check if nmap and masscan are available
     let nmap_available = crate::utils::os::is_nmap_available().await;
     let masscan_available = crate::utils::os::is_masscan_available().await;
 
@@ -221,4 +78,116 @@ pub async fn get_scanner_status() -> Result<String, String> {
     });
 
     Ok(status.to_string())
+}
+
+/// Start a coordinated scan using the coordinator with ScanOptions
+#[tauri::command]
+pub async fn start_coordinated_scan(
+    target: String,
+    scan_type: String,
+    ports: Option<String>,
+    rate: Option<u32>,
+    extra_args: Option<Vec<String>>,
+    use_masscan: Option<bool>,
+    state_db: State<'_, Arc<Db>>,
+    app: AppHandle,
+) -> Result<String, String> {
+    log::info!("Starting coordinated scan for target: {}", target);
+    
+    // Parse scan type
+    let scan_type = match scan_type.as_str() {
+        "Discovery" => ScanType::Discovery,
+        "PortScan" => ScanType::PortScan,
+        "ServiceDetection" => ScanType::ServiceDetection,
+        "Vulnerability" => ScanType::Vulnerability,
+        "Comprehensive" => ScanType::Comprehensive,
+        "Quick" => ScanType::Quick,
+        "Stealth" => ScanType::Stealth,
+        _ => ScanType::Quick,
+    };
+
+    let options = ScanOptions {
+        ports,
+        rate,
+        extra_args,
+        use_masscan,
+    };
+
+    let request = ScanRequest {
+        target,
+        scan_type,
+        options: Some(options),
+    };
+
+    let coordinator = ScanCoordinator::new(state_db.inner().clone());
+    coordinator.start_scan(app, request).await
+}
+
+/// Start a masscan-specific scan using coordinator
+#[tauri::command]
+pub async fn start_masscan_scan(
+    target: String,
+    ports: Option<String>,
+    rate: Option<u32>,
+    state_db: State<'_, Arc<Db>>,
+    app: AppHandle,
+) -> Result<String, String> {
+    log::info!("Starting masscan scan for target: {}", target);
+    
+    let options = ScanOptions {
+        ports,
+        rate,
+        extra_args: None,
+        use_masscan: Some(true),
+    };
+
+    let request = ScanRequest {
+        target,
+        scan_type: ScanType::PortScan,
+        options: Some(options),
+    };
+
+    let coordinator = ScanCoordinator::new(state_db.inner().clone());
+    coordinator.start_scan(app, request).await
+}
+
+/// Start an nmap-specific scan using coordinator
+#[tauri::command]
+pub async fn start_nmap_scan(
+    target: String,
+    scan_type: String,
+    ports: Option<String>,
+    extra_args: Option<Vec<String>>,
+    state_db: State<'_, Arc<Db>>,
+    app: AppHandle,
+) -> Result<String, String> {
+    log::info!("Starting nmap scan for target: {}", target);
+    
+    // Parse scan type
+    let scan_type = match scan_type.as_str() {
+        "Discovery" => ScanType::Discovery,
+        "PortScan" => ScanType::PortScan,
+        "ServiceDetection" => ScanType::ServiceDetection,
+        "Vulnerability" => ScanType::Vulnerability,
+        "Comprehensive" => ScanType::Comprehensive,
+        "Quick" => ScanType::Quick,
+        "Stealth" => ScanType::Stealth,
+        _ => ScanType::Quick,
+    };
+
+    let options = ScanOptions {
+        ports,
+        rate: None,
+        extra_args,
+        use_masscan: Some(false),
+    };
+
+    let request = ScanRequest {
+        target,
+        scan_type,
+        options: Some(options),
+    };
+
+    let coordinator = ScanCoordinator::new(state_db.inner().clone());
+    coordinator.start_scan(app, request).await
 }

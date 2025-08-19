@@ -29,8 +29,12 @@ pub enum ScanType {
 /// Target specification for scanning
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanTarget {
-    /// Target specification (IP, CIDR, hostname, etc.)
-    pub target: String,
+    /// Unique identifier for this target
+    pub id: String,
+    /// Target IP address, CIDR, or hostname
+    pub ip: String,
+    /// Type of scan to perform
+    pub scan_type: ScanType,
     /// Specific ports to scan (if applicable)
     pub ports: Option<Vec<u16>>,
     /// Port ranges to scan

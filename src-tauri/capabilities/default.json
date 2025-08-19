@@ -1,12 +1,43 @@
 {
-  "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default permissions for LEGION2",
-  "windows": ["main"],
+  "description": "Main window permissions for LEGION2",
+  "local": true,
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-set-title",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:window:allow-center",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-decorations",
+    "core:window:allow-set-resizable",
+    "core:window:allow-set-maximizable",
+    "core:window:allow-set-minimizable",
+    "core:window:allow-set-closable",
+    "core:window:allow-set-skip-taskbar",
+    "core:window:allow-is-visible",
+    "core:window:allow-is-maximized",
+    "core:window:allow-is-minimized",
+    "core:window:allow-is-focused",
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-inner-size",
+    "core:window:allow-outer-size",
+    "core:window:allow-inner-position",
+    "core:window:allow-outer-position",
     "core:event:allow-listen",
     "core:event:allow-emit",
+    "core:event:allow-emit-to",
     "shell:allow-execute",
     "shell:allow-spawn",
     "shell:allow-open",
@@ -14,29 +45,29 @@
       "identifier": "shell:allow-execute",
       "allow": [
         {
-          "name": "nmap",
+          "args": true,
           "cmd": "nmap",
-          "args": true
+          "name": "nmap"
         },
         {
-          "name": "masscan",
-          "cmd": "masscan", 
-          "args": true
+          "args": true,
+          "cmd": "masscan",
+          "name": "masscan"
         },
         {
-          "name": "pkexec",
+          "args": true,
           "cmd": "pkexec",
-          "args": true
+          "name": "pkexec"
         },
         {
-          "name": "legion2-nmap",
+          "args": true,
           "cmd": "legion2-nmap",
-          "args": true
+          "name": "legion2-nmap"
         },
         {
-          "name": "legion2-masscan",
+          "args": true,
           "cmd": "legion2-masscan",
-          "args": true
+          "name": "legion2-masscan"
         }
       ]
     }

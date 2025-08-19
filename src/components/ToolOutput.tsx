@@ -1,25 +1,8 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
-
-import React, { useState, useRef, useEffect } from 'react';
-import { Terminal, Copy, Download, Search, ChevronDown, ChevronUp } from 'lucide-react';
+import { ChevronDown, ChevronUp, Copy, Download, Search, Terminal } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
 
 interface ToolOutputProps {
   outputs: ToolOutput[];
@@ -45,19 +28,19 @@ const ToolOutput: React.FC<ToolOutputProps> = ({ outputs, isLive = false }) => {
   const [showErrors, setShowErrors] = useState(true);
   const [autoScroll, setAutoScroll] = useState(true);
   const [expandedOutputs, setExpandedOutputs] = useState<Set<string>>(new Set());
-  
+
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const tools = ['all', ...Array.from(new Set(outputs.map(o => o.tool)))];
-  
+
   const filteredOutputs = outputs.filter(output => {
     if (selectedTool !== 'all' && output.tool !== selectedTool) return false;
     if (!showErrors && output.stderr) return false;
     if (searchTerm) {
       const searchLower = searchTerm.toLowerCase();
       return output.command.toLowerCase().includes(searchLower) ||
-             output.stdout.toLowerCase().includes(searchLower) ||
-             output.stderr.toLowerCase().includes(searchLower);
+        output.stdout.toLowerCase().includes(searchLower) ||
+        output.stderr.toLowerCase().includes(searchLower);
     }
     return true;
   });
@@ -82,7 +65,7 @@ const ToolOutput: React.FC<ToolOutputProps> = ({ outputs, isLive = false }) => {
       exitCode: output.exitCode,
       duration: output.duration
     }));
-    
+
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -124,7 +107,7 @@ const ToolOutput: React.FC<ToolOutputProps> = ({ outputs, isLive = false }) => {
             <Terminal className="w-5 h-5 text-green-400" />
             Tool Output ({filteredOutputs.length})
           </h2>
-          
+
           <div className="flex items-center gap-2">
             {isLive && (
               <label className="flex items-center gap-2 text-sm text-gray-300">
@@ -159,7 +142,7 @@ const ToolOutput: React.FC<ToolOutputProps> = ({ outputs, isLive = false }) => {
               className="w-full pl-10 pr-4 py-2 bg-gray-800 border border-gray-600 rounded text-white focus:ring-2 focus:ring-blue-500"
             />
           </div>
-          
+
           <select
             value={selectedTool}
             onChange={(e) => setSelectedTool(e.target.value)}
@@ -196,11 +179,11 @@ const ToolOutput: React.FC<ToolOutputProps> = ({ outputs, isLive = false }) => {
             {filteredOutputs.map((output) => {
               const isExpanded = expandedOutputs.has(output.id);
               const hasStderr = output.stderr && output.stderr.trim().length > 0;
-              
+
               return (
                 <div key={output.id} className="bg-gray-800 rounded border border-gray-700">
                   {/* Command Header */}
-                  <div 
+                  <div
                     className="p-3 cursor-pointer hover:bg-gray-750 transition-colors"
                     onClick={() => toggleExpanded(output.id)}
                   >
@@ -216,7 +199,7 @@ const ToolOutput: React.FC<ToolOutputProps> = ({ outputs, isLive = false }) => {
                             {output.tool}
                           </span>
                         </div>
-                        
+
                         <div className="flex-1 min-w-0">
                           <div className="font-mono text-sm text-white truncate">
                             {output.command}
