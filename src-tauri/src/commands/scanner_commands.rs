@@ -19,7 +19,7 @@ use tauri::{AppHandle, State};
 
 use crate::database::Db;
 use crate::plan::ScanType;
-use crate::scanning::coordinator::{ScanCoordinator, ScanRequest, ScanOptions};
+use crate::scanning::coordinator::{ScanCoordinator, ScanOptions, ScanRequest};
 
 /// Start a scan using the ScanCoordinator
 #[tauri::command]
@@ -93,7 +93,7 @@ pub async fn start_coordinated_scan(
     app: AppHandle,
 ) -> Result<String, String> {
     log::info!("Starting coordinated scan for target: {}", target);
-    
+
     // Parse scan type
     let scan_type = match scan_type.as_str() {
         "Discovery" => ScanType::Discovery,
@@ -133,7 +133,7 @@ pub async fn start_masscan_scan(
     app: AppHandle,
 ) -> Result<String, String> {
     log::info!("Starting masscan scan for target: {}", target);
-    
+
     let options = ScanOptions {
         ports,
         rate,
@@ -162,7 +162,7 @@ pub async fn start_nmap_scan(
     app: AppHandle,
 ) -> Result<String, String> {
     log::info!("Starting nmap scan for target: {}", target);
-    
+
     // Parse scan type
     let scan_type = match scan_type.as_str() {
         "Discovery" => ScanType::Discovery,

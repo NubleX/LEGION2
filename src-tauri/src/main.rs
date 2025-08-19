@@ -19,16 +19,10 @@
     windows_subsystem = "windows"
 )]
 
-use crate::analysis::AnalysisEngine;
-use crate::database::Db;
-use crate::scanning::coordinator::ScanCoordinator;
+use crate::database::{DatabaseOperations, Db};
 use anyhow::Result;
-use std::{path::PathBuf, sync::Arc};
-use tauri::{
-    menu::{Menu, MenuItem},
-    tray::{TrayIconBuilder, TrayIconEvent},
-    Manager,
-};
+use rusqlite;
+use std::sync::Arc;
 
 mod analysis;
 mod commands;
@@ -64,45 +58,20 @@ fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     println!("LEGION2 starting up...");
 
+    // Initialize database
+    let db = Arc::new(open_db().expect("Failed to open database"));
+
+    // Initialize database operations for scanning
+    // ...
+    let db_path = app_data_dir().join("LEGION2").join("network.db");
+    let database_ops = Arc::new(
+        DatabaseOperations::open(db_path.to_str().unwrap())
+            .await
+            .expect("Failed to open database operations"),
+    );
     tauri::Builder::default()
-        .setup(|app| {
-            // Synchronous setup: tray, state, etc.
-            let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
-                .expect("Failed to load tray icon");
-
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&quit])?;
-
-            TrayIconBuilder::with_id("tray")
-                .icon(icon)
-                .menu(&menu)
-                .on_menu_event(|app, event| {
-                    if event.id == "quit" {
-                        app.exit(0);
-                    }
-                })
-                .build(app)?;
-
-            // Synchronous state management
-            let db_dir = app_data_dir();
-            std::fs::create_dir_all(&db_dir).expect("Failed to create database directory");
-            let db_path = db_dir.join("network.db");
-            let db = Arc::new(Db::open(db_path).expect("Failed to open database"));
-            let analysis_engine = AnalysisEngine::new(db.clone());
-
-            app.manage(db.clone());
-            app.manage(analysis_engine);
-
-            // Spawn async tasks if needed, but do NOT use `app` inside
-            tauri::async_runtime::spawn(async {
-                // Async work here, but don't touch `app`
-                if let Err(e) = modules::init() {
-                    log::error!("Failed to initialize modules: {}", e);
-                }
-            });
-
-            Ok(())
-        })
+        .manage(db.clone())
+        .manage(database_ops.clone())
         .invoke_handler(tauri::generate_handler![
             commands::engine_commands::engine_execute,
             commands::engine_commands::engine_cancel_scan,
@@ -114,33 +83,9 @@ fn main() {
             commands::host_commands::get_host_ports_detailed,
             commands::host_commands::delete_host,
             commands::host_commands::batch_import_hosts,
-            commands::host_commands::update_host_tags,
-            commands::analysis_commands::analyze_host,
-            commands::analysis_commands::analyze_network,
-            commands::analysis_commands::get_active_analyses,
-            commands::analysis_commands::get_host_vulnerabilities,
-            commands::analysis_commands::get_all_vulnerabilities,
-            commands::analysis_commands::analyze_host_vulnerabilities,
-            commands::analysis_commands::get_vulnerability_stats,
-            commands::plan_commands::create_masscan_plan,
-            commands::plan_commands::create_nmap_plan,
-            commands::plan_commands::create_comprehensive_plan,
-            commands::plan_commands::create_os_detection_plan,
-            commands::plan_commands::plan_with_os_detection,
-            commands::plan_commands::plan_with_extra_args,
-            commands::plan_commands::plan_with_modules,
-            commands::plan_commands::plan_with_rate,
-            commands::plan_commands::plan_with_sink,
-            commands::plan_commands::get_scan_types,
-            commands::plan_commands::get_scan_timings,
-            commands::plan_commands::create_port_range,
-            commands::plan_commands::parse_protocol,
-            commands::plan_commands::parse_port_state,
-            commands::plan_commands::get_available_modules,
-            commands::plan_commands::create_plan_with_modules,
-            commands::scanner_commands::start_coordinated_scan,
-            commands::scanner_commands::start_masscan_scan,
-            commands::scanner_commands::start_nmap_scan,
+            commands::host_commands::update_host_os_detection,
+            commands::host_commands::get_host_by_ip,
+            commands::scanner_commands::start_scan,
             commands::scanner_commands::get_scanner_status,
             commands::netsniffer_commands::lookup_mac_vendor,
             commands::netsniffer_commands::log_network_artifact,
