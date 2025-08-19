@@ -156,7 +156,8 @@ src-tauri/target/*
 # claude
 CLAUDE.*
 CLAUDE.md
-src-tauri/*
+
+src-tauri/.claude
 AGENTS.md
 
 src-tauri/.claude/*

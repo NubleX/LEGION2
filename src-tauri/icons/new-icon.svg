@@ -1,0 +1,73 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0f23;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#1a1a3a;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#2d1b69;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ff88;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#00ccaa;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0099cc;stop-opacity:1" />
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge> 
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="512" height="512" fill="url(#bgGrad)" rx="64"/>
+  
+  <!-- Shield shape -->
+  <path d="M256 80 L180 120 L180 280 Q180 360 256 420 Q332 360 332 280 L332 120 Z" 
+        fill="url(#shieldGrad)" 
+        filter="url(#glow)" 
+        opacity="0.9"/>
+  
+  <!-- Network nodes pattern -->
+  <g fill="#00ff88" opacity="0.6">
+    <circle cx="200" cy="180" r="4"/>
+    <circle cx="240" cy="160" r="4"/>
+    <circle cx="280" cy="190" r="4"/>
+    <circle cx="220" cy="220" r="4"/>
+    <circle cx="260" cy="240" r="4"/>
+    <circle cx="300" cy="210" r="4"/>
+    
+    <!-- Connection lines -->
+    <line x1="200" y1="180" x2="240" y2="160" stroke="#00ff88" stroke-width="1.5" opacity="0.4"/>
+    <line x1="240" y1="160" x2="280" y2="190" stroke="#00ff88" stroke-width="1.5" opacity="0.4"/>
+    <line x1="280" y1="190" x2="300" y2="210" stroke="#00ff88" stroke-width="1.5" opacity="0.4"/>
+    <line x1="220" y1="220" x2="260" y2="240" stroke="#00ff88" stroke-width="1.5" opacity="0.4"/>
+    <line x1="200" y1="180" x2="220" y2="220" stroke="#00ff88" stroke-width="1.5" opacity="0.4"/>
+  </g>
+  
+  <!-- Center L2 text -->
+  <text x="256" y="320" 
+        font-family="monospace" 
+        font-size="64" 
+        font-weight="bold" 
+        text-anchor="middle" 
+        fill="#ffffff" 
+        filter="url(#glow)">L2</text>
+  
+  <!-- Scanning radar effect -->
+  <circle cx="256" cy="180" r="60" 
+          fill="none" 
+          stroke="#00ff88" 
+          stroke-width="2" 
+          opacity="0.3"/>
+  <circle cx="256" cy="180" r="40" 
+          fill="none" 
+          stroke="#00ccaa" 
+          stroke-width="1.5" 
+          opacity="0.5"/>
+  <circle cx="256" cy="180" r="20" 
+          fill="none" 
+          stroke="#ffffff" 
+          stroke-width="1" 
+          opacity="0.7"/>
+</svg>
