@@ -3,9 +3,11 @@
 // use crate::analysis::types::{Confidence, Finding, Severity, Vulnerability}; // Temporarily disabled - needs refactoring
 use crate::shared::traits::Transform;
 // CveDatabase and ExploitDb removed - using main Db instead
-use crate::network::netsniffer::log_artifact;
+use crate::scanners::netsniffer::log_artifact;
 // use crate::utils::parsing::lookup_vendor; // Function doesn't exist yet
-use crate::shared::shared::{classify_service_by_port, ServiceInfo, ObsStream, Observation, ObservationKind};
+use crate::shared::shared::{
+    classify_service_by_port, ObsStream, Observation, ObservationKind, ServiceInfo,
+};
 use crate::utils::parsing::OutputParser;
 use anyhow::Result;
 use async_trait::async_trait;

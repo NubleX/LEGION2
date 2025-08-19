@@ -1,4 +1,5 @@
 pub mod masscan;
+pub mod netsniffer; // Temporarily disabled due to etherparse API compatibility issues
 pub mod nmap;
 pub mod scanner_engine;
 

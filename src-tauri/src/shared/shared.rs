@@ -1,6 +1,6 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-use crate::network::netsniffer;
+use crate::scanners::netsniffer;
 
 use anyhow;
 use chrono::{DateTime, Utc};
@@ -11,7 +11,7 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 // Core observation types - moved from core/types.rs
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum ObservationKind {
     Host,
     Service,

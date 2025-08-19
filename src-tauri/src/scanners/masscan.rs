@@ -196,6 +196,10 @@ impl MasscanScanner {
                 ports_found: 0,
                 vulnerabilities: 0,
                 elapsed_time: 0,
+                estimated_remaining: None,
+                message: Some("Starting Masscan scan".to_string()),
+                start_time: now,
+                current_phase: "Initialization".to_string(),
             })
             .await;
 
@@ -263,6 +267,10 @@ impl MasscanScanner {
                 ports_found: open_ports.len() as u32,
                 vulnerabilities: 0,
                 elapsed_time: 0,
+                estimated_remaining: Some(0),
+                message: Some(format!("Masscan completed - found {} ports", open_ports.len())),
+                start_time: now,
+                current_phase: "Completed".to_string(),
             })
             .await;
 

@@ -1,8 +1,9 @@
 // LEGION2 - Network Sniffer Commands
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
-use crate::network::netsniffer::{log_artifact, oui_lookup_vendor};
+use crate::scanners::netsniffer::{log_artifact, oui_lookup_vendor};
 use anyhow::Result;
+use quick_xml::Writer;
 use serde_json::{json, Value};
 use tauri::command;
 

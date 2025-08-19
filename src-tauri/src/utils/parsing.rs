@@ -85,6 +85,14 @@ pub struct NmapParser {
 }
 
 impl NmapParser {
+    pub fn new(scan_id: Uuid) -> Self {
+        Self {
+            current_host: None,
+            scan_id,
+            host_status_reported: HashMap::new(),
+        }
+    }
+
     pub fn parse_line(&mut self, line: &str) -> Option<Observation> {
         // Parse "Nmap scan report for X.X.X.X"
         if line.contains("Nmap scan report for") {
