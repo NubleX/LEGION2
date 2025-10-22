@@ -1,39 +1,24 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Severity levels for findings and vulnerabilities
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Severity {
     Info,
     Low,
-    Medium, 
+    Medium,
     High,
     Critical,
+    Unknown,
 }
 
-/// Confidence levels for analysis results
+/// Confidence levels for analysis results (0-100 scale)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
-pub enum Confidence {
-    Low(f32),    // 0.0-0.4
-    Medium(f32), // 0.4-0.7
-    High(f32),   // 0.7-1.0
-}
+pub struct Confidence(pub u8); // 0-100 confidence score
 
 /// Generic finding from analysis
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,19 +153,31 @@ pub struct AnalysisSummary {
 }
 
 impl Confidence {
-    pub fn value(&self) -> f32 {
-        match self {
-            Confidence::Low(v) => *v,
-            Confidence::Medium(v) => *v,
-            Confidence::High(v) => *v,
-        }
+    pub fn new(score: u8) -> Self {
+        Confidence(score.min(100))
     }
 
-    pub fn from_score(score: f32) -> Self {
-        match score {
-            s if s < 0.4 => Confidence::Low(s),
-            s if s < 0.7 => Confidence::Medium(s), 
-            s => Confidence::High(s),
+    pub fn value(&self) -> u8 {
+        self.0
+    }
+
+    pub fn low() -> Self {
+        Confidence(30)
+    }
+
+    pub fn medium() -> Self {
+        Confidence(70)
+    }
+
+    pub fn high() -> Self {
+        Confidence(90)
+    }
+
+    pub fn as_string(&self) -> &'static str {
+        match self.0 {
+            0..=40 => "Low",
+            41..=70 => "Medium",
+            _ => "High", // Covers 71-255, though we cap at 100
         }
     }
 }
@@ -192,7 +189,7 @@ impl Finding {
             title,
             description: String::new(),
             severity: Severity::Info,
-            confidence: Confidence::Low(0.0),
+            confidence: Confidence::low(),
             host,
             port: None,
             service: None,

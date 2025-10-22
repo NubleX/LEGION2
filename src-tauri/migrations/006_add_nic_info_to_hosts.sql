@@ -1,0 +1,2 @@
+ALTER TABLE hosts ADD COLUMN nic_vendor TEXT;
+ALTER TABLE hosts ADD COLUMN nic_model TEXT;

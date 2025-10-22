@@ -1,3 +1,4 @@
+// Backup of original main.rs
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 // Forked from an earlier version of LEGION, which was originally created by Gotham Security.
@@ -18,89 +19,135 @@
     windows_subsystem = "windows"
 )]
 
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tauri::Manager;
+use crate::analysis::AnalysisEngine;
+use crate::database::Db;
+use crate::scanning::coordinator::ScanCoordinator;
 use anyhow::Result;
-use rusqlite;
+use std::{path::PathBuf, sync::Arc};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{TrayIconBuilder, TrayIconEvent},
+    Manager,
+};
 
-mod database;
-use database as db;
-mod scanning;
-mod commands;
-mod shared;
-mod core;
-mod modules;
 mod analysis;
+mod commands;
+mod core;
+mod database;
+mod modules;
+mod plan;
+mod scanning;
+mod shared;
 mod utils;
 
-use crate::core::{engine::Engine, bootstrap::make_registry, types::Plan};
-use crate::scanning::coordinator::ScanCoordinator;
-use crate::database::Db;
-use crate::core::registry::Registry;
-use crate::shared::EventStreamer;
-
 fn app_data_dir() -> std::path::PathBuf {
-    std::env::current_dir().unwrap().join("data")
+    // Use app-local data directory for encrypted database
+    // Store in a hidden subdirectory within the app
+    std::env::current_exe()
+        .unwrap_or_else(|_| std::env::current_dir().unwrap().join("legion2"))
+        .parent()
+        .unwrap()
+        .join(".legion2_data")
 }
 
 fn open_db() -> Result<Db> {
-    let db_dir = app_data_dir().join("LEGION2");
+    let db_dir = app_data_dir();
     std::fs::create_dir_all(&db_dir)?;
     let db_path = db_dir.join("network.db");
-    let db = Db::open(db_path.to_str().unwrap())?;
+    let db = Db::open(db_path)?;
     Ok(db)
 }
 
 // engine_execute is now handled in commands::engine_commands
 
-#[tokio::main]
-async fn main() {
-    // Initialize logging
+fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     println!("LEGION2 starting up...");
-    
-    // Initialize database
-    let db = Arc::new(open_db().expect("Failed to open database"));
-    
-    // Initialize event handling
-    let (event_tx, mut event_rx) = mpsc::channel::<crate::shared::ScanEvent>(1000);
-    let event_streamer = Arc::new(EventStreamer::new());
-    
-    // Initialize scanner coordinator  
-    // TODO: Update ScanCoordinator to use Arc<Db> instead of DatabaseOperations
 
-    // Bridge events to streamer
-    let streamer_clone = event_streamer.clone();
-    tokio::spawn(async move {
-        log::info!("Event bridge task started");
-        while let Some(event) = event_rx.recv().await {
-            log::info!("Bridging event: {:?}", event.event_type);
-            streamer_clone.send_event(event).await;
-        }
-        log::error!("Event bridge task ended - this should not happen");
-    });
-    
     tauri::Builder::default()
-        .manage(db.clone())
-        // .manage(coordinator) // TODO: Update ScanCoordinator to use Arc<Db>
-        .manage(event_streamer)
+        .setup(|app| {
+            // Synchronous setup: tray, state, etc.
+            let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
+                .expect("Failed to load tray icon");
+
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&quit])?;
+
+            TrayIconBuilder::with_id("tray")
+                .icon(icon)
+                .menu(&menu)
+                .on_menu_event(|app, event| {
+                    if event.id == "quit" {
+                        app.exit(0);
+                    }
+                })
+                .build(app)?;
+
+            // Synchronous state management
+            let db_dir = app_data_dir();
+            std::fs::create_dir_all(&db_dir).expect("Failed to create database directory");
+            let db_path = db_dir.join("network.db");
+            let db = Arc::new(Db::open(db_path).expect("Failed to open database"));
+            let analysis_engine = AnalysisEngine::new(db.clone());
+
+            app.manage(db.clone());
+            app.manage(analysis_engine);
+
+            // Spawn async tasks if needed, but do NOT use `app` inside
+            tauri::async_runtime::spawn(async {
+                // Async work here, but don't touch `app`
+                if let Err(e) = modules::init() {
+                    log::error!("Failed to initialize modules: {}", e);
+                }
+            });
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::engine_commands::engine_execute,
+            commands::engine_commands::engine_cancel_scan,
+            commands::engine_commands::engine_reset,
+            commands::engine_commands::engine_get_state,
             commands::host_commands::get_all_hosts,
             commands::host_commands::get_host_details,
+            commands::host_commands::get_host_by_ip,
+            commands::host_commands::get_host_ports_detailed,
             commands::host_commands::delete_host,
             commands::host_commands::batch_import_hosts,
-            commands::host_commands::update_host_os_detection,
-            commands::host_commands::get_host_by_ip,
-            commands::scanner_commands::start_scan,
-            commands::scanner_commands::cancel_scan,
-            commands::scanner_commands::get_active_scans,
-            commands::scanner_commands::get_scan_status,
-            commands::scanner_commands::get_scan_results,
-            commands::scanner_commands::get_scan_statistics,
-            commands::scanner_commands::get_scan_progress,
+            commands::host_commands::update_host_tags,
+            commands::analysis_commands::analyze_host,
+            commands::analysis_commands::analyze_network,
+            commands::analysis_commands::get_active_analyses,
+            commands::analysis_commands::get_host_vulnerabilities,
+            commands::analysis_commands::get_all_vulnerabilities,
+            commands::analysis_commands::analyze_host_vulnerabilities,
+            commands::analysis_commands::get_vulnerability_stats,
+            commands::plan_commands::create_masscan_plan,
+            commands::plan_commands::create_nmap_plan,
+            commands::plan_commands::create_comprehensive_plan,
+            commands::plan_commands::create_os_detection_plan,
+            commands::plan_commands::plan_with_os_detection,
+            commands::plan_commands::plan_with_extra_args,
+            commands::plan_commands::plan_with_modules,
+            commands::plan_commands::plan_with_rate,
+            commands::plan_commands::plan_with_sink,
+            commands::plan_commands::get_scan_types,
+            commands::plan_commands::get_scan_timings,
+            commands::plan_commands::create_port_range,
+            commands::plan_commands::parse_protocol,
+            commands::plan_commands::parse_port_state,
+            commands::plan_commands::get_available_modules,
+            commands::plan_commands::create_plan_with_modules,
+            commands::scanner_commands::start_coordinated_scan,
+            commands::scanner_commands::start_masscan_scan,
+            commands::scanner_commands::start_nmap_scan,
             commands::scanner_commands::get_scanner_status,
+            commands::netsniffer_commands::lookup_mac_vendor,
+            commands::netsniffer_commands::log_network_artifact,
+            commands::netsniffer_commands::start_network_monitoring,
+            commands::netsniffer_commands::stop_network_monitoring,
+            commands::netsniffer_commands::get_vendor_statistics,
+            commands::netsniffer_commands::parse_xml_for_mac_enrichment,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

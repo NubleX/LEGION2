@@ -1,12 +1,9 @@
-pub mod models;
-pub mod engine;
 pub mod coordinator;
 pub mod masscan;
+pub mod models;
 pub mod nmap;
-pub mod sources;
 
-// Re-export events from shared for compatibility
-pub use crate::shared::{EventType, ScanEvent};
+// Events module re-exports from shared
 pub mod events {
     pub use crate::shared::{EventType, ScanEvent};
 }

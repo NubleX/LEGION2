@@ -1,171 +1,128 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
-
+import { emit, listen } from '@tauri-apps/api/event';
 import { create } from 'zustand';
-import { invoke } from '@tauri-apps/api/core';
 
 export interface Host {
   id: string;
   ip: string;
   hostname?: string;
   mac_address?: string;
+  vendor?: string;
   os_name?: string;
   os_family?: string;
   os_accuracy?: number;
-  status: 'up' | 'down' | 'unknown' | 'scanning';
+  status: string;
   last_seen: string;
   created_at: string;
   updated_at: string;
   port_count: number;
   vulnerability_count: number;
-}
-
-export interface HostFilter {
-  status?: 'up' | 'down' | 'unknown' | 'scanning';
-  os_family?: string;
-  has_vulnerabilities?: boolean;
-  port_range?: { min: number; max: number };
-  severity_min?: 'low' | 'medium' | 'high' | 'critical';
-  search_term?: string;
+  notes?: string;
+  tags: string[];
+  scan_progress?: number;
+  // Legacy compatibility fields
+  timestamp?: string;
 }
 
 interface HostStore {
   hosts: Host[];
-  filteredHosts: Host[];
-  currentFilter: HostFilter;
-  isLoading: boolean;
-  lastError: string | null;
-  
-  loadHosts: () => Promise<void>;
-  setFilter: (filter: HostFilter) => void;
-  clearFilter: () => void;
-  searchHosts: (term: string) => void;
-  deleteHost: (hostId: string) => Promise<void>;
-  loadHostDetails: (hostId: string) => Promise<void>;
-  exportHosts: (format: 'json' | 'csv' | 'xml') => Promise<string>;
-  deleteMultipleHosts: (hostIds: string[]) => Promise<void>;
-  refreshHost: (hostId: string) => Promise<void>;
-  getHostsByStatus: (status: 'up' | 'down' | 'unknown' | 'scanning') => Host[];
-  getHostsBySeverity: (severity: 'critical' | 'high') => Host[];
-  updateStatistics: () => void;
+  ports: Record<string, Set<number>>;
+  getHosts: () => Host[];
+  getHost: (ip: string) => Host | undefined;
+  setHosts: (hosts: Host[]) => void;
+  addHost: (host: Host) => void;
 }
 
-const useHostStore = create<HostStore>((set, get) => ({
-  hosts: [],
-  filteredHosts: [],
-  currentFilter: {},
-  isLoading: false,
-  lastError: null,
+const useHostStore = create<HostStore>((set, get) => {
+  // Listen for host events from the backend and update the store
+  listen('obs:host', (event: any) => {
+    const hostEvent = event.payload;
+    console.log('Received obs:host event:', hostEvent);
 
-  loadHosts: async () => {
-    set({ isLoading: true, lastError: null });
-    
+    // Convert basic HostEvent to partial Host object
+    const partialHost: Partial<Host> = {
+      ip: hostEvent.ip,
+      hostname: hostEvent.hostname,
+      mac_address: hostEvent.mac_address,
+      vendor: hostEvent.vendor,
+      os_name: hostEvent.os_name,
+      os_family: hostEvent.os_family,
+      os_accuracy: hostEvent.os_accuracy,
+      id: hostEvent.ip, // Use IP as temporary ID
+      status: 'up', // Assume host is up if discovered
+      created_at: hostEvent.timestamp,
+      updated_at: hostEvent.timestamp,
+      last_seen: hostEvent.timestamp,
+      port_count: 0,
+      vulnerability_count: 0,
+      tags: []
+    };
+
+    set(state => {
+      const idx = state.hosts.findIndex(h => h.ip === hostEvent.ip);
+      if (idx !== -1) {
+        const updated = [...state.hosts];
+        updated[idx] = { ...updated[idx], ...partialHost };
+        console.log('Updated existing host:', updated[idx]);
+        return { hosts: updated };
+      }
+      console.log('Adding new host:', partialHost);
+      return { hosts: [...state.hosts, partialHost as Host] };
+    });
+  }).catch(console.error);
+
+
+  // When a service is observed, notify listeners to refresh that host's ports
+  listen('obs:service', (event: any) => {
+    const serviceEvent = event.payload;
+    if (serviceEvent?.ip) {
+      console.log('Received obs:service event for', serviceEvent.ip);
+      emit('refresh_host_ports', serviceEvent.ip).catch(console.error);
+    }
+  }).catch(console.error);
+
+  // Listen for refresh signals and fetch detailed host data
+  listen('refresh_host_data', async (event: any) => {
+    const ip = event.payload as string;
+    console.log('Received refresh_host_data event for IP:', ip);
+
+    // Add a small delay to allow database to be updated first
+    await new Promise(resolve => setTimeout(resolve, 500));
+
     try {
-      const hosts = await invoke('get_all_hosts') as Host[];
-      
-      set({ 
-        hosts: hosts,
-        filteredHosts: hosts,
-        isLoading: false 
+      const { invoke } = await import('@tauri-apps/api/core');
+      const detailedHost = await invoke<Host>('get_host_by_ip', { ip });
+      console.log('Fetched detailed host data:', detailedHost);
+
+      set(state => {
+        const idx = state.hosts.findIndex(h => h.ip === ip);
+        if (idx !== -1) {
+          const updated = [...state.hosts];
+          // Merge refreshed data with any existing fields
+          updated[idx] = { ...updated[idx], ...detailedHost };
+          console.log('Updated host with detailed data:', updated[idx]);
+          return { hosts: updated };
+        }
+        console.log('Adding new detailed host:', detailedHost);
+        return { hosts: [...state.hosts, detailedHost] };
       });
     } catch (error) {
-      console.error('Failed to load hosts:', error);
-      // Fall back to empty array instead of mock data
-      set({ 
-        hosts: [],
-        filteredHosts: [],
-        lastError: `Failed to load hosts: ${error}`,
-        isLoading: false 
-      });
+      console.error('Failed to fetch detailed host data for', ip, ':', error);
     }
-  },
+  }).catch(console.error);
 
-  setFilter: (filter: HostFilter) => {
-    const hosts = get().hosts;
-    let filtered = hosts;
-
-    if (filter.status) {
-      filtered = filtered.filter(h => h.status === filter.status);
-    }
-    if (filter.search_term) {
-      const term = filter.search_term.toLowerCase();
-      filtered = filtered.filter(h => 
-        h.ip.includes(term) || 
-        h.hostname?.toLowerCase().includes(term) ||
-        h.os_name?.toLowerCase().includes(term)
-      );
-    }
-    if (filter.has_vulnerabilities) {
-      filtered = filtered.filter(h => h.vulnerability_count > 0);
-    }
-
-    set({ currentFilter: filter, filteredHosts: filtered });
-  },
-
-  clearFilter: () => {
-    set({ 
-      currentFilter: {},
-      filteredHosts: get().hosts 
-    });
-  },
-
-  searchHosts: (term: string) => {
-    get().setFilter({ ...get().currentFilter, search_term: term });
-  },
-
-  deleteHost: async (hostId: string) => {
-    const hosts = get().hosts.filter(h => h.id !== hostId);
-    set({ hosts, filteredHosts: hosts });
-  },
-
-  loadHostDetails: async (hostId: string) => {
-    console.log('Loading details for host:', hostId);
-  },
-
-  exportHosts: async () => {
-    return JSON.stringify(get().filteredHosts, null, 2);
-  },
-
-  deleteMultipleHosts: async (hostIds: string[]) => {
-    const hosts = get().hosts.filter(h => !hostIds.includes(h.id));
-    set({ hosts, filteredHosts: hosts });
-  },
-
-  refreshHost: async (hostId: string) => {
-    console.log('Refreshing host:', hostId);
-  },
-
-  getHostsByStatus: (status: 'up' | 'down' | 'unknown' | 'scanning') => {
-    return get().hosts.filter(h => h.status === status);
-  },
-
-  getHostsBySeverity: (severity: 'critical' | 'high') => {
-    if (severity === 'critical') {
-      return get().hosts.filter(h => h.vulnerability_count >= 10);
-    }
-    return get().hosts.filter(h => h.vulnerability_count >= 5);
-  },
-
-  updateStatistics: () => {
-    // Update stats logic here
-  }
-}));
+  return {
+    hosts: [],
+    ports: {},
+    getHosts: () => get().hosts,
+    getHost: (ip: string) => get().hosts.find(h => h.ip === ip),
+    setHosts: (hosts: Host[]) => set({ hosts }),
+    addHost: (host: Host) => set(state => ({
+      hosts: [...state.hosts.filter(h => h.ip !== host.ip), host]
+    })),
+  };
+});
 
 export default useHostStore;

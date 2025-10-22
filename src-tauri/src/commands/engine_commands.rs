@@ -1,22 +1,22 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
 
-use crate::core::{engine::Engine, registry::Registry, types::Plan};
+use crate::analysis::AnalysisEngine;
+use crate::core::{engine::Engine, registry::Registry};
 use crate::database::Db;
+use crate::plan::Plan;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
+use tokio::sync::Mutex;
+
+// Global scan cancellation flag
+static SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+// Global engine instance to persist state between calls
+lazy_static::lazy_static! {
+    static ref GLOBAL_ENGINE: Arc<Mutex<Option<Engine>>> = Arc::new(Mutex::new(None));
+}
 
 /// One command to rule them all - unified engine execution
 #[tauri::command]
@@ -27,14 +27,47 @@ pub async fn engine_execute(
 ) -> Result<(), String> {
     log::info!("Engine execute called with plan: {:?}", plan);
 
-    // Get database reference
-    let db = state_db.inner().clone();
+    // Get or create engine instance
+    let mut engine_guard = GLOBAL_ENGINE.lock().await;
+    let engine = match engine_guard.as_ref() {
+        Some(existing_engine) => {
+            // Check if engine is ready for new scan
+            if existing_engine.is_ready().await {
+                log::info!("Using existing engine in ready state");
+                existing_engine.clone()
+            } else {
+                log::info!("Engine not ready, resetting and preparing for new scan");
+                existing_engine.reset().await.map_err(|e| e.to_string())?;
+                existing_engine.clone()
+            }
+        }
+        None => {
+            log::info!("Creating new engine instance");
 
-    // Create registry
-    let registry = Registry::new(db, app);
+            // Build engine from registry, wire Arc<Db> into DbSink
+            let mut registry = Registry::new(state_db.inner().clone(), app);
 
-    // Build engine from plan
-    let engine = Engine { registry };
+            // Initialize all standard components in registry
+            if let Err(e) = registry.initialize_standard_components().await {
+                log::error!("Failed to initialize registry components: {}", e);
+                return Err(format!("Registry initialization failed: {}", e));
+            }
+
+            // Log available components
+            let (sources, sinks, transforms) = registry.list_components();
+            log::info!("Available sources: {:?}", sources);
+            log::info!("Available sinks: {:?}", sinks);
+            log::info!("Available transforms: {:?}", transforms);
+
+            // Build engine from plan
+            let new_engine = Engine::new(registry);
+            *engine_guard = Some(new_engine.clone());
+            new_engine
+        }
+    };
+
+    // Release the lock
+    drop(engine_guard);
 
     // Execute in background task - return immediately while streaming
     tokio::spawn(async move {
@@ -50,4 +83,55 @@ pub async fn engine_execute(
         }
     });
     Ok(())
+}
+
+/// Check if scan has been cancelled
+pub fn is_scan_cancelled() -> bool {
+    SCAN_CANCELLED.load(Ordering::Relaxed)
+}
+
+/// Reset cancellation flag for new scans
+pub fn reset_scan_cancellation() {
+    SCAN_CANCELLED.store(false, Ordering::Relaxed);
+}
+
+/// Set scan cancellation flag
+pub fn cancel_current_scan() {
+    SCAN_CANCELLED.store(true, Ordering::Relaxed);
+}
+
+/// Simple cancel scan command for the unified engine
+#[tauri::command]
+pub async fn engine_cancel_scan() -> Result<(), String> {
+    log::info!("Engine scan cancellation requested");
+    cancel_current_scan();
+    Ok(())
+}
+
+/// Reset the engine to allow new scans
+#[tauri::command]
+pub async fn engine_reset() -> Result<(), String> {
+    log::info!("Engine reset requested");
+
+    let engine_guard = GLOBAL_ENGINE.lock().await;
+    if let Some(engine) = engine_guard.as_ref() {
+        engine.reset().await.map_err(|e| e.to_string())?;
+        log::info!("Engine reset completed");
+    } else {
+        log::info!("No engine instance to reset");
+    }
+
+    Ok(())
+}
+
+/// Get current engine state
+#[tauri::command]
+pub async fn engine_get_state() -> Result<String, String> {
+    let engine_guard = GLOBAL_ENGINE.lock().await;
+    if let Some(engine) = engine_guard.as_ref() {
+        let state = engine.get_state().await;
+        Ok(format!("{:?}", state))
+    } else {
+        Ok("NoEngine".to_string())
+    }
 }

@@ -1,41 +1,59 @@
 {
-  "productName": "LEGION2",
-  "version": "0.2.2-alpha",
-  "identifier": "com.legion2.app",
-  "build": {
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420"
-  },
+  "$schema": "https://schema.tauri.app/config/2",
   "app": {
+    "security": {
+      "csp": null
+    },
     "windows": [
       {
+        "decorations": true,
+        "height": 1080,
         "label": "main",
-        "title": "LEGION2",
-        "width": 1200,
-        "height": 800,
+        "maximized": true,
+        "minHeight": 600,
+        "minWidth": 800,
         "resizable": true,
-        "fullscreen": false
+        "title": "LEGION2",
+        "visible": true,
+        "width": 1920
       }
     ]
+  },
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
   },
   "bundle": {
     "active": true,
     "category": "DeveloperTool",
-    "copyright": "Copyright (c) 2025 NubleX",
-    "targets": "all",
+    "copyright": "Copyright (c) 2025 Igor Dunaev / NubleX",
+    "externalBin": [
+      "bin/engines/windows/masscan-1.3.2/masscan",
+      "bin/engines/windows/nmap-7.97/nmap"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
-      "icons/icon.icns",
+      "icons/icon.png",
       "icons/icon.ico"
-    ]
-  },
-  "plugins": {
-    "shell": {
-      "open": true
+    ],
+    "targets": "all",
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "wix": {
+        "dialogImagePath": "icons/icon.png"
+      }
     }
-  }
+  },
+  "identifier": "com.nublex.legion2",
+  "productName": "LEGION2",
+  "version": "0.3.0"
 }

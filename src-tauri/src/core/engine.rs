@@ -1,47 +1,156 @@
+use crate::core::registry::Registry;
+use crate::core::traits::Transform;
+use crate::core::transformer::CompositeTransform;
+use crate::plan::Plan;
+use crate::shared::{ObsStream, Observation};
 use anyhow::Result;
 use futures::{stream, StreamExt};
 use tokio::sync::broadcast;
-use crate::core::registry::Registry;
-use super::types::{Observation, ObsStream, Plan};
-// Traits are used indirectly through the registry
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
-pub struct Engine { 
-    pub registry: Registry 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EngineState {
+    Idle,
+    Running,
+    Completed,
+    Error,
+    Cancelled,
+}
+
+#[derive(Clone)]
+pub struct Engine {
+    pub registry: Registry,
+    pub state: Arc<Mutex<EngineState>>,
+    pub current_scan_id: Arc<Mutex<Option<String>>>,
 }
 
 impl Engine {
-    pub async fn execute(&self, plan: Plan) -> Result<()> {
-        // Create source from plan
-        let source = self.registry.create_source(&plan).await?;
-        let mut stream = source.start(&plan).await?;
+    pub fn new(registry: Registry) -> Self {
+        Self {
+            registry,
+            state: Arc::new(Mutex::new(EngineState::Idle)),
+            current_scan_id: Arc::new(Mutex::new(None)),
+        }
+    }
 
-        // Create sinks from plan  
-        let sinks = self.registry.create_sinks(&plan)?;
+    pub async fn get_state(&self) -> EngineState {
+        *self.state.lock().await
+    }
 
-        // Create broadcast channel for distributing observations
-        let (brtx, _) = broadcast::channel::<Observation>(1024);
+    pub async fn is_ready(&self) -> bool {
+        let state = self.get_state().await;
+        matches!(state, EngineState::Idle | EngineState::Completed | EngineState::Error)
+    }
+
+    /// Reset the engine to a clean state for new scans
+    pub async fn reset(&self) -> Result<()> {
+        log::info!("Resetting engine state");
         
-        // Spawn task to read from source and broadcast to sinks
-        let tx = brtx.clone();
-        tokio::spawn(async move {
-            while let Some(obs) = stream.next().await { 
-                let _ = tx.send(obs); 
-            }
-        });
+        // Set state to idle
+        *self.state.lock().await = EngineState::Idle;
+        
+        // Clear current scan ID
+        *self.current_scan_id.lock().await = None;
+        
+        // Clear registry state
+        self.registry.clear_active_sources().await;
+        
+        log::info!("Engine reset completed");
+        Ok(())
+    }
 
-        // Start all sinks
-        let mut tasks = Vec::new();
-        for sink in sinks {
-            let rx = brtx.subscribe();
-            let obs_stream = broadcast_to_stream(rx);
-            tasks.push(tokio::spawn(async move {
-                sink.run(obs_stream).await
-            }));
+    pub async fn execute(&self, plan: Plan) -> Result<()> {
+        log::info!("Engine starting execution with transforms in pipeline");
+
+        // Check if engine is ready for new scan
+        if !self.is_ready().await {
+            let current_state = self.get_state().await;
+            return Err(anyhow::anyhow!("Engine not ready for new scan. Current state: {:?}", current_state));
         }
 
-        // Wait for all tasks to complete
-        for task in tasks {
-            let _ = task.await;
+        // Set running state and scan ID
+        *self.state.lock().await = EngineState::Running;
+        *self.current_scan_id.lock().await = Some(plan.scan_id.to_string());
+        
+        log::info!("Engine state set to Running for scan: {}", plan.scan_id);
+
+        // Execute the scan and update state based on outcome
+        let execution_result = async {
+            // Create source from plan
+            let source = self.registry.create_source(&plan).await?;
+            let raw_stream = source.start(&plan).await?;
+
+            // Apply transforms to the stream - use plan.modules for dynamic pipeline
+            let transform = if plan.modules.is_empty() {
+                // Default transforms if no modules specified
+                log::info!("No modules specified, using default transform pipeline");
+                CompositeTransform::new()
+            } else {
+                // Build transform pipeline from plan.modules
+                log::info!(
+                    "Building transform pipeline from modules: {:?}",
+                    plan.modules
+                );
+                CompositeTransform::from_modules(&plan.modules)
+                    .map_err(|e| anyhow::anyhow!("Failed to build transform pipeline: {}", e))?
+            };
+
+            let processed_stream = transform.apply(raw_stream).await?;
+
+            // Create sinks from plan
+            let sinks = self.registry.create_sinks(&plan)?;
+
+            // Create broadcast channel for distributing processed observations
+            let (brtx, _) = broadcast::channel::<Observation>(1024);
+
+            // Spawn task to read from processed stream and broadcast to sinks
+            let tx = brtx.clone();
+            let broadcast_task = tokio::spawn(async move {
+                let mut stream = processed_stream;
+                while let Some(obs) = stream.next().await {
+                    log::debug!("Broadcasting observation: {:?}", obs);
+                    let _ = tx.send(obs);
+                }
+                log::info!("Source stream completed - closing broadcast");
+                // tx goes out of scope here, which closes the broadcast channel
+            });
+
+            // Start all sinks with transformed data
+            let mut tasks = Vec::new();
+            for sink in sinks {
+                let rx = brtx.subscribe();
+                let obs_stream = broadcast_to_stream(rx);
+                tasks.push(tokio::spawn(async move {
+                    log::info!("Starting sink: {}", sink.name());
+                    if let Err(e) = sink.run(obs_stream).await {
+                        log::error!("Sink {} failed: {}", sink.name(), e);
+                    }
+                }));
+            }
+
+            // Wait for source stream to complete (broadcast task)
+            // Sink tasks will complete naturally when broadcast closes
+            if let Err(e) = broadcast_task.await {
+                log::error!("Broadcast task failed: {}", e);
+                return Err(anyhow::anyhow!("Broadcast task failed: {}", e));
+            }
+            
+            log::info!("Engine execution completed - source finished, {} sink tasks running", tasks.len());
+            Ok::<(), anyhow::Error>(())
+        }.await;
+
+        // Update state based on execution result
+        match execution_result {
+            Ok(_) => {
+                *self.state.lock().await = EngineState::Completed;
+                log::info!("Engine execution completed successfully for scan: {}", plan.scan_id);
+            }
+            Err(e) => {
+                *self.state.lock().await = EngineState::Error;
+                log::error!("Engine execution failed for scan: {}: {}", plan.scan_id, e);
+                return Err(e);
+            }
         }
 
         Ok(())
@@ -54,5 +163,6 @@ fn broadcast_to_stream(sub: broadcast::Receiver<Observation>) -> ObsStream {
             Ok(obs) => Some((obs, receiver)),
             Err(_) => None,
         }
-    }).boxed()
+    })
+    .boxed()
 }
