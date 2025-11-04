@@ -6,7 +6,7 @@ use crate::analysis::correlation::CorrelationEngine;
 use crate::analysis::vulnerability::VulnerabilityEngine;
 use crate::database::Db;
 use crate::shared::types::{
-    AnalysisResult, AnalysisSummary, Finding, NetworkTopology, Vulnerability,
+    AnalysisResult, AnalysisSummary, Finding, NetworkTopology, Severity, Vulnerability,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -211,32 +211,32 @@ impl AnalysisEngine {
         &self,
         findings: &[Finding],
         vulnerabilities: &[Vulnerability],
-    ) -> Result<AnalysisSummary, Box<dyn std::error::Error>> {
+    ) -> Result<AnalysisSummary> {
         // Count vulnerabilities by severity
-        let mut vulnerability_count_by_severity: HashMap<String, usize> = HashMap::new();
+        let mut vulnerability_count_by_severity: HashMap<Severity, u32> = HashMap::new();
 
         for vuln in vulnerabilities {
             *vulnerability_count_by_severity
-                .entry(vuln.severity.clone())
+                .entry(vuln.finding.severity)
                 .or_insert(0) += 1;
         }
 
         // Extract top risks (e.g., high/critical vulnerabilities)
-        let top_risks: Vec<String> = vulnerabilities
+        let top_risks: Vec<Finding> = vulnerabilities
             .iter()
-            .filter(|v| v.severity == "High" || v.severity == "Critical")
-            .map(|v| v.title.clone())
+            .filter(|v| matches!(v.finding.severity, Severity::High | Severity::Critical))
+            .map(|v| v.finding.clone())
             .collect();
 
         // Recommended actions based on findings
         let recommended_actions: Vec<String> = findings
             .iter()
-            .filter_map(|f| f.recommendation.clone())
+            .map(|f| format!("Investigate {} on {}", f.title, f.host))
             .collect();
 
         Ok(AnalysisSummary {
-            total_hosts: findings.len(),
-            total_services: vulnerabilities.len(),
+            total_hosts: findings.len() as u32,
+            total_services: vulnerabilities.len() as u32,
             vulnerability_count_by_severity,
             top_risks,
             recommended_actions,

@@ -11,7 +11,7 @@
 
 ## ⚠️ ALPHA VERSION WARNING ⚠️
 
-### Version: 0.3.0-alpha
+### Version: 0.3.2-alpha
 
 **A modern, high-performance network penetration testing platform built with Tauri, React, and Rust**
 

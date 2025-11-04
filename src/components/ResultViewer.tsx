@@ -4,6 +4,7 @@
 import { AlertTriangle, Download, Shield, Network, Server } from 'lucide-react';
 import React, { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import useHostStore, { type Host } from '../stores/hostStore';
 
 interface PortInfo {
@@ -74,7 +75,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     (async () => {
-      unlisten = await listen<string>('refresh_host_ports', event => {
+      unlisten = await listen<string>('refresh_host_ports', (event) => {
         if (currentHost?.ip && event.payload === currentHost.ip) {
           loadPorts(currentHost.ip);
         }

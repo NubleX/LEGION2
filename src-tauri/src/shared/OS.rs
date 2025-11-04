@@ -247,7 +247,7 @@ impl OSDetector {
         }
     }
 
-    pub fn get_most_accurate(&self, os_list: &[OS]) -> Option<&OS> {
+    pub fn get_most_accurate<'a>(&self, os_list: &'a [OS]) -> Option<&'a OS> {
         os_list.iter().max_by_key(|os| os.accuracy)
     }
 }

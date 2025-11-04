@@ -1,6 +1,6 @@
 [package]
 name = "legion2"
-version = "0.3.0"
+version = "0.3.2"
 description = "LEGION2 - Network Penetration Testing Tool"
 authors = ["NubleX / Igor Dunaev"]
 license = "GPL-3.0"
@@ -37,14 +37,14 @@ regex = "1.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.142"
 sha2 = "0.10"
-thiserror = "1.0.69"
+thiserror = "2.0.17"
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1.18.0", features = ["v4"] }
 local-ip-address = "0.6"
 parking_lot = "0.12"
 dirs = "6.0.0"
 aes-gcm = { version = "0.10", features = ["std"] }
-roxmltree = "0.20"
+roxmltree = "0.21.1"
 pcap = "2.3.0"
 etherparse = "0.19.0"
 zstd = "0.13"
@@ -58,7 +58,7 @@ tokio-stream = "0.1.17"
 # Platform-specifics
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winnt", "processthreadsapi"] }
-windows = { version = "0.61.3", features = [
+windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_LibraryLoader",

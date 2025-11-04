@@ -158,7 +158,6 @@ pub fn create_port_range(
     Ok(PortRange {
         start,
         end,
-        top_ports,
     })
 }
 

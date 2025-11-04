@@ -73,10 +73,10 @@ impl Transform for ServiceParsingTransform {
         let enriched_stream = input.map(|mut obs| {
             if obs.kind == ObservationKind::Service {
                 // Enhance service observations with additional parsing
-                if let Some(banner) = obs.fields.get("banner").and_then(|v| v.as_str()) {
+                if let Some(banner) = obs.fields.get("banner").and_then(|v| v.as_str()).map(|s| s.to_string()) {
                     // Parse banner for additional version info if not already present
                     if !obs.fields.contains_key("service") {
-                        if let Some(service_name) = extract_service_from_banner(banner) {
+                        if let Some(service_name) = extract_service_from_banner(&banner) {
                             obs.fields
                                 .insert("service".to_string(), service_name.into());
                         }
@@ -84,7 +84,7 @@ impl Transform for ServiceParsingTransform {
 
                     // Extract additional product info
                     if !obs.fields.contains_key("product") {
-                        if let Some(product) = extract_product_from_banner(banner) {
+                        if let Some(product) = extract_product_from_banner(&banner) {
                             obs.fields.insert("product".to_string(), product.into());
                         }
                     }
@@ -94,7 +94,7 @@ impl Transform for ServiceParsingTransform {
                 if let Some(port) = obs.fields.get("port").and_then(|v| v.as_u64()) {
                     let service_type = classify_service_by_port(port as u16);
                     obs.fields
-                        .insert("service_category".to_string(), service_type.into());
+                        .insert("service_category".to_string(), service_type.category.into());
                 }
             }
             obs
@@ -151,15 +151,16 @@ impl VulnerabilityTransform {
     }
 }
 
+#[async_trait]
 impl Transform for VulnerabilityTransform {
     fn name(&self) -> &'static str {
         "vulnerability_enrichment"
     }
 
-    fn apply(&self, obs: Observation) -> Option<Observation> {
+    async fn apply(&self, input: ObsStream) -> Result<ObsStream> {
         // TODO: Implement vulnerability checking
         // For now, just pass through observations unchanged
-        Some(obs)
+        Ok(input)
     }
 }
 

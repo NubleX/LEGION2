@@ -8,6 +8,16 @@ export interface ProtocolInfo {
     description: string;
 }
 
+export enum ProtocolLayer {
+    Physical = "physical",
+    DataLink = "datalink",
+    Network = "network",
+    Transport = "transport",
+    Session = "session",
+    Presentation = "presentation",
+    Application = "application",
+}
+
 export enum ProtocolFamily {
     Internet = "internet",
     Lan = "lan",

@@ -27,10 +27,9 @@ pub enum ParserError {
     MissingElement(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct Parser {
-    #[serde(skip)]
-    document: Document<'static>,
+    xml_content: String,
     session: Session,
     hosts: HashMap<String, Host>,
 }
@@ -65,7 +64,7 @@ impl Parser {
         debug!("Parsed {} hosts from Nmap report", hosts.len());
 
         Ok(Parser {
-            document,
+            xml_content: xml_content.to_string(),
             session,
             hosts,
         })
@@ -114,11 +113,16 @@ impl Parser {
     }
 
     pub fn get_hosts_with_open_ports(&self) -> Vec<&Host> {
+        let document = match Document::parse(&self.xml_content) {
+            Ok(doc) => doc,
+            Err(_) => return vec![],
+        };
+
         self.hosts
             .values()
             .filter(|host| {
                 // We need to find the host node in the document to check ports
-                self.document
+                document
                     .descendants()
                     .find(|n| {
                         n.tag_name().name() == "host"
@@ -149,10 +153,15 @@ impl Parser {
     }
 
     pub fn get_hosts_with_service(&self, service_name: &str) -> Vec<&Host> {
+        let document = match Document::parse(&self.xml_content) {
+            Ok(doc) => doc,
+            Err(_) => return vec![],
+        };
+
         self.hosts
             .values()
             .filter(|host| {
-                self.document
+                document
                     .descendants()
                     .find(|n| {
                         n.tag_name().name() == "host"

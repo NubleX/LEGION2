@@ -55,7 +55,7 @@
 // Remove unused imports; pin crate versions; run cargo clippy -W clippy::all.
 // If you want, paste me your current Cargo.toml and the exact etherparse/pcap versions. I’ll snap your matches and the TCP options code to those APIs so the IDE calms down. //Then we can bolt on a UDP bot and a tiny ICMP catcher to round out your “replace-80%-of-Nmap-triage” playbook.
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::Utc;
 use etherparse::{PacketHeaders, TcpHeader, TcpOptionElement, TcpOptionsIterator};
 use pcap::{Active, Capture, Device};
@@ -141,7 +141,7 @@ impl NdjsonZstdWriter {
         let ts = Utc::now().format("%Y%m%dT%H%M%S").to_string();
         let path = dir.join(format!("sniff_{ts}_{idx:06}.ndjson.zst"));
         let f = File::create(path)?;
-        let enc = zstd::stream::write::Encoder::new(f, 7)?.auto_finish();
+        let enc = zstd::stream::write::Encoder::new(f, 7)?;
         Ok((idx, enc))
     }
 
@@ -628,13 +628,13 @@ fn main() -> Result<()> {
 
     // Open capture
     let dev = if iface_name == "default" {
-        Device::lookup()?.ok_or("no default capture device")
+        Device::lookup()?.ok_or_else(|| anyhow!("no default capture device"))
     } else {
         Device::list()?
             .into_iter()
             .find(|d| d.name == iface_name)
-            .ok_or_else(|| format!("interface {} not found", iface_name))
-    };
+            .ok_or_else(|| anyhow!("interface {} not found", iface_name))
+    }?;
 
     let mut cap: Capture<Active> = Capture::from_device(dev)?
         .promisc(true)
@@ -696,7 +696,7 @@ fn handle_packet(
         wscale,
         sack_ok,
         opt_kinds,
-    ) = match (Ipv4Hrader) {
+    ) = match (ph.net.as_ref(), ph.transport.as_ref()) {
         (
             Some(etherparse::NetHeaders::Ipv4(v4, _)),
             Some(etherparse::TransportHeader::Tcp(tcp)),
@@ -710,32 +710,38 @@ fn handle_packet(
             let options_iter = etherparse::TcpOptionsIterator::from_slice(tcp.options.as_slice());
             for opt_result in options_iter {
                 if let Ok(opt) = opt_result {
-                        use etherparse::TcpOptionElement::*;
-                        match opt {
-                            MaximumSegmentSize(s) => {
-                                mss = Some(s);
-                                kinds.push(2);
-                            }
-                            WindowScale(ws) => {
-                                wscale = Some(ws);
-                                kinds.push(3);
-                            }
-                            selective_ack_permitted => {
-                                sack_ok = Some(true);
-                                kinds.push(4);
-                            }
-                            Timestamp(_, _) => kinds.push(8),
-                            nop => kinds.push(1),
-                            _ => kinds.push(0xff),
+                    use etherparse::TcpOptionElement::*;
+                    match opt {
+                        MaximumSegmentSize(s) => {
+                            mss = Some(s);
+                            kinds.push(2);
                         }
+                        WindowScale(ws) => {
+                            wscale = Some(ws);
+                            kinds.push(3);
+                        }
+                        SelectiveAckPermitted => {
+                            sack_ok = Some(true);
+                            kinds.push(4);
+                        }
+                        Timestamp(_, _) => kinds.push(8),
+                        Noop => kinds.push(1),
+                        _ => kinds.push(0xff),
                     }
                 }
             }
-        }
-        (
-            Some(etherparse::NetHeaders::Ipv4(v4, _)),
-            Some(etherparse::TransportHeader::Tcp(tcp)),
-        ); {
+
+            // Encode TCP flags into a single byte
+            let mut tcp_flags: u8 = 0;
+            if tcp.fin { tcp_flags |= 0x01; }
+            if tcp.syn { tcp_flags |= 0x02; }
+            if tcp.rst { tcp_flags |= 0x04; }
+            if tcp.psh { tcp_flags |= 0x08; }
+            if tcp.ack { tcp_flags |= 0x10; }
+            if tcp.urg { tcp_flags |= 0x20; }
+            if tcp.ece { tcp_flags |= 0x40; }
+            if tcp.cwr { tcp_flags |= 0x80; }
+
             (
                 "ipv4",
                 Ipv4Addr::from(v4.source).to_string(),
@@ -746,7 +752,7 @@ fn handle_packet(
                 "tcp",
                 Some(tcp.source_port),
                 Some(tcp.destination_port),
-                Some(tcp.ns),
+                Some(tcp_flags),
                 Some(tcp.window_size),
                 mss,
                 wscale,
@@ -757,7 +763,7 @@ fn handle_packet(
         (
             Some(etherparse::NetHeaders::Ipv6(v6, _)),
             Some(etherparse::TransportHeader::Tcp(tcp)),
-        ); {
+        ) => {
             let mut mss = None;
             let mut wscale = None;
             let mut sack_ok = None;
@@ -767,84 +773,93 @@ fn handle_packet(
             let options_iter = etherparse::TcpOptionsIterator::from_slice(tcp.options.as_slice());
             for opt_result in options_iter {
                 if let Ok(opt) = opt_result {
-                        use etherparse::TcpOptionElement::*;
-                        match opt {
-                            MaximumSegmentSize(s) => {
-                                mss = Some(s);
-                                kinds.push(2);
-                            }
-                            WindowScale(ws) => {
-                                wscale = Some(ws);
-                                kinds.push(3);
-                            }
-                            SelectiveAckPermitted => {
-                                sack_ok = Some(true);
-                                kinds.push(4);
-                            }
-                            Timestamp(_, _) => kinds.push(8),
-                            Nop => kinds.push(1),
-                            _ => kinds.push(0xff),
+                    use etherparse::TcpOptionElement::*;
+                    match opt {
+                        MaximumSegmentSize(s) => {
+                            mss = Some(s);
+                            kinds.push(2);
                         }
+                        WindowScale(ws) => {
+                            wscale = Some(ws);
+                            kinds.push(3);
+                        }
+                        SelectiveAckPermitted => {
+                            sack_ok = Some(true);
+                            kinds.push(4);
+                        }
+                        Timestamp(_, _) => kinds.push(8),
+                        Noop => kinds.push(1),
+                        _ => kinds.push(0xff),
                     }
                 }
             }
-        }
-    {
-            let options_iter: i32 = ArpPacket::new(
-                ArpHardwareId::ETHERNET,
-                EtherType::IPV4,
-                ArpOperation::REPLY,
-                &[0; 6],
-                &[0; 4],
-                &[0; 6],
-                &[0; 4],
-                ().unwrap(),
-        (       option_iter = NetHeaders::Arp(h.clone()),
-                assert_eq!(s.ipv4_ref(), None),
-                assert_eq!(s.ipv6_ref(), None),
-                assert_eq!(s.arp_ref(), Some(&h)),
-                assert_eq!(false, s.is_ip()),
-                assert_eq!(false, s.is_ipv4()),
-                assert_eq!(false, s.is_ipv6()),
-                assert!(s.is_arp()),
+
+            // Encode TCP flags into a single byte
+            let mut tcp_flags: u8 = 0;
+            if tcp.fin { tcp_flags |= 0x01; }
+            if tcp.syn { tcp_flags |= 0x02; }
+            if tcp.rst { tcp_flags |= 0x04; }
+            if tcp.psh { tcp_flags |= 0x08; }
+            if tcp.ack { tcp_flags |= 0x10; }
+            if tcp.urg { tcp_flags |= 0x20; }
+            if tcp.ece { tcp_flags |= 0x40; }
+            if tcp.cwr { tcp_flags |= 0x80; }
+
+            (
+                "ipv6",
+                Ipv6Addr::from(v6.source).to_string(),
+                Ipv6Addr::from(v6.destination).to_string(),
+                v6.hop_limit,
+                None,
+                None,
+                "tcp",
+                Some(tcp.source_port),
+                Some(tcp.destination_port),
+                Some(tcp_flags),
+                Some(tcp.window_size),
+                mss,
+                wscale,
+                sack_ok,
+                kinds,
             )
-        );
-          
-      
-            let ts_ns = (h.ts.tv_sec as u128) * 1_000_000_000u128 + (h.ts.tv_usec as u128) * 1_000u128;
-            let meta = PktMeta {
-                ts_ns,
-                ts: Utc::now().to_rfc3339(),
-                src_mac: format_mac(src_mac),
-                dst_mac: format_mac(dst_mac),
-                oui_vendor: oui_lookup_vendor(src_mac),
-                l3,
-                proto,
-                src_ip,
-                dst_ip,
-                sport,
-                dport,
-                ttl_hop,
-                ip_df,
-                ip_id,
-                flags,
-                tcp_win,
-                tcp_mss: mss,
-                tcp_wscale: wscale,
-                tcp_sack_ok: sack_ok,
-                tcp_opts_hash: if opt_kinds.is_empty() {
-                    None
-                } else {
-                    Some(hash_opts_kinds(&opt_kinds))
-                },
-                pkt_len: h.len,
-                dir: "in",
-                scan_id: None,
-                probe_type: None,
-                vantage: vantage.to_string(),
-                iface: iface.to_string(),
-                evidence_path: None, // fill when you decide to keep a micro-pcapng on triggers
-        };
+        }
+        _ => return None, // Skip non-TCP packets for now
+    };
+
+    let ts_ns = (h.ts.tv_sec as u128) * 1_000_000_000u128 + (h.ts.tv_usec as u128) * 1_000u128;
+    let meta = PktMeta {
+        ts_ns,
+        ts: Utc::now().to_rfc3339(),
+        src_mac: format_mac(src_mac),
+        dst_mac: format_mac(dst_mac),
+        oui_vendor: oui_lookup_vendor(src_mac),
+        l3,
+        proto,
+        src_ip,
+        dst_ip,
+        sport,
+        dport,
+        ttl_hop,
+        ip_df,
+        ip_id,
+        flags,
+        tcp_win,
+        tcp_mss: mss,
+        tcp_wscale: wscale,
+        tcp_sack_ok: sack_ok,
+        tcp_opts_hash: if opt_kinds.is_empty() {
+            None
+        } else {
+            Some(hash_opts_kinds(&opt_kinds))
+        },
+        pkt_len: h.len,
+        dir: "in",
+        scan_id: None,
+        probe_type: None,
+        vantage: vantage.to_string(),
+        iface: iface.to_string(),
+        evidence_path: None, // fill when you decide to keep a micro-pcapng on triggers
+    };
 
     Some(meta)
 }
