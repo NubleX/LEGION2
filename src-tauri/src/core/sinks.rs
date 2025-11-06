@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
-use crate::shared::types;
 use crate::analysis::vulnerability::VulnerabilityEngine;
 use crate::shared::traits::Sink;
 use crate::database::Db;
@@ -129,6 +128,8 @@ pub struct UiSink {
     pub app: AppHandle,
     host_cache: Arc<Mutex<HashMap<String, bool>>>,
     metrics: SinkMetrics,
+    analysis_engine: Option<Arc<crate::analysis::AnalysisEngine>>,
+    discovery_manager: Option<Arc<crate::core::discovery_manager::DiscoveryManager>>,
 }
 
 impl UiSink {
@@ -137,7 +138,19 @@ impl UiSink {
             app,
             host_cache: Arc::new(Mutex::new(HashMap::new())),
             metrics: SinkMetrics::new(),
+            analysis_engine: None,
+            discovery_manager: None,
         }
+    }
+    
+    /// Set the analysis engine for triggering analysis on discoveries
+    pub fn set_analysis_engine(&mut self, engine: Arc<crate::analysis::AnalysisEngine>) {
+        self.analysis_engine = Some(engine);
+    }
+    
+    /// Set the discovery manager for recursive discovery
+    pub fn set_discovery_manager(&mut self, manager: Arc<crate::core::discovery_manager::DiscoveryManager>) {
+        self.discovery_manager = Some(manager);
     }
 
     /// Emit a host event if not already cached or if it has enhanced data
@@ -363,12 +376,39 @@ impl Sink for UiSink {
                     // Emit host first if new
                     self.emit_host_if_new(ip, None, false).await?;
 
+                    // Use emit_service method to emit service event
+                    let reason = obs
+                        .fields
+                        .get("reason")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| obs.fields.get("state").and_then(|v| v.as_str()))
+                        .unwrap_or("open");
+                    self.emit_service(ip, port, protocol, reason).await?;
+
                     // Also emit as progress to show in live output
                     let progress_msg = format!(
                         "Found service: {}:{}/{} - {}",
                         ip, port, protocol, service_desc
                     );
                     self.emit_progress(&progress_msg, None).await?;
+                    
+                    // Trigger analysis for newly discovered service
+                    if let Some(engine) = &self.analysis_engine {
+                        if reason == "open" && !service.is_empty() {
+                            if let Err(e) = engine.on_service_discovered(ip, port, service).await {
+                                log::warn!("Failed to trigger analysis for service {}:{}: {}", ip, port, e);
+                            }
+                        }
+                    }
+                    
+                    // Trigger recursive discovery for new service
+                    if let Some(discovery) = &self.discovery_manager {
+                        if reason == "open" && !service.is_empty() {
+                            if let Err(e) = discovery.on_service_discovered(ip, port, service).await {
+                                log::warn!("Failed to trigger recursive discovery for service {}:{}: {}", ip, port, e);
+                            }
+                        }
+                    }
                 }
                 ObservationKind::Host => {
                     // Extract comprehensive host information for rich UI
@@ -446,6 +486,24 @@ impl Sink for UiSink {
                         format!("Host discovered: {} - {} [{}]", ip, status, details.join(", "))
                     };
                     self.emit_progress(&progress_msg, None).await?;
+                    
+                    // Trigger analysis for newly discovered host
+                    if let Some(engine) = &self.analysis_engine {
+                        if status == "up" {
+                            if let Err(e) = engine.on_host_discovered(ip).await {
+                                log::warn!("Failed to trigger analysis for host {}: {}", ip, e);
+                            }
+                        }
+                    }
+                    
+                    // Trigger recursive discovery for new host
+                    if let Some(discovery) = &self.discovery_manager {
+                        if status == "up" {
+                            if let Err(e) = discovery.on_host_discovered(ip).await {
+                                log::warn!("Failed to trigger recursive discovery for host {}: {}", ip, e);
+                            }
+                        }
+                    }
                 }
                 ObservationKind::Metric => {
                     // Handle progress/metrics - check for nmap_output first, then message
@@ -511,6 +569,7 @@ struct HostBatchItem {
     status: Option<String>,
     mac_address: Option<String>,
     nic_vendor: Option<String>,
+    #[allow(dead_code)] // Reserved for future NIC model tracking
     nic_model: Option<String>,
     os_name: Option<String>,
     os_family: Option<String>,
@@ -582,12 +641,13 @@ impl ObsBatch {
 }
 
 /// Database Sink - persists observations to SQLite
-#[derive(Debug)]
 pub struct DbSink {
     db: Arc<Db>,
     metrics: SinkMetrics,
     hosts_in_batch: Arc<Mutex<HashSet<String>>>,
     hosts_in_db: Arc<Mutex<HashSet<String>>>,
+    analysis_engine: Option<Arc<crate::analysis::AnalysisEngine>>,
+    discovery_manager: Option<Arc<crate::core::discovery_manager::DiscoveryManager>>,
 }
 
 impl DbSink {
@@ -597,7 +657,19 @@ impl DbSink {
             metrics: SinkMetrics::new(),
             hosts_in_batch: Arc::new(Mutex::new(HashSet::new())),
             hosts_in_db: Arc::new(Mutex::new(HashSet::new())),
+            analysis_engine: None,
+            discovery_manager: None,
         }
+    }
+    
+    /// Set the analysis engine for triggering analysis on discoveries
+    pub fn set_analysis_engine(&mut self, engine: Arc<crate::analysis::AnalysisEngine>) {
+        self.analysis_engine = Some(engine);
+    }
+    
+    /// Set the discovery manager for recursive discovery
+    pub fn set_discovery_manager(&mut self, manager: Arc<crate::core::discovery_manager::DiscoveryManager>) {
+        self.discovery_manager = Some(manager);
     }
 }
 
@@ -740,6 +812,20 @@ impl Sink for VulnerabilityAnalysisSink {
                                 service_name
                             );
 
+                            // Store service in database first for correlation
+                            if let Err(e) = self.db.upsert_service_detailed(
+                                ip,
+                                port,
+                                "tcp", // Default protocol
+                                Some(state),
+                                service,
+                                version,
+                                banner,
+                                None, // script_output
+                            ).await {
+                                log::warn!("Failed to store service in database: {}", e);
+                            }
+                            
                             // Run vulnerability analysis on this service
                             match self
                                 .vulnerability_engine
@@ -823,6 +909,25 @@ impl DbSink {
             .upsert_host(ip, hostname, status, None, None, None, None, None)
             .await?;
         self.metrics.increment_hosts().await;
+        
+        // Trigger analysis for newly discovered host
+        if let Some(engine) = &self.analysis_engine {
+            if status == Some("up") {
+                if let Err(e) = engine.on_host_discovered(ip).await {
+                    log::warn!("Failed to trigger analysis for host {}: {}", ip, e);
+                }
+            }
+        }
+        
+        // Trigger recursive discovery for new host
+        if let Some(discovery) = &self.discovery_manager {
+            if status == Some("up") {
+                if let Err(e) = discovery.on_host_discovered(ip).await {
+                    log::warn!("Failed to trigger recursive discovery for host {}: {}", ip, e);
+                }
+            }
+        }
+        
         Ok(())
     }
 
@@ -862,6 +967,29 @@ impl DbSink {
             .upsert_service_detailed(ip, port, protocol, Some(state), service, product, version, banner)
             .await?;
         self.metrics.increment_services().await;
+        
+        // Trigger analysis for newly discovered service
+        if let Some(engine) = &self.analysis_engine {
+            if let Some(service_name) = service {
+                if state.to_lowercase() == "open" {
+                    if let Err(e) = engine.on_service_discovered(ip, port, service_name).await {
+                        log::warn!("Failed to trigger analysis for service {}:{}: {}", ip, port, e);
+                    }
+                }
+            }
+        }
+        
+        // Trigger recursive discovery for new service
+        if let Some(discovery) = &self.discovery_manager {
+            if let Some(service_name) = service {
+                if state.to_lowercase() == "open" {
+                    if let Err(e) = discovery.on_service_discovered(ip, port, service_name).await {
+                        log::warn!("Failed to trigger recursive discovery for service {}:{}: {}", ip, port, e);
+                    }
+                }
+            }
+        }
+        
         Ok(())
     }
 

@@ -18,6 +18,27 @@ pub struct PortInfo {
     pub banner: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceInfo {
+    pub name: String,
+    pub port: u16,
+    pub protocol: String,
+    pub state: String,
+    pub version: Option<String>,
+    pub banner: Option<String>,
+    pub cve_count: u32,
+    pub enrichment_status: String, // "none", "pending", "completed", "error"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CveInfo {
+    pub id: String,
+    pub name: String,
+    pub severity: String,
+    pub cvss_score: Option<f32>,
+    pub description: Option<String>,
+}
+
 #[tauri::command]
 pub async fn get_all_hosts(
     db: State<'_, Arc<Db>>,
@@ -134,4 +155,63 @@ pub async fn get_host_ports_detailed(
     log::info!("Found {} ports for host IP: {}", ports.len(), host_ip);
 
     Ok(ports)
+}
+
+#[tauri::command]
+pub async fn get_host_services(
+    host_ip: String,
+    db: State<'_, Arc<Db>>,
+) -> Result<Vec<ServiceInfo>, String> {
+    log::info!("Getting services for host IP: {}", host_ip);
+
+    // Ensure the host exists
+    if let Err(e) = db
+        .inner()
+        .upsert_host(&host_ip, None, None, None, None, None, None, None)
+        .await
+    {
+        log::warn!("Failed to upsert host {}: {}", host_ip, e);
+    }
+
+    let services = db
+        .inner()
+        .get_host_services_detailed(&host_ip)
+        .await
+        .map_err(|e| e.to_string())?;
+    log::info!("Found {} services for host IP: {}", services.len(), host_ip);
+
+    Ok(services)
+}
+
+#[tauri::command]
+pub async fn get_service_cves(
+    host_ip: String,
+    port: u16,
+    service_name: Option<String>,
+    db: State<'_, Arc<Db>>,
+) -> Result<Vec<CveInfo>, String> {
+    log::info!("Getting CVEs for service {}:{} on host {}", port, service_name.as_deref().unwrap_or("unknown"), host_ip);
+
+    let cves = db
+        .inner()
+        .get_service_cves(&host_ip, port, service_name.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    log::info!("Found {} CVEs for service {}:{}", cves.len(), port, service_name.as_deref().unwrap_or("unknown"));
+
+    Ok(cves)
+}
+
+#[tauri::command]
+pub async fn enrich_service_osint(
+    host_ip: String,
+    port: u16,
+    service_name: Option<String>,
+    _version: Option<String>,
+    _db: State<'_, Arc<Db>>,
+) -> Result<String, String> {
+    // Placeholder for OSINT enrichment
+    // Will be implemented when OSINT module is ready
+    log::info!("OSINT enrichment requested for {}:{} ({})", host_ip, port, service_name.as_deref().unwrap_or("unknown"));
+    Ok("OSINT enrichment not yet implemented".to_string())
 }

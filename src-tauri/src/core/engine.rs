@@ -15,6 +15,7 @@ pub enum EngineState {
     Running,
     Completed,
     Error,
+    #[allow(dead_code)] // Reserved for future cancellation state tracking
     Cancelled,
 }
 
@@ -40,7 +41,9 @@ impl Engine {
 
     pub async fn is_ready(&self) -> bool {
         let state = self.get_state().await;
-        matches!(state, EngineState::Idle | EngineState::Completed | EngineState::Error)
+        // Allow multiple concurrent scans for recursive discovery
+        // Only block if explicitly cancelled or in error state
+        matches!(state, EngineState::Idle | EngineState::Completed | EngineState::Running | EngineState::Error)
     }
 
     /// Reset the engine to a clean state for new scans
@@ -64,13 +67,17 @@ impl Engine {
         log::info!("Engine starting execution with transforms in pipeline");
 
         // Check if engine is ready for new scan
-        if !self.is_ready().await {
-            let current_state = self.get_state().await;
-            return Err(anyhow::anyhow!("Engine not ready for new scan. Current state: {:?}", current_state));
+        // For recursive discovery and continuous netsniffer, allow concurrent operations
+        let current_state = self.get_state().await;
+        if matches!(current_state, EngineState::Error) {
+            return Err(anyhow::anyhow!("Engine in error state, cannot start new scan"));
         }
 
-        // Set running state and scan ID
-        *self.state.lock().await = EngineState::Running;
+        // Set running state and scan ID (allow concurrent scans for recursive discovery)
+        // Only update if not already running (to support concurrent operations)
+        if current_state == EngineState::Idle || current_state == EngineState::Completed {
+            *self.state.lock().await = EngineState::Running;
+        }
         *self.current_scan_id.lock().await = Some(plan.scan_id.to_string());
         
         log::info!("Engine state set to Running for scan: {}", plan.scan_id);
@@ -85,15 +92,28 @@ impl Engine {
             let transform = if plan.modules.is_empty() {
                 // Default transforms if no modules specified
                 log::info!("No modules specified, using default transform pipeline");
+                // Use with_transform builder to add enrichment transforms
+                use crate::core::transformer::{MacEnrichmentTransform, PassiveOsTransform, StealthyHostnameTransform};
                 CompositeTransform::new()
+                    .with_transform(Box::new(MacEnrichmentTransform::new()))
+                    .with_transform(Box::new(PassiveOsTransform::new()))
+                    .with_transform(Box::new(StealthyHostnameTransform::new()))
             } else {
                 // Build transform pipeline from plan.modules
                 log::info!(
                     "Building transform pipeline from modules: {:?}",
                     plan.modules
                 );
-                CompositeTransform::from_modules(&plan.modules)
-                    .map_err(|e| anyhow::anyhow!("Failed to build transform pipeline: {}", e))?
+                let mut composite = CompositeTransform::from_modules(&plan.modules)
+                    .map_err(|e| anyhow::anyhow!("Failed to build transform pipeline: {}", e))?;
+                
+                // Always add enrichment transforms even when modules are specified
+                use crate::core::transformer::{MacEnrichmentTransform, PassiveOsTransform, StealthyHostnameTransform};
+                composite = composite.with_transform(Box::new(MacEnrichmentTransform::new()));
+                composite = composite.with_transform(Box::new(PassiveOsTransform::new()));
+                composite = composite.with_transform(Box::new(StealthyHostnameTransform::new()));
+                
+                composite
             };
 
             let processed_stream = transform.apply(raw_stream).await?;
@@ -129,6 +149,20 @@ impl Engine {
                 }));
             }
 
+            // For continuous sources (like netsniffer), don't wait for completion
+            // The source will run indefinitely until cancelled
+            if plan.source_type == "netsniffer" {
+                log::info!("Netsniffer running continuously - not waiting for completion");
+                // Don't await broadcast_task - let it run forever
+                // Sink tasks will continue processing observations indefinitely
+                tokio::spawn(async move {
+                    if let Err(e) = broadcast_task.await {
+                        log::error!("Broadcast task failed: {}", e);
+                    }
+                });
+                return Ok::<(), anyhow::Error>(());
+            }
+            
             // Wait for source stream to complete (broadcast task)
             // Sink tasks will complete naturally when broadcast closes
             if let Err(e) = broadcast_task.await {

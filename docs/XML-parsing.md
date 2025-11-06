@@ -158,4 +158,3 @@ Integrate legacy parser structures.
 * **Performance**: Efficient batch processing and database operations
 * **Completeness**: No more “unknown” fields — full data extraction
 
-Want me to save this as `docs/architecture-xml-pipeline.md` in a repo-friendly format?

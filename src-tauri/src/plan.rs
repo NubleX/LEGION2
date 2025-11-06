@@ -165,6 +165,9 @@ impl Plan {
             modules: vec![
                 "mac_enrichment".to_string(),
                 "passive_os".to_string(),
+                "service_parsing".to_string(),
+                "cve_enrichment".to_string(),
+                "port_service_cve".to_string(),
             ],
             source_type: "netsniffer".to_string(),
             sink_types: vec![
@@ -200,6 +203,36 @@ impl Plan {
                 "vulnerability".to_string(),
             ]),
         ]
+    }
+
+    /// Create an IoT spider scan plan
+    /// Sends lightweight discovery probes (SSDP, mDNS, WSDD, SNMP, CoAP, MQTT) 
+    /// to discover IoT devices on the network
+    pub fn iot_spider(scan_id: Uuid, targets: String, protocols: Vec<String>) -> Self {
+        Self {
+            scan_id,
+            targets,
+            ports: String::new(), // IoT protocols use specific ports
+            rate: None,
+            extra: protocols, // Store protocol list in extra for now
+            modules: vec![
+                "ip_enrichment".to_string(),
+                "service_parsing".to_string(),
+            ],
+            source_type: "iot_probe".to_string(),
+            sink_types: vec![
+                "ui".to_string(),
+                "db".to_string(),
+                "vulnerability".to_string(),
+            ],
+            interface: None,
+        }
+    }
+
+    /// Filter which IoT protocols to use
+    pub fn with_iot_protocols(mut self, protocols: Vec<String>) -> Self {
+        self.extra = protocols;
+        self
     }
 
     /// Create a continuous monitoring plan: netsniffer + periodic nmap

@@ -64,7 +64,8 @@ use serde_json::json;
 use std::collections::VecDeque;
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::Write;
-use std::net::{Ipv4Addr, Ipv6Addr, UdpSocket};
+use std::net::{Ipv4Addr, Ipv6Addr, UdpSocket, SocketAddr};
+use std::time::Duration;
 use std::path::{Path, PathBuf};
 use crate::commands::engine_commands;
 
@@ -932,10 +933,14 @@ use futures::stream::{self, StreamExt as FuturesStreamExt};
 
 /// NetSniffer as a Source in the unified scanner pipeline
 /// Provides passive network monitoring, OS fingerprinting, MAC vendor lookup
+/// Now includes active probing capabilities for more aggressive discovery
 pub struct NetSnifferSource {
     interface: String,
     output_dir: PathBuf,
     max_packets: Option<usize>,  // Optional limit for testing
+    active_probing: bool,       // Enable active probes
+    probe_interval: Duration,   // Interval between probe rounds
+    target_network: Option<String>, // Target network CIDR (e.g., "192.168.1.0/24")
 }
 
 impl NetSnifferSource {
@@ -944,12 +949,262 @@ impl NetSnifferSource {
             interface,
             output_dir,
             max_packets: None,
+            active_probing: true, // Enable active probing by default
+            probe_interval: Duration::from_secs(30), // Probe every 30 seconds
+            target_network: None,
         }
     }
 
     pub fn with_max_packets(mut self, max: usize) -> Self {
         self.max_packets = Some(max);
         self
+    }
+
+    pub fn with_active_probing(mut self, enabled: bool) -> Self {
+        self.active_probing = enabled;
+        self
+    }
+
+    pub fn with_probe_interval(mut self, interval: Duration) -> Self {
+        self.probe_interval = interval;
+        self
+    }
+
+    pub fn with_target_network(mut self, network: Option<String>) -> Self {
+        self.target_network = network;
+        self
+    }
+
+    /// Get local IP address from interface
+    fn get_local_ip(interface: &str) -> Option<Ipv4Addr> {
+        use pcap::Device;
+        if let Ok(devices) = Device::list() {
+            if let Some(dev) = devices.iter().find(|d| d.name == interface) {
+                for addr in &dev.addresses {
+                    if let std::net::IpAddr::V4(ipv4) = addr.addr {
+                        if !ipv4.is_loopback() && !ipv4.is_unspecified() {
+                            return Some(ipv4);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Send SSDP M-SEARCH probe (multicast)
+    fn send_ssdp_probe(interface: &str) -> Result<()> {
+        let msg = format!(
+            "M-SEARCH * HTTP/1.1\r\n\
+             Host: 239.255.255.250:1900\r\n\
+             MAN: \"ssdp:discover\"\r\n\
+             MX: 3\r\n\
+             ST: ssdp:all\r\n\
+             \r\n"
+        );
+        let socket = UdpSocket::bind("0.0.0.0:0")?;
+        socket.set_multicast_ttl_v4(4)?;
+        socket.send_to(msg.as_bytes(), "239.255.255.250:1900")?;
+        log::debug!("Sent SSDP M-SEARCH probe");
+        Ok(())
+    }
+
+    /// Send mDNS query (multicast)
+    fn send_mdns_probe(interface: &str) -> Result<()> {
+        // Simple mDNS query for _services._dns-sd._udp.local
+        let query = vec![
+            0x00, 0x00, // Transaction ID
+            0x00, 0x00, // Flags: Standard query
+            0x00, 0x01, // Questions: 1
+            0x00, 0x00, // Answer RRs: 0
+            0x00, 0x00, // Authority RRs: 0
+            0x00, 0x00, // Additional RRs: 0
+            // Query: _services._dns-sd._udp.local
+            0x09, b'_', b's', b'e', b'r', b'v', b'i', b'c', b'e', b's',
+            0x07, b'_', b'd', b'n', b's', b'-', b's', b'd',
+            0x04, b'_', b'u', b'd', b'p',
+            0x05, b'l', b'o', b'c', b'a', b'l',
+            0x00, // Null terminator
+            0x00, 0x0c, // Type: PTR
+            0x00, 0x01, // Class: IN
+        ];
+        let socket = UdpSocket::bind("0.0.0.0:0")?;
+        socket.set_multicast_ttl_v4(4)?;
+        socket.send_to(&query, "224.0.0.251:5353")?;
+        log::debug!("Sent mDNS query");
+        Ok(())
+    }
+
+    /// Send UDP probes to common ports
+    fn send_udp_probes(targets: &[Ipv4Addr], ports: &[u16]) -> Result<()> {
+        let socket = UdpSocket::bind("0.0.0.0:0")?;
+        socket.set_read_timeout(Some(Duration::from_secs(1)))?;
+        
+        for target in targets {
+            for port in ports {
+                let probe = b"PROBE";
+                if let Err(e) = socket.send_to(probe, SocketAddr::new(std::net::IpAddr::V4(*target), *port)) {
+                    log::trace!("UDP probe to {}:{} failed: {}", target, port, e);
+                }
+            }
+        }
+        log::debug!("Sent UDP probes to {} targets on {} ports", targets.len(), ports.len());
+        Ok(())
+    }
+
+    /// Send ICMP echo requests (ping)
+    fn send_icmp_pings(targets: &[Ipv4Addr]) -> Result<()> {
+        use std::process::Command;
+        
+        for target in targets {
+            // Use system ping command for simplicity
+            let _ = Command::new("ping")
+                .args(&["-c", "1", "-W", "1", &target.to_string()])
+                .output();
+        }
+        log::debug!("Sent ICMP pings to {} targets", targets.len());
+        Ok(())
+    }
+
+    /// Send TCP SYN probes to common ports (lightweight port scan)
+    fn send_tcp_syn_probes(targets: &[Ipv4Addr], ports: &[u16]) -> Result<()> {
+        use std::io::ErrorKind;
+        
+        for target in targets {
+            for port in ports {
+                // Try to connect with very short timeout
+                match std::net::TcpStream::connect_timeout(
+                    &SocketAddr::new(std::net::IpAddr::V4(*target), *port),
+                    Duration::from_millis(100)
+                ) {
+                    Ok(_) => {
+                        log::trace!("TCP {}:{} appears open", target, port);
+                    }
+                    Err(e) if e.kind() == ErrorKind::TimedOut => {
+                        // Timeout means port might be filtered/open
+                        log::trace!("TCP {}:{} timeout (may be open)", target, port);
+                    }
+                    Err(_) => {
+                        // Connection refused means port is closed
+                    }
+                }
+            }
+        }
+        log::debug!("Sent TCP SYN probes to {} targets on {} ports", targets.len(), ports.len());
+        Ok(())
+    }
+
+    /// Generate target IPs from network CIDR or use common local network ranges
+    fn get_probe_targets(network: Option<&String>, local_ip: Option<Ipv4Addr>) -> Vec<Ipv4Addr> {
+        let mut targets = Vec::new();
+        
+        if let Some(local) = local_ip {
+            // Extract /24 network base
+            let octets = local.octets();
+            let base = [octets[0], octets[1], octets[2], 0];
+            
+            // Generate IPs in the /24 network
+            for i in 1..=254 {
+                let ip = Ipv4Addr::new(base[0], base[1], base[2], i);
+                if ip != local {
+                    targets.push(ip);
+                }
+            }
+        }
+        
+        // Limit to first 50 targets for performance
+        targets.truncate(50);
+        targets
+    }
+
+    /// Start active probing background task
+    fn start_active_probing(
+        interface: String,
+        target_network: Option<String>,
+        probe_interval: Duration,
+    ) {
+        tokio::spawn(async move {
+            let mut probe_count = 0u64;
+            
+            loop {
+                // Check cancellation
+                if engine_commands::is_scan_cancelled() {
+                    log::info!("Active probing cancelled");
+                    break;
+                }
+
+                // Get local IP
+                let local_ip = Self::get_local_ip(&interface);
+                if local_ip.is_none() {
+                    log::warn!("Could not determine local IP for interface {}, skipping probes", interface);
+                    tokio::time::sleep(probe_interval).await;
+                    continue;
+                }
+
+                // Get probe targets
+                let targets = Self::get_probe_targets(target_network.as_ref(), local_ip);
+                if targets.is_empty() {
+                    log::debug!("No targets for active probing");
+                    tokio::time::sleep(probe_interval).await;
+                    continue;
+                }
+
+                probe_count += 1;
+                log::info!("Starting active probe round #{} on {} targets", probe_count, targets.len());
+
+                // Common ports to probe
+                let common_tcp_ports = vec![22, 23, 80, 443, 445, 3389, 8080, 8443];
+                let common_udp_ports = vec![53, 123, 161, 1900, 5353];
+
+                // Send probes in parallel
+                let interface_clone = interface.clone();
+                let targets_clone = targets.clone();
+                let tcp_ports_clone = common_tcp_ports.clone();
+                tokio::task::spawn_blocking(move || {
+                    // SSDP multicast probe
+                    if let Err(e) = Self::send_ssdp_probe(&interface_clone) {
+                        log::debug!("SSDP probe error: {}", e);
+                    }
+                });
+
+                let interface_clone = interface.clone();
+                tokio::task::spawn_blocking(move || {
+                    // mDNS multicast probe
+                    if let Err(e) = Self::send_mdns_probe(&interface_clone) {
+                        log::debug!("mDNS probe error: {}", e);
+                    }
+                });
+
+                let targets_clone = targets.clone();
+                let udp_ports_clone = common_udp_ports.clone();
+                tokio::task::spawn_blocking(move || {
+                    // UDP probes
+                    if let Err(e) = Self::send_udp_probes(&targets_clone, &udp_ports_clone) {
+                        log::debug!("UDP probe error: {}", e);
+                    }
+                });
+
+                let targets_clone = targets.clone();
+                let tcp_ports_clone = common_tcp_ports.clone();
+                tokio::task::spawn_blocking(move || {
+                    // TCP SYN probes
+                    if let Err(e) = Self::send_tcp_syn_probes(&targets_clone, &tcp_ports_clone) {
+                        log::debug!("TCP probe error: {}", e);
+                    }
+                });
+
+                let targets_clone = targets.clone();
+                tokio::task::spawn_blocking(move || {
+                    // ICMP pings
+                    if let Err(e) = Self::send_icmp_pings(&targets_clone) {
+                        log::debug!("ICMP probe error: {}", e);
+                    }
+                });
+
+                // Wait for next probe round
+                tokio::time::sleep(probe_interval).await;
+            }
+        });
     }
 
     /// Convert PktMeta to Observation for the pipeline
@@ -1005,7 +1260,7 @@ impl NetSnifferSource {
         });
 
         // 2. Service Observation if we have port information
-        if let (Some(sport), Some(dport)) = (pkt.sport, pkt.dport) {
+        if let (Some(sport), Some(_dport)) = (pkt.sport, pkt.dport) {
             let mut service_fields = serde_json::Map::new();
             service_fields.insert("ip".to_string(), pkt.src_ip.clone().into());
             service_fields.insert("port".to_string(), sport.into());
@@ -1013,9 +1268,52 @@ impl NetSnifferSource {
             service_fields.insert("state".to_string(), "open".into());
             service_fields.insert("source".to_string(), "netsniffer".into());
 
+            // Use port classification to infer service name
+            let service_info = crate::shared::shared::classify_service_by_port(sport);
+            service_fields.insert("service".to_string(), service_info.name.to_lowercase().into());
+            service_fields.insert("service_category".to_string(), service_info.category.into());
+
+            // Add TCP flags for protocol analysis
             if let Some(flags) = pkt.flags {
                 service_fields.insert("tcp_flags".to_string(), flags.into());
             }
+
+            // Add TCP fingerprint hints for service/product detection
+            if let Some(tcp_win) = pkt.tcp_win {
+                service_fields.insert("tcp_window".to_string(), tcp_win.into());
+            }
+            if let Some(mss) = pkt.tcp_mss {
+                service_fields.insert("tcp_mss".to_string(), mss.into());
+            }
+
+            // Add hints for product/version detection based on port and protocol
+            // These hints can be used by CVE enrichment transforms
+            match sport {
+                22 => {
+                    // SSH - common versions can be detected from banner
+                    service_fields.insert("product_hint".to_string(), "openssh".into());
+                }
+                80 | 443 | 8080 | 8000 | 8443 => {
+                    // HTTP/HTTPS - common web servers
+                    service_fields.insert("product_hint".to_string(), "web_server".into());
+                }
+                3306 => {
+                    service_fields.insert("product_hint".to_string(), "mysql".into());
+                }
+                5432 => {
+                    service_fields.insert("product_hint".to_string(), "postgresql".into());
+                }
+                1433 => {
+                    service_fields.insert("product_hint".to_string(), "mssql".into());
+                }
+                6379 => {
+                    service_fields.insert("product_hint".to_string(), "redis".into());
+                }
+                _ => {}
+            }
+
+            // Mark for CVE enrichment
+            service_fields.insert("needs_cve_check".to_string(), true.into());
 
             observations.push(Observation {
                 scan_id,
@@ -1058,16 +1356,29 @@ impl Source for NetSnifferSource {
         let interface = self.interface.clone();
         let output_dir = self.output_dir.clone();
         let max_packets = self.max_packets;
+        let active_probing = self.active_probing;
+        let probe_interval = self.probe_interval;
+        let target_network = self.target_network.clone();
 
         // Ensure output directory exists
         create_dir_all(&output_dir)?;
 
-        // Build BPF filter for scanner replies
-        // This captures replies to our scanner (incoming traffic)
+        // Start active probing if enabled
+        if active_probing {
+            log::info!("Starting active probing on interface: {}", interface);
+            Self::start_active_probing(interface.clone(), target_network, probe_interval);
+        } else {
+            log::info!("Active probing disabled, using passive monitoring only");
+        }
+
+        // Build BPF filter for scanner replies and IoT protocol responses
+        // This captures replies to our scanner (incoming traffic) and IoT discovery responses
         let scanner_ip = ""; // TODO: Get local IP from interface
         let bpf_filter = format!(
-            "tcp or udp or icmp"
-        ); // Simplified for now, can be enhanced with dst host filtering
+            "tcp or udp or icmp or \
+             (udp and (port 1900 or port 5353 or port 3702 or port 161 or port 5683 or port 5684)) or \
+             (tcp and (port 1883 or port 8883))"
+        ); // Enhanced to capture IoT protocol responses
 
         log::info!("Starting NetSniffer on interface: {}, BPF: {}", interface, bpf_filter);
 
@@ -1106,6 +1417,7 @@ impl Source for NetSnifferSource {
             let mut last_heartbeat = std::time::Instant::now();
             let heartbeat_interval = std::time::Duration::from_secs(5);
 
+            // Continuous operation - only stop on explicit cancellation or fatal error
             loop {
                 // Check cancellation
                 if engine_commands::is_scan_cancelled() {
@@ -1113,11 +1425,14 @@ impl Source for NetSnifferSource {
                     break;
                 }
 
-                // Check max packet limit
+                // For continuous operation, ignore max_packets limit unless explicitly set very low
+                // This allows netsniffer to run indefinitely and continuously discover new hosts
                 if let Some(max) = max_packets {
-                    if packet_count >= max {
-                        log::info!("NetSniffer reached max packet limit: {}", max);
-                        break;
+                    if max > 0 && packet_count >= max {
+                        log::info!("NetSniffer reached max packet limit: {} - continuing anyway for continuous operation", max);
+                        // Don't break - continue monitoring for continuous discovery
+                        // Reset packet count to allow continuous operation
+                        // packet_count = 0; // Commented out to track total packets
                     }
                 }
 

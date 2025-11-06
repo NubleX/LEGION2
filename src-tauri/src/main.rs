@@ -16,6 +16,7 @@ mod core;
 mod database;
 mod modules;
 mod network;
+mod offensive;
 mod os;
 mod plan;
 mod scanners;
@@ -75,6 +76,9 @@ fn main() {
             commands::host_commands::get_host_details,
             commands::host_commands::get_host_by_ip,
             commands::host_commands::get_host_ports_detailed,
+            commands::host_commands::get_host_services,
+            commands::host_commands::get_service_cves,
+            commands::host_commands::enrich_service_osint,
             commands::host_commands::delete_host,
             commands::host_commands::batch_import_hosts,
             commands::host_commands::update_host_os_detection,

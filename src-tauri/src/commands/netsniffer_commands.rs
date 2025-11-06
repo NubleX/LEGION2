@@ -3,7 +3,6 @@
 
 use crate::scanners::netsniffer::{log_artifact, oui_lookup_vendor};
 use anyhow::Result;
-use quick_xml::Writer;
 use serde_json::{json, Value};
 use tauri::command;
 
@@ -97,15 +96,10 @@ pub async fn get_vendor_statistics() -> Result<Value, String> {
 
 /// Command to parse XML and enrich MAC addresses
 #[command]
-pub async fn parse_xml_for_mac_enrichment(xml_content: String) -> Result<Vec<Value>, String> {
-    // This would use the parse_host_xml function from transformer.rs
-    // For now, return placeholder to indicate the capability
-    let artifacts = vec![json!({
-        "ip": "192.168.1.100",
-        "mac": "aa:bb:cc:dd:ee:ff",
-        "vendor": "Example Vendor",
-        "source": "xml_parser"
-    })];
-
-    Ok(artifacts)
+pub async fn parse_xml_for_mac_enrichment(xml_content: String) -> Result<String, String> {
+    // Use the parse_host_xml function from transformer.rs to enrich MAC addresses
+    // This function parses Nmap XML and logs enriched MAC/vendor artifacts
+    crate::core::transformer::parse_host_xml(&xml_content);
+    
+    Ok("XML parsed and MAC addresses enriched. Check netsniffer artifacts for results.".to_string())
 }

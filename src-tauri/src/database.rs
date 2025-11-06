@@ -5,7 +5,7 @@ extern crate etherparse;
 extern crate pcap;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::Arc;
 use sha2::{Sha256, Digest};
 use hex;
@@ -810,7 +810,7 @@ impl Db {
         let description = description.to_string();
         let severity = severity.to_string();
         let cve_id = cve_id.map(|s| s.to_string());
-        let remediation = remediation.map(|s| s.to_string());
+        let _remediation = remediation.map(|s| s.to_string()); // Not stored in DB schema yet
         
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock();
@@ -854,11 +854,17 @@ impl Db {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock();
             
-            // First get host ID
+            // First get host ID - return empty vec if host doesn't exist
             let mut host_stmt = conn.prepare("SELECT id FROM hosts WHERE ip_encrypted = ?1")?;
-            let host_id: String = host_stmt.query_row([&ip_encrypted], |row| {
+            let host_id: Option<String> = host_stmt.query_row([&ip_encrypted], |row| {
                 Ok(row.get::<_, String>(0)?)
-            })?;
+            }).optional()?;
+            
+            // If host not found, return empty vector instead of error
+            let host_id = match host_id {
+                Some(id) => id,
+                None => return Ok(Vec::new()),
+            };
             
             let mut stmt = conn.prepare(
                 r#"SELECT id, name, severity, description, cve, cvss_score, discovered_at, last_seen
@@ -924,6 +930,293 @@ impl Db {
             }
             Ok(vulns)
         }).await?
+    }
+
+    /// Get all services for a host with CVE counts from CVE database
+    pub async fn get_host_services_detailed(&self, host_ip: &str) -> Result<Vec<crate::commands::host_commands::ServiceInfo>> {
+        let conn = self.conn.clone();
+        let host_ip_clone = host_ip.to_string();
+        let encryption = EncryptionManager::new();
+        
+        // Initialize CVE database
+        let cve_db = match crate::offensive::cve_db::CveDb::new() {
+            Ok(db) => std::sync::Arc::new(db),
+            Err(e) => {
+                log::warn!("Failed to initialize CVE database: {}", e);
+                // Continue without CVE database - services will have 0 CVE count
+                return self.get_host_services_detailed_no_cve(host_ip_clone).await;
+            }
+        };
+        
+        // First, get all services from the database (synchronous)
+        let service_data = tokio::task::spawn_blocking(move || {
+            let conn = conn.lock();
+            
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT 
+                    p.number,
+                    p.protocol,
+                    p.state,
+                    p.service_name,
+                    p.product,
+                    p.version,
+                    p.banner
+                FROM ports p
+                WHERE p.host_id = ? AND p.service_name IS NOT NULL
+                ORDER BY p.number
+                "#
+            )?;
+            
+            let rows = stmt.query_map([host_ip_clone.clone()], |row| {
+                let number: i32 = row.get(0)?;
+                let protocol: String = row.get(1)?;
+                let state: Option<String> = row.get(2)?;
+                let service_encrypted: Option<String> = row.get(3)?;
+                let product_encrypted: Option<String> = row.get(4)?;
+                let version_encrypted: Option<String> = row.get(5)?;
+                let banner_encrypted: Option<String> = row.get(6)?;
+                
+                let state = state.unwrap_or_else(|| "unknown".to_string());
+                
+                let service_name = if let Some(s_enc) = service_encrypted {
+                    encryption.decrypt(&s_enc).unwrap_or_else(|_| "unknown".to_string())
+                } else {
+                    "unknown".to_string()
+                };
+                
+                let product = if let Some(p_enc) = product_encrypted {
+                    encryption.decrypt(&p_enc).ok()
+                } else {
+                    None
+                };
+                
+                let version = if let Some(v_enc) = version_encrypted {
+                    encryption.decrypt(&v_enc).ok()
+                } else {
+                    None
+                };
+                
+                let banner = if let Some(b_enc) = banner_encrypted {
+                    encryption.decrypt(&b_enc).ok()
+                } else {
+                    None
+                };
+                
+                Ok((number, protocol, state, service_name, product, version, banner))
+            })?;
+            
+            let mut services = Vec::new();
+            for row in rows {
+                services.push(row?);
+            }
+            Ok::<Vec<_>, anyhow::Error>(services)
+        }).await??;
+        
+        // Now query CVE database for each service (async)
+        let mut result_services = Vec::new();
+        for (number, protocol, state, service_name, product, version, banner) in service_data {
+            let search_term = product.as_ref().unwrap_or(&service_name);
+            let cve_count = match cve_db.search_by_product(search_term).await {
+                Ok(mut cves) => {
+                    // Filter by version if available
+                    if let Some(ref ver) = version {
+                        cves.retain(|cve| {
+                            cve.matches_product_version(&service_name, ver) ||
+                            (product.is_some() && cve.matches_product_version(product.as_ref().unwrap(), ver))
+                        });
+                    }
+                    cves.len()
+                }
+                Err(e) => {
+                    log::debug!("Failed to search CVE database for {}: {}", search_term, e);
+                    0
+                }
+            };
+            
+            result_services.push(crate::commands::host_commands::ServiceInfo {
+                name: service_name,
+                port: number as u16,
+                protocol,
+                state,
+                version,
+                banner,
+                cve_count: cve_count as u32,
+                enrichment_status: "none".to_string(),
+            });
+        }
+        
+        log::info!("Found {} services for host_ip {}", result_services.len(), host_ip);
+        Ok(result_services)
+    }
+
+    /// Fallback method when CVE database is not available
+    async fn get_host_services_detailed_no_cve(&self, host_ip: String) -> Result<Vec<crate::commands::host_commands::ServiceInfo>> {
+        let conn = self.conn.clone();
+        let encryption = EncryptionManager::new();
+        
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock();
+            
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT 
+                    p.number,
+                    p.protocol,
+                    p.state,
+                    p.service_name,
+                    p.version,
+                    p.banner
+                FROM ports p
+                WHERE p.host_id = ? AND p.service_name IS NOT NULL
+                ORDER BY p.number
+                "#
+            )?;
+            
+            let rows = stmt.query_map([host_ip.clone()], |row| {
+                let number: i32 = row.get(0)?;
+                let protocol: String = row.get(1)?;
+                let state: Option<String> = row.get(2)?;
+                let service_encrypted: Option<String> = row.get(3)?;
+                let version_encrypted: Option<String> = row.get(4)?;
+                let banner_encrypted: Option<String> = row.get(5)?;
+                
+                let state = state.unwrap_or_else(|| "unknown".to_string());
+                
+                let service_name = if let Some(s_enc) = service_encrypted {
+                    encryption.decrypt(&s_enc).unwrap_or_else(|_| "unknown".to_string())
+                } else {
+                    "unknown".to_string()
+                };
+                
+                let version = if let Some(v_enc) = version_encrypted {
+                    encryption.decrypt(&v_enc).ok()
+                } else {
+                    None
+                };
+                
+                let banner = if let Some(b_enc) = banner_encrypted {
+                    encryption.decrypt(&b_enc).ok()
+                } else {
+                    None
+                };
+                
+                Ok(crate::commands::host_commands::ServiceInfo {
+                    name: service_name,
+                    port: number as u16,
+                    protocol,
+                    state,
+                    version,
+                    banner,
+                    cve_count: 0,
+                    enrichment_status: "none".to_string(),
+                })
+            })?;
+            
+            let mut services = Vec::new();
+            for row in rows {
+                match row {
+                    Ok(service) => services.push(service),
+                    Err(e) => {
+                        log::error!("Error processing service row for host_ip {}: {}", host_ip, e);
+                    }
+                }
+            }
+            
+            Ok(services)
+        }).await?
+    }
+
+    /// Get CVEs for a specific service from CVE database
+    pub async fn get_service_cves(&self, host_ip: &str, port: u16, service_name: Option<&str>) -> Result<Vec<crate::commands::host_commands::CveInfo>> {
+        let conn = self.conn.clone();
+        let host_ip_str = host_ip.to_string();
+        let port = port as i32;
+        let service_name = service_name.map(|s| s.to_string());
+        let encryption = EncryptionManager::new();
+        
+        // Initialize CVE database
+        let cve_db = match crate::offensive::cve_db::CveDb::new() {
+            Ok(db) => std::sync::Arc::new(db),
+            Err(e) => {
+                log::warn!("Failed to initialize CVE database: {}", e);
+                return Ok(Vec::new());
+            }
+        };
+        
+        // Get service/product/version information from ports table (synchronous)
+        let host_ip_for_query = host_ip_str.clone();
+        let (service_name_from_db, product, version) = tokio::task::spawn_blocking(move || {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare(
+                "SELECT service_name, product, version FROM ports WHERE host_id = ?1 AND number = ?2 LIMIT 1"
+            )?;
+            
+            let port_i64 = port as i64;
+            stmt.query_row(params![&host_ip_for_query, port_i64], |row| {
+                let service_encrypted: Option<String> = row.get(0)?;
+                let product_encrypted: Option<String> = row.get(1)?;
+                let version_encrypted: Option<String> = row.get(2)?;
+                
+                let service = if let Some(s_enc) = service_encrypted {
+                    encryption.decrypt(&s_enc).unwrap_or_else(|_| "unknown".to_string())
+                } else {
+                    "unknown".to_string()
+                };
+                
+                let product = if let Some(p_enc) = product_encrypted {
+                    encryption.decrypt(&p_enc).ok()
+                } else {
+                    None
+                };
+                
+                let version = if let Some(v_enc) = version_encrypted {
+                    encryption.decrypt(&v_enc).ok()
+                } else {
+                    None
+                };
+                
+                Ok((service, product, version))
+            })
+        }).await??;
+        
+        // Use provided service_name or fall back to database value
+        let search_term = service_name.as_ref()
+            .or(product.as_ref())
+            .unwrap_or(&service_name_from_db);
+        
+        // Query CVE database (async)
+        let mut cves = match cve_db.search_by_product(search_term).await {
+            Ok(cves) => cves,
+            Err(e) => {
+                log::debug!("Failed to search CVE database for {}: {}", search_term, e);
+                return Ok(Vec::new());
+            }
+        };
+        
+        // Filter by version if available
+        if let Some(ref ver) = version {
+            cves.retain(|cve| {
+                cve.matches_product_version(&service_name_from_db, ver) ||
+                (product.is_some() && cve.matches_product_version(product.as_ref().unwrap(), ver))
+            });
+        }
+        
+        // Convert CVE structs to CveInfo
+        let cve_infos: Vec<crate::commands::host_commands::CveInfo> = cves.into_iter()
+            .map(|cve| {
+                crate::commands::host_commands::CveInfo {
+                    id: cve.name.clone(),
+                    name: cve.name,
+                    severity: format!("{:?}", cve.severity).to_lowercase(),
+                    cvss_score: cve.cvss_score,
+                    description: Some(cve.description),
+                }
+            })
+            .collect();
+        
+        log::info!("Found {} CVEs for port {} on host {}", cve_infos.len(), port, host_ip_str);
+        Ok(cve_infos)
     }
 }
 

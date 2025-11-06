@@ -55,6 +55,11 @@ tracing = "0.1"
 rusqlite = { version = "0.37.0", features = ["bundled", "chrono"] }
 tokio-stream = "0.1.17"
 
+# IoT Protocol Libraries (optional - using basic implementations for now)
+# dns-parser = "0.9"  # Can be added later for full DNS parsing
+# coap-lite = "0.10"  # Can be added later for full CoAP support
+# snmp-parser = "0.7"  # Can be added later for full SNMP support
+
 # Platform-specifics
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winnt", "processthreadsapi"] }

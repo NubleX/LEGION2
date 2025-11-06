@@ -6,6 +6,8 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import useHostStore, { type Host } from '../stores/hostStore';
+import useServiceStore from '../stores/serviceStore';
+import ServiceTable from './ServiceTable';
 
 interface PortInfo {
   number: number;
@@ -95,7 +97,8 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
   // Only subscribe to hosts array, memoize the current host lookup
   const hosts = useHostStore(state => state.hosts);
   
-  const [selectedTab, setSelectedTab] = useState<'ports' | 'vulnerabilities' | 'details'>('ports');
+  const [selectedTab, setSelectedTab] = useState<'ports' | 'services' | 'vulnerabilities' | 'details'>('ports');
+  const loadServices = useServiceStore((state) => state.loadServices);
   const [hostPorts, setHostPorts] = useState<PortInfo[]>([]);
   const [loadingPorts, setLoadingPorts] = useState(false);
   const [hostVulnerabilities, setHostVulnerabilities] = useState<VulnerabilityInfo[]>([]);
@@ -132,14 +135,15 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
       .finally(() => setLoadingPorts(false));
   }, []);
 
-  // Load ports when host changes
+  // Load ports and services when host changes
   useEffect(() => {
     if (currentHost?.ip) {
       loadPorts(currentHost.ip);
+      loadServices(currentHost.ip).catch(console.error);
     } else {
       setHostPorts([]);
     }
-  }, [currentHost?.ip]);
+  }, [currentHost?.ip, loadServices]);
 
   // Refresh ports when notified of updates for the selected host
   useEffect(() => {
@@ -258,7 +262,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
         <div className="flex items-center justify-between">
           {/* Tabs */}
           <div className="flex space-x-1 bg-gray-800 rounded-lg p-1">
-            {(['ports', 'vulnerabilities', 'details'] as const).map((tab) => (
+            {(['ports', 'services', 'vulnerabilities', 'details'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setSelectedTab(tab)}
@@ -333,6 +337,21 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+        )}
+
+        {selectedTab === 'services' && (
+          <div className="space-y-4">
+            {currentHost?.ip ? (
+              <ServiceTable
+                hostIp={currentHost.ip}
+                onServiceSelect={(service) => {
+                  console.log('Service selected:', service);
+                }}
+              />
+            ) : (
+              <p className="text-gray-400 text-center py-8">No host selected.</p>
             )}
           </div>
         )}

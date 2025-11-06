@@ -47,12 +47,22 @@ pub async fn engine_execute(
             log::info!("Creating new engine instance");
 
             // Build engine from registry, wire Arc<Db> into DbSink
-            let registry = Registry::new(state_db.inner().clone(), app);
+            // Use make_registry bootstrap function for consistent initialization
+            let registry = crate::core::bootstrap::make_registry(state_db.inner().clone(), app)
+                .map_err(|e| format!("Failed to create registry: {}", e))?;
 
             // Initialize all standard components in registry
             if let Err(e) = registry.initialize_standard_components().await {
                 log::error!("Failed to initialize registry components: {}", e);
                 return Err(format!("Registry initialization failed: {}", e));
+            }
+
+            // Start continuous discovery manager for recursive discovery
+            let discovery_manager = registry.get_discovery_manager();
+            if let Err(e) = discovery_manager.start_continuous_discovery().await {
+                log::warn!("Failed to start continuous discovery manager: {}", e);
+            } else {
+                log::info!("🔍 Continuous recursive discovery manager started");
             }
 
             // Log available components

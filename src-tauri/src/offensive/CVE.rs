@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -34,7 +35,7 @@ pub struct CVE {
     pub cwe: Vec<String>,       // CWE IDs
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Severity {
     #[serde(rename = "critical")]
     Critical,
@@ -82,7 +83,8 @@ impl Severity {
 
 impl CVE {
     pub fn new(cve_data: HashMap<String, String>) -> Self {
-        let severity_str = cve_data.get("severity").unwrap_or(&"unknown".to_string());
+        let default_severity = "unknown".to_string();
+        let severity_str = cve_data.get("severity").unwrap_or(&default_severity);
         let severity = Severity::from_string(severity_str);
 
         let cvss_score = cve_data.get("cvss_score")
@@ -141,86 +143,75 @@ impl CVE {
 
 // CVE Database for local storage and querying
 pub struct CVEDatabase {
-    cves: HashMap<String, CVE>,
+    db: Arc<crate::offensive::cve_db::CveDb>,
     client: Client,
 }
 
 impl CVEDatabase {
     pub fn new() -> Result<Self> {
         let client = Client::new();
+        let db = Arc::new(crate::offensive::cve_db::CveDb::new()?);
         
         Ok(Self {
-            cves: HashMap::new(),
+            db,
             client,
         })
     }
 
-    pub fn add_cve(&mut self, cve: CVE) {
-        self.cves.insert(cve.name.clone(), cve);
+    pub async fn add_cve(&self, cve: CVE) -> Result<()> {
+        self.db.add_cve(&cve).await?;
+        Ok(())
     }
 
-    pub fn get_cve(&self, cve_id: &str) -> Option<&CVE> {
-        self.cves.get(cve_id)
+    pub async fn get_cve(&self, cve_id: &str) -> Result<Option<CVE>> {
+        self.db.get_cve(cve_id).await
     }
 
-    pub fn search_by_product(&self, product: &str) -> Vec<&CVE> {
-        self.cves
-            .values()
-            .filter(|cve| cve.product.to_lowercase().contains(&product.to_lowercase()))
-            .collect()
+    pub async fn search_by_product(&self, product: &str) -> Result<Vec<CVE>> {
+        self.db.search_by_product(product).await
     }
 
-    pub fn search_by_severity(&self, severity: Severity) -> Vec<&CVE> {
-        self.cves
-            .values()
+    pub async fn search_by_severity(&self, severity: Severity) -> Result<Vec<CVE>> {
+        // Get all CVEs and filter by severity
+        let all_cves = self.db.search_by_product("").await?;
+        Ok(all_cves.into_iter()
             .filter(|cve| cve.severity == severity)
-            .collect()
+            .collect())
     }
 
-    pub fn search_exploitable(&self) -> Vec<&CVE> {
-        self.cves
-            .values()
+    pub async fn search_exploitable(&self) -> Result<Vec<CVE>> {
+        let all_cves = self.db.search_by_product("").await?;
+        Ok(all_cves.into_iter()
             .filter(|cve| cve.is_exploitable())
-            .collect()
+            .collect())
     }
 
-    pub fn search_critical(&self) -> Vec<&CVE> {
-        self.cves
-            .values()
+    pub async fn search_critical(&self) -> Result<Vec<CVE>> {
+        let all_cves = self.db.search_by_product("").await?;
+        Ok(all_cves.into_iter()
             .filter(|cve| cve.is_critical())
-            .collect()
+            .collect())
     }
 
-    pub fn get_cves_by_risk_score(&self) -> Vec<&CVE> {
-        let mut cves: Vec<&CVE> = self.cves.values().collect();
+    pub async fn get_cves_by_risk_score(&self) -> Result<Vec<CVE>> {
+        let mut cves = self.db.search_by_product("").await?;
         cves.sort_by(|a, b| b.risk_score().partial_cmp(&a.risk_score()).unwrap());
-        cves
+        Ok(cves)
     }
 
-    pub fn count_by_severity(&self) -> HashMap<Severity, usize> {
+    pub async fn count_by_severity(&self) -> Result<HashMap<Severity, usize>> {
+        let all_cves = self.db.search_by_product("").await?;
         let mut counts = HashMap::new();
         
-        for cve in self.cves.values() {
+        for cve in all_cves {
             *counts.entry(cve.severity.clone()).or_insert(0) += 1;
         }
         
-        counts
+        Ok(counts)
     }
 
-    pub fn remove_cve(&mut self, cve_id: &str) -> bool {
-        self.cves.remove(cve_id).is_some()
-    }
-
-    pub fn clear(&mut self) {
-        self.cves.clear();
-    }
-
-    pub fn len(&self) -> usize {
-        self.cves.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.cves.is_empty()
+    pub async fn count(&self) -> Result<usize> {
+        self.db.count().await
     }
 }
 
@@ -261,6 +252,39 @@ impl CVEFetcher {
         Ok(CVE::new(cve_data))
     }
 
+    /// Fetch CVE and store it in the database
+    pub async fn fetch_and_store_cve(&self, cve_id: &str, database: &CVEDatabase) -> Result<CVE> {
+        // Check if CVE already exists in database
+        if let Ok(Some(existing)) = database.get_cve(cve_id).await {
+            debug!("CVE {} already in database", cve_id);
+            return Ok(existing);
+        }
+        
+        // Fetch from NVD
+        let cve = self.fetch_cve(cve_id).await?;
+        
+        // Store in database
+        database.add_cve(cve.clone()).await?;
+        info!("Stored CVE {} in database", cve_id);
+        
+        Ok(cve)
+    }
+
+    /// Search for CVEs by product keyword and store results
+    pub async fn search_and_store_cves(&self, keyword: &str, database: &CVEDatabase) -> Result<Vec<CVE>> {
+        let cves = self.search_cves(keyword).await?;
+        
+        // Store each CVE in database
+        for cve in &cves {
+            if let Err(e) = database.add_cve(cve.clone()).await {
+                warn!("Failed to store CVE {}: {}", cve.name, e);
+            }
+        }
+        
+        info!("Stored {} CVEs from search for '{}'", cves.len(), keyword);
+        Ok(cves)
+    }
+
     async fn fetch_from_nvd(&self, cve_id: &str) -> Result<CVE> {
         let url = format!("https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={}", cve_id);
         
@@ -277,7 +301,8 @@ impl CVEFetcher {
             anyhow::bail!("NVD API request failed with status: {}", response.status());
         }
         
-        let json: serde_json::Value = response.json().await?;
+        let text = response.text().await?;
+        let json: serde_json::Value = serde_json::from_str(&text)?;
         
         self.parse_nvd_response(&json, cve_id)
     }
@@ -301,10 +326,15 @@ impl CVEFetcher {
             .unwrap_or("No description available")
             .to_string();
         
+        // Extract CVSS score (try v3.1 first, then v3.0, then v2.0)
         let cvss_score = cve_item["metrics"]
             .as_object()
-            .and_then(|metrics| metrics.get("cvssMetricV31"))
-            .and_then(|v31| v31.as_array())
+            .and_then(|metrics| {
+                metrics.get("cvssMetricV31")
+                    .or_else(|| metrics.get("cvssMetricV30"))
+                    .or_else(|| metrics.get("cvssMetricV2"))
+            })
+            .and_then(|metric| metric.as_array())
             .and_then(|arr| arr.first())
             .and_then(|metric| metric["cvssData"]["baseScore"].as_f64())
             .map(|score| score as f32);
@@ -314,6 +344,46 @@ impl CVEFetcher {
         } else {
             Severity::Unknown
         };
+        
+        // Extract product and version from CPE (Common Platform Enumeration)
+        let mut product = "unknown".to_string();
+        let mut version = "unknown".to_string();
+        
+        if let Some(configurations) = cve_item["configurations"].as_array() {
+            for config in configurations {
+                if let Some(nodes) = config["nodes"].as_array() {
+                    for node in nodes {
+                        if let Some(cpe_match) = node["cpeMatch"].as_array() {
+                            for cpe in cpe_match {
+                                if let Some(cpe_str) = cpe["criteria"].as_str() {
+                                    // Parse CPE format: cpe:2.3:a:vendor:product:version:...
+                                    let parts: Vec<&str> = cpe_str.split(':').collect();
+                                    if parts.len() >= 5 {
+                                        product = parts[4].to_string();
+                                        if parts.len() >= 6 {
+                                            version = parts[5].to_string();
+                                        }
+                                        // Break after first match
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Extract published and modified dates
+        let published_date = cve_item["published"]
+            .as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc));
+        
+        let last_modified_date = cve_item["lastModified"]
+            .as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc));
         
         let references: Vec<String> = cve_item["references"]
             .as_array()
@@ -346,6 +416,8 @@ impl CVEFetcher {
         cve_data.insert("description".to_string(), description);
         cve_data.insert("url".to_string(), format!("https://nvd.nist.gov/vuln/detail/{}", cve_id));
         cve_data.insert("source".to_string(), "NVD".to_string());
+        cve_data.insert("product".to_string(), product);
+        cve_data.insert("version".to_string(), version);
         
         if let Some(score) = cvss_score {
             cve_data.insert("cvss_score".to_string(), score.to_string());
@@ -355,6 +427,8 @@ impl CVEFetcher {
         cve.severity = severity;
         cve.references = references;
         cve.cwe = cwe;
+        cve.published_date = published_date;
+        cve.last_modified_date = last_modified_date;
         
         Ok(cve)
     }
@@ -376,7 +450,8 @@ impl CVEFetcher {
             anyhow::bail!("NVD API search failed with status: {}", response.status());
         }
         
-        let json: serde_json::Value = response.json().await?;
+        let text = response.text().await?;
+        let json: serde_json::Value = serde_json::from_str(&text)?;
         self.parse_nvd_search_response(&json)
     }
 
@@ -394,6 +469,8 @@ impl CVEFetcher {
                 .context("Missing CVE ID")?
                 .to_string();
             
+            let cve_id_clone = cve_id.clone();
+            
             // Parse basic information (similar to parse_nvd_response)
             let description = cve_item["descriptions"]
                 .as_array()
@@ -403,9 +480,9 @@ impl CVEFetcher {
                 .to_string();
             
             let mut cve_data = HashMap::new();
-            cve_data.insert("id".to_string(), cve_id);
+            cve_data.insert("id".to_string(), cve_id_clone.clone());
             cve_data.insert("description".to_string(), description);
-            cve_data.insert("url".to_string(), format!("https://nvd.nist.gov/vuln/detail/{}", cve_id));
+            cve_data.insert("url".to_string(), format!("https://nvd.nist.gov/vuln/detail/{}", cve_id_clone));
             cve_data.insert("source".to_string(), "NVD".to_string());
             
             let cve = CVE::new(cve_data);
@@ -426,10 +503,9 @@ impl CVEMatcher {
         Self { database }
     }
 
-    pub fn find_cves_for_product(&self, product: &str, version: Option<&str>) -> Vec<&CVE> {
-        self.database
-            .search_by_product(product)
-            .into_iter()
+    pub async fn find_cves_for_product(&self, product: &str, version: Option<&str>) -> Result<Vec<CVE>> {
+        let cves = self.database.search_by_product(product).await?;
+        Ok(cves.into_iter()
             .filter(|cve| {
                 if let Some(ver) = version {
                     cve.matches_product_version(product, ver)
@@ -437,25 +513,25 @@ impl CVEMatcher {
                     true
                 }
             })
-            .collect()
+            .collect())
     }
 
-    pub fn find_exploitable_cves(&self, product: &str, version: Option<&str>) -> Vec<&CVE> {
-        self.find_cves_for_product(product, version)
-            .into_iter()
+    pub async fn find_exploitable_cves(&self, product: &str, version: Option<&str>) -> Result<Vec<CVE>> {
+        let cves = self.find_cves_for_product(product, version).await?;
+        Ok(cves.into_iter()
             .filter(|cve| cve.is_exploitable())
-            .collect()
+            .collect())
     }
 
-    pub fn find_critical_cves(&self, product: &str, version: Option<&str>) -> Vec<&CVE> {
-        self.find_cves_for_product(product, version)
-            .into_iter()
+    pub async fn find_critical_cves(&self, product: &str, version: Option<&str>) -> Result<Vec<CVE>> {
+        let cves = self.find_cves_for_product(product, version).await?;
+        Ok(cves.into_iter()
             .filter(|cve| cve.is_critical())
-            .collect()
+            .collect())
     }
 
-    pub fn get_risk_assessment(&self, product: &str, version: Option<&str>) -> RiskAssessment {
-        let cves = self.find_cves_for_product(product, version);
+    pub async fn get_risk_assessment(&self, product: &str, version: Option<&str>) -> Result<RiskAssessment> {
+        let cves = self.find_cves_for_product(product, version).await?;
         
         let total_cves = cves.len();
         let exploitable_cves = cves.iter().filter(|cve| cve.is_exploitable()).count();
@@ -465,7 +541,7 @@ impl CVEMatcher {
             .iter()
             .max_by(|a, b| a.risk_score().partial_cmp(&b.risk_score()).unwrap());
         
-        RiskAssessment {
+        Ok(RiskAssessment {
             product: product.to_string(),
             version: version.map(|s| s.to_string()),
             total_cves,
@@ -473,7 +549,7 @@ impl CVEMatcher {
             critical_cves,
             highest_risk_cve: highest_risk_cve.map(|cve| cve.name.clone()),
             overall_risk_score: cves.iter().map(|cve| cve.risk_score()).sum(),
-        }
+        })
     }
 }
 
@@ -489,18 +565,17 @@ pub struct RiskAssessment {
 }
 
 // Utility functions for working with CVEs
-pub fn filter_cves_by_severity(cves: &[&CVE], severity: Severity) -> Vec<&CVE> {
+pub fn filter_cves_by_severity<'a>(cves: &'a [CVE], severity: Severity) -> Vec<&'a CVE> {
     cves.iter()
         .filter(|cve| cve.severity == severity)
-        .copied()
         .collect()
 }
 
-pub fn sort_cves_by_risk(cves: &mut Vec<&CVE>) {
+pub fn sort_cves_by_risk(cves: &mut [CVE]) {
     cves.sort_by(|a, b| b.risk_score().partial_cmp(&a.risk_score()).unwrap());
 }
 
-pub fn get_unique_products(cves: &[&CVE]) -> Vec<String> {
+pub fn get_unique_products(cves: &[CVE]) -> Vec<String> {
     let mut products: Vec<String> = cves
         .iter()
         .map(|cve| cve.product.clone())

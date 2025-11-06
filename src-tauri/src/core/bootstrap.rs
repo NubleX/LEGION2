@@ -6,6 +6,7 @@ use super::registry::Registry;
 use crate::database::Db;
 
 /// Bootstrap function to create and configure the registry
+/// Provides consistent initialization pattern for registry creation
 pub fn make_registry(
     db: Arc<Db>,
     app_handle: AppHandle,

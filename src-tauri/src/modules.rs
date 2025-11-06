@@ -1,6 +1,7 @@
 use crate::core::transformer::{
     IpEnrichmentTransform, ProgressTrackingTransform, ServiceParsingTransform,
     VulnerabilityTransform, MacEnrichmentTransform, PassiveOsTransform,
+    CveExploitEnrichmentTransform, PortServiceCveTransform, StealthyHostnameTransform,
 };
 use crate::shared::traits::Transform;
 use anyhow::Result;
@@ -92,6 +93,39 @@ impl ModuleRegistry {
         self.register_transform(
             "network-fingerprinting",
             Box::new(|| Box::new(IpEnrichmentTransform::new())), // Network analysis capabilities
+        );
+
+        // CVE and Exploit enrichment transforms
+        self.register_transform(
+            "cve-enrichment",
+            Box::new(|| Box::new(CveExploitEnrichmentTransform::new())),
+        );
+
+        self.register_transform(
+            "cve_enrichment",
+            Box::new(|| Box::new(CveExploitEnrichmentTransform::new())), // Alias with underscore
+        );
+
+        // Port-service-CVE correlation transform
+        self.register_transform(
+            "port-service-cve",
+            Box::new(|| Box::new(PortServiceCveTransform::new())),
+        );
+
+        self.register_transform(
+            "port_service_cve",
+            Box::new(|| Box::new(PortServiceCveTransform::new())), // Alias with underscore
+        );
+
+        // Stealthy hostname discovery transform
+        self.register_transform(
+            "stealthy_hostname",
+            Box::new(|| Box::new(StealthyHostnameTransform::new())),
+        );
+
+        self.register_transform(
+            "hostname_resolution",
+            Box::new(|| Box::new(StealthyHostnameTransform::new())), // Alias
         );
 
         log::info!("Registered {} transform modules", self.transforms.len());
