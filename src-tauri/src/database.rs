@@ -774,15 +774,22 @@ impl Db {
 
     /// Increment vulnerability count for a host
     pub async fn increment_host_vulnerability_count(&self, ip: &str) -> Result<()> {
-        let ip_encrypted = self.encryption.encrypt(ip)?;
+        // Look up host ID by matching plaintext IP (encryption uses random nonce, so can't lookup by encrypted value)
+        let hosts = self.get_all_hosts().await?;
+        let host = hosts
+            .into_iter()
+            .find(|h| h.ip == ip)
+            .ok_or_else(|| anyhow::anyhow!("Host not found: {}", ip))?;
+        
+        let host_id = host.id;
         let conn = self.conn.clone();
         let timestamp = to_rfc3339(Utc::now());
         
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock();
             conn.execute(
-                r#"UPDATE hosts SET vulnerability_count = vulnerability_count + 1, updated_at = ?2, last_seen = ?2 WHERE ip_encrypted = ?1"#,
-                params![&ip_encrypted, &timestamp],
+                r#"UPDATE hosts SET vulnerability_count = vulnerability_count + 1, updated_at = ?2, last_seen = ?2 WHERE id = ?1"#,
+                params![&host_id, &timestamp],
             )?;
             Ok::<(), anyhow::Error>(())
         }).await?
@@ -801,7 +808,14 @@ impl Db {
         cve_id: Option<&str>,
         remediation: Option<&str>,
     ) -> Result<()> {
-        let ip_encrypted = self.encryption.encrypt(host_ip)?;
+        // Look up host ID by matching plaintext IP (encryption uses random nonce, so can't lookup by encrypted value)
+        let hosts = self.get_all_hosts().await?;
+        let host = hosts
+            .into_iter()
+            .find(|h| h.ip == host_ip)
+            .ok_or_else(|| anyhow::anyhow!("Host not found: {}", host_ip))?;
+        
+        let host_id = host.id;
         let conn = self.conn.clone();
         let timestamp = to_rfc3339(Utc::now());
         
@@ -814,12 +828,6 @@ impl Db {
         
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock();
-            
-            // Find host by IP
-            let mut stmt = conn.prepare("SELECT id FROM hosts WHERE ip_encrypted = ?1")?;
-            let host_id: String = stmt.query_row([&ip_encrypted], |row| {
-                Ok(row.get::<_, String>(0)?)
-            })?;
             
             // Find port ID if exists
             let port_id = {
@@ -847,24 +855,24 @@ impl Db {
 
     /// Get all vulnerabilities for a specific host by IP
     pub async fn get_vulnerabilities_by_host_ip(&self, host_ip: &str) -> Result<Vec<VulnerabilityRecord>> {
-        let ip_encrypted = self.encryption.encrypt(host_ip)?;
+        // Look up host ID by matching plaintext IP (encryption uses random nonce, so can't lookup by encrypted value)
+        let hosts = self.get_all_hosts().await?;
+        let host_id = hosts
+            .into_iter()
+            .find(|h| h.ip == host_ip)
+            .map(|h| h.id);
+        
+        // If host not found, return empty vector instead of error
+        let host_id = match host_id {
+            Some(id) => id,
+            None => return Ok(Vec::new()),
+        };
+        
         let conn = self.conn.clone();
         let host_ip_owned = host_ip.to_string(); // Create owned copy for the closure
         
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock();
-            
-            // First get host ID - return empty vec if host doesn't exist
-            let mut host_stmt = conn.prepare("SELECT id FROM hosts WHERE ip_encrypted = ?1")?;
-            let host_id: Option<String> = host_stmt.query_row([&ip_encrypted], |row| {
-                Ok(row.get::<_, String>(0)?)
-            }).optional()?;
-            
-            // If host not found, return empty vector instead of error
-            let host_id = match host_id {
-                Some(id) => id,
-                None => return Ok(Vec::new()),
-            };
             
             let mut stmt = conn.prepare(
                 r#"SELECT id, name, severity, description, cve, cvss_score, discovered_at, last_seen
