@@ -1,6 +1,6 @@
 use crate::core::transformer::{
     IpEnrichmentTransform, ProgressTrackingTransform, ServiceParsingTransform,
-    VulnerabilityTransform,
+    VulnerabilityTransform, MacEnrichmentTransform, PassiveOsTransform,
 };
 use crate::shared::traits::Transform;
 use anyhow::Result;
@@ -50,7 +50,22 @@ impl ModuleRegistry {
 
         self.register_transform(
             "mac-enrichment",
-            Box::new(|| Box::new(IpEnrichmentTransform::new())), // MAC vendor lookup integrated
+            Box::new(|| Box::new(MacEnrichmentTransform::new())), // MAC vendor lookup from OUI
+        );
+
+        self.register_transform(
+            "mac_enrichment",
+            Box::new(|| Box::new(MacEnrichmentTransform::new())), // Alias with underscore
+        );
+
+        self.register_transform(
+            "passive-os",
+            Box::new(|| Box::new(PassiveOsTransform::new())), // Passive OS detection
+        );
+
+        self.register_transform(
+            "passive_os",
+            Box::new(|| Box::new(PassiveOsTransform::new())), // Alias with underscore
         );
 
         // Vulnerability analysis transforms

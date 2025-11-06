@@ -140,26 +140,32 @@ impl UiSink {
         }
     }
 
-    /// Emit a host event if not already cached
-    async fn emit_host_if_new(
+    /// Emit a host event if not already cached or if it has enhanced data
+    async fn emit_host_with_enrichment(
         &self,
         ip: &str,
         hostname: Option<String>,
-        _has_enhanced_data: bool,
+        mac: Option<String>,
+        vendor: Option<String>,
+        os: Option<String>,
+        status: String,
     ) -> Result<()> {
         let mut cache = self.host_cache.lock().await;
-        if !cache.contains_key(ip) {
+        let should_emit = !cache.contains_key(ip) || mac.is_some() || vendor.is_some() || os.is_some();
+
+        if should_emit {
             let host_event = HostEvent {
                 ip: ip.to_string(),
                 hostname,
-                mac: None,
-                vendor: None,
-                os: None,
-                status: "up".to_string(),
+                mac,
+                vendor,
+                os,
+                status,
                 timestamp: Utc::now().to_rfc3339(),
             };
 
-            log::info!("Emitting obs:host event for: {}", host_event.ip);
+            log::info!("Emitting obs:host event for: {} (mac={:?}, vendor={:?}, os={:?})",
+                host_event.ip, host_event.mac, host_event.vendor, host_event.os);
             if let Err(e) = self.app.emit("obs:host", &host_event) {
                 log::error!("Failed to emit obs:host event: {}", e);
                 self.metrics.increment_errors().await;
@@ -175,6 +181,16 @@ impl UiSink {
             }
         }
         Ok(())
+    }
+
+    /// Emit a host event if not already cached (backward compatibility)
+    async fn emit_host_if_new(
+        &self,
+        ip: &str,
+        hostname: Option<String>,
+        _has_enhanced_data: bool,
+    ) -> Result<()> {
+        self.emit_host_with_enrichment(ip, hostname, None, None, None, "up".to_string()).await
     }
 
     /// Emit a service event
@@ -297,7 +313,20 @@ impl Sink for UiSink {
                         .get("ip")
                         .and_then(|v| v.as_str())
                         .unwrap_or_default();
-                    let port = obs.fields.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+                    // Port can be stored as either string or number, handle both
+                    let port = obs.fields.get("port")
+                        .and_then(|v| {
+                            // Try as number first
+                            if let Some(num) = v.as_u64() {
+                                Some(num as u16)
+                            } else if let Some(s) = v.as_str() {
+                                // Try parsing string as number
+                                s.parse::<u16>().ok()
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(0);
                     let protocol = obs
                         .fields
                         .get("protocol")
@@ -359,34 +388,62 @@ impl Sink for UiSink {
                         .fields
                         .get("status")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("up");
+                        .unwrap_or("up")
+                        .to_string();
 
-                    // Determine if this host observation includes MAC or OS info
-                    let has_mac_or_os = obs.fields.get("mac_address").is_some()
-                        || obs.fields.get("vendor").is_some()
-                        || obs.fields.get("os_name").is_some()
-                        || obs.fields.get("os_family").is_some()
-                        || obs.fields.get("os_accuracy").is_some();
+                    // Extract MAC address and vendor (from MacEnrichmentTransform or netsniffer)
+                    let mac = obs
+                        .fields
+                        .get("mac_address")
+                        .or_else(|| obs.fields.get("mac"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
 
-                    self.emit_host_if_new(ip, hostname.clone(), has_mac_or_os)
-                        .await?;
+                    let vendor = obs
+                        .fields
+                        .get("vendor")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
 
-                    // Also emit as progress to show in live output
+                    // Extract OS information (from nmap, passive detection, or netsniffer)
+                    let os_name = obs.fields.get("os_name").and_then(|v| v.as_str())
+                        .or_else(|| obs.fields.get("passive_os").and_then(|v| v.as_str()))
+                        .map(|s| s.to_string());
 
-                    let os_info = obs.fields.get("os_name").and_then(|v| v.as_str());
-                    let progress_msg = if let Some(ref hn) = hostname {
-                        if let Some(ref os_name) = os_info {
-                            format!(
-                                "Host discovered: {} ({}) - {} [{}]",
-                                ip, hn, status, os_name
-                            )
-                        } else {
-                            format!("Host discovered: {} ({}) - {}", ip, hn, status)
-                        }
-                    } else if let Some(ref os_name) = os_info {
-                        format!("Host discovered: {} - {} [{}]", ip, status, os_name)
+                    // Only emit hosts that are actually up (filter out down hosts)
+                    if status == "up" {
+                        log::debug!("Emitting host {} with status: {}", ip, status);
+                        self.emit_host_with_enrichment(
+                            ip,
+                            hostname.clone(),
+                            mac.clone(),
+                            vendor.clone(),
+                            os_name.clone(),
+                            status.clone()
+                        ).await?;
                     } else {
+                        log::debug!("Skipping host {} - status is '{}'", ip, status);
+                    }
+
+                    // Build detailed progress message with all enriched data
+                    let mut details = Vec::new();
+                    if let Some(hn) = &hostname {
+                        details.push(format!("hostname: {}", hn));
+                    }
+                    if let Some(v) = &vendor {
+                        details.push(format!("vendor: {}", v));
+                    }
+                    if let Some(os) = &os_name {
+                        details.push(format!("OS: {}", os));
+                    }
+                    if let Some(ttl) = obs.fields.get("ttl").and_then(|v| v.as_u64()) {
+                        details.push(format!("TTL: {}", ttl));
+                    }
+
+                    let progress_msg = if details.is_empty() {
                         format!("Host discovered: {} - {}", ip, status)
+                    } else {
+                        format!("Host discovered: {} - {} [{}]", ip, status, details.join(", "))
                     };
                     self.emit_progress(&progress_msg, None).await?;
                 }
@@ -874,7 +931,10 @@ impl DbSink {
 
         tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async {
-                for item in batch_items {
+                // Collect unique IPs to update port counts only once per host
+                let mut unique_ips = std::collections::HashSet::new();
+
+                for item in &batch_items {
                     if let Err(e) = db
                         .upsert_service_detailed(
                             &item.ip,
@@ -893,14 +953,22 @@ impl DbSink {
                             item.port,
                             e
                         );
-                    } else if let Err(e) = db.update_host_port_count(&item.ip).await {
+                    } else {
+                        unique_ips.insert(item.ip.clone());
+                    }
+                }
+
+                // Update port counts once per host after all services are inserted
+                for ip in unique_ips {
+                    if let Err(e) = db.update_host_port_count(&ip).await {
                         log::error!(
-                            "Failed to update port count for {} after service insert: {}",
-                            item.ip,
+                            "Failed to update port count for {} after batch: {}",
+                            ip,
                             e
                         );
                     }
                 }
+
                 Ok::<(), anyhow::Error>(())
             })
         })
@@ -972,7 +1040,15 @@ impl Sink for DbSink {
                                 ObservationKind::Host => {
                                     if let Some(ip) = observation.fields.get("ip").and_then(|v| v.as_str()) {
                                         let hostname = observation.fields.get("hostname").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                        let status = observation.fields.get("status").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                        let status_str = observation.fields.get("status").and_then(|v| v.as_str()).unwrap_or("up");
+
+                                        // Only store hosts that are actually up (skip down hosts)
+                                        if status_str != "up" {
+                                            log::debug!("DbSink: Skipping host {} - status is '{}'", ip, status_str);
+                                            continue;
+                                        }
+
+                                        let status = Some(status_str.to_string());
                                         let mac_address = observation.fields.get("mac_address").and_then(|v| v.as_str()).map(|s| s.to_string());
                                         let vendor = observation.fields.get("vendor").and_then(|v| v.as_str()).map(|s| s.to_string());
                                         let os_name = observation.fields.get("os_name").and_then(|v| v.as_str()).map(|s| s.to_string());
@@ -993,9 +1069,23 @@ impl Sink for DbSink {
                                     }
                                 }
                                 ObservationKind::Service => {
+                                    // Parse port from either string or number
+                                    let port_opt = observation.fields.get("port")
+                                        .and_then(|v| {
+                                            // Try as number first
+                                            if let Some(num) = v.as_u64() {
+                                                Some(num as u16)
+                                            } else if let Some(s) = v.as_str() {
+                                                // Try parsing string as number
+                                                s.parse::<u16>().ok()
+                                            } else {
+                                                None
+                                            }
+                                        });
+
                                     if let (Some(ip), Some(port), Some(protocol)) = (
                                         observation.fields.get("ip").and_then(|v| v.as_str()),
-                                        observation.fields.get("port").and_then(|v| v.as_u64()).map(|p| p as u16),
+                                        port_opt,
                                         observation.fields.get("protocol").and_then(|v| v.as_str()),
                                     ) {
                                         let state = observation.fields.get("state").and_then(|v| v.as_str()).unwrap_or("open");

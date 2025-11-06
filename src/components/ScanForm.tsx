@@ -17,16 +17,16 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, isScanning }) => {
   const [config, setConfig] = useState<ScanConfig>({
     targets: '',
     scanType: 'quick',
-    ports: '1-1000',
+    ports: '', // Empty = use -p- (all ports) in backend
     excludeHosts: '',
     useNmap: true,
     useMasscan: false,
     extra: '',
     rate: 1000,
-    detectOS: false,
-    detectVersions: true,
-    skipPing: false,
-    interface: '',
+    detectOS: true, // Enable OS detection by default
+    detectVersions: false, // Disable by default - it's slow
+    skipPing: false, // Let nmap do host discovery by default - much faster for /24 networks
+    interface: '', // Empty = use system default interface
   });
 
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -69,9 +69,9 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, isScanning }) => {
   };
 
   const presetConfigs = {
-    quick: { ports: '1-1000', detectVersions: true, detectOS: false },
-    comprehensive: { ports: '1-65535', detectVersions: true, detectOS: true },
-    stealth: { ports: '21,22,23,25,53,80,110,111,135,139,143,443,993,995', detectVersions: false, detectOS: false },
+    quick: { ports: '', detectVersions: false, detectOS: true }, // Fast: all ports, no version detection
+    comprehensive: { ports: '', detectVersions: true, detectOS: true }, // Thorough: all ports, full detection
+    stealth: { ports: '21,22,23,25,53,80,110,111,135,139,143,443,993,995', detectVersions: false, detectOS: false }, // Stealthy: common ports only
   };
 
   const handlePreset = (preset: keyof typeof presetConfigs) => {

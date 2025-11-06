@@ -81,8 +81,8 @@ impl EncryptionManager {
     }
     
     fn encrypt(&self, data: &str) -> Result<String> {
-        let mut rng = rand::thread_rng();
-        let nonce_bytes: [u8; 12] = rng.gen();
+        let mut rng = rand::rng();
+        let nonce_bytes: [u8; 12] = rng.random();
         let nonce = Nonce::from_slice(&nonce_bytes);
         
         let ciphertext = self.cipher.encrypt(nonce, data.as_bytes())
@@ -125,6 +125,8 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
             hostname        TEXT,                  -- Encrypted hostname
             mac_address     TEXT,                  -- Encrypted MAC
             vendor          TEXT,
+            nic_vendor      TEXT,                  -- NIC vendor from MAC lookup
+            nic_model       TEXT,                  -- NIC model if available
             os_name         TEXT,
             os_family       TEXT,
             os_accuracy     REAL,

@@ -8,7 +8,6 @@
 
 use crate::database::Db;
 use anyhow::Result;
-use rusqlite;
 use std::sync::Arc;
 
 mod analysis;
@@ -65,12 +64,24 @@ fn main() {
             commands::host_commands::batch_import_hosts,
             commands::host_commands::update_host_os_detection,
             commands::host_commands::get_host_by_ip,
+            commands::analysis_commands::get_host_vulnerabilities,
             commands::netsniffer_commands::lookup_mac_vendor,
             commands::netsniffer_commands::log_network_artifact,
             commands::netsniffer_commands::start_network_monitoring,
             commands::netsniffer_commands::stop_network_monitoring,
             commands::netsniffer_commands::get_vendor_statistics,
             commands::netsniffer_commands::parse_xml_for_mac_enrichment,
+            commands::plan_commands::create_masscan_plan,
+            commands::plan_commands::create_nmap_plan,
+            commands::plan_commands::create_comprehensive_plan,
+            commands::plan_commands::create_os_detection_plan,
+            commands::plan_commands::plan_with_os_detection,
+            commands::plan_commands::plan_with_extra_args,
+            commands::plan_commands::plan_with_modules,
+            commands::plan_commands::plan_with_rate,
+            commands::plan_commands::plan_with_sink,
+            commands::plan_commands::get_available_modules,
+            commands::plan_commands::create_plan_with_modules,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

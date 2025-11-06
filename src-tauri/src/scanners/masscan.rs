@@ -322,8 +322,13 @@ impl Source for MasscanScanner {
         log::info!("Starting masscan stream processing");
 
         let stream = stream::unfold(
-            (lines, discovered_count, child, xml_file.clone(), false),
-            move |(mut lines, mut count, mut child, xml_file, xml_parsed)| async move {
+            (lines, discovered_count, child, xml_file.clone(), false, Vec::new()),
+            move |(mut lines, mut count, mut child, xml_file, xml_parsed, mut xml_obs_queue)| async move {
+                // First, emit any queued XML observations
+                if let Some(queued_obs) = xml_obs_queue.pop() {
+                    return Some((queued_obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue)));
+                }
+
                 match lines.next_line().await {
                     Ok(Some(line)) => {
                         if engine_commands::is_scan_cancelled() {
@@ -339,7 +344,7 @@ impl Source for MasscanScanner {
                                 key: "scan-status".to_string(),
                                 raw: None,
                             };
-                            return Some((cancel_obs, (lines, count, child, xml_file, xml_parsed)));
+                            return Some((cancel_obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue)));
                         }
                         log::info!("Masscan output line: {}", line);
                         if let Some(obs) = parse_masscan_line(&line, scan_id) {
@@ -350,9 +355,9 @@ impl Source for MasscanScanner {
                             if count % 10 == 0 {
                                 let progress_obs =
                                     create_progress_observation(&line, scan_id, count);
-                                Some((progress_obs, (lines, count, child, xml_file, xml_parsed)))
+                                Some((progress_obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue)))
                             } else {
-                                Some((obs, (lines, count, child, xml_file, xml_parsed)))
+                                Some((obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue)))
                             }
                         } else {
                             log::debug!("Non-service masscan line: {}", line);
@@ -372,7 +377,7 @@ impl Source for MasscanScanner {
                                     key: "masscan-output".to_string(),
                                     raw: Some(line),
                                 },
-                                (lines, count, child, xml_file, xml_parsed),
+                                (lines, count, child, xml_file, xml_parsed, xml_obs_queue),
                             ))
                         }
                     }
@@ -393,8 +398,12 @@ impl Source for MasscanScanner {
                                     if xml_path.exists() {
                                         let xml_parser = XmlParser::new(scan_id);
                                         match xml_parser.parse_masscan_xml(xml_path) {
-                                            Ok(xml_observations) => {
+                                            Ok(mut xml_observations) => {
                                                 log::info!("XML parser generated {} comprehensive observations from masscan", xml_observations.len());
+
+                                                // Queue all XML observations (in reverse order so they emit in correct order with pop())
+                                                xml_observations.reverse();
+                                                xml_obs_queue.extend(xml_observations);
 
                                                 // Create a completion observation indicating XML parsing is done
                                                 let completion_obs = Observation {
@@ -412,7 +421,7 @@ impl Source for MasscanScanner {
                                                         );
                                                         fields.insert(
                                                             "xml_observations_count".to_string(),
-                                                            (xml_observations.len() as i64).into(),
+                                                            (xml_obs_queue.len() as i64).into(),
                                                         );
                                                         fields
                                                     },
@@ -421,11 +430,11 @@ impl Source for MasscanScanner {
                                                     raw: None,
                                                 };
 
-                                                // Note: In a full implementation, we'd need to emit all XML observations
-                                                // For now, we just signal that XML file is ready for processing
+                                                // Emit completion observation, then queued XML observations will follow
+                                                log::info!("Queued {} XML observations for emission", xml_obs_queue.len());
                                                 return Some((
                                                     completion_obs,
-                                                    (lines, count, child, xml_file, true),
+                                                    (lines, count, child, xml_file, true, xml_obs_queue),
                                                 ));
                                             }
                                             Err(e) => {

@@ -139,8 +139,20 @@ const useAppStore = create<AppState & AppActions>((set) => {
 
     // Actions
     startScan: async (config: ScanConfig) => {
+      console.log('[appStore] startScan called with config:', config);
       const targets = config.targets;
-      const ports = config.ports && config.ports.trim() !== '' ? config.ports : '1-65535';
+
+      // Smart port handling based on scan type:
+      // - Quick scan: empty = use nmap's default top 1000 ports (fast host discovery)
+      // - Comprehensive scan: empty = all 65535 ports (-p-)
+      // - User specified: use exactly what user specified
+      let ports = config.ports && config.ports.trim() !== '' ? config.ports : '';
+      if (ports === '' && config.scanType === 'comprehensive') {
+        ports = '-'; // This tells nmap to use -p- (all ports)
+      }
+      // For quick scans, empty ports means nmap's default 1000 ports (perfect for fast discovery)
+
+      console.log('[appStore] Processed targets:', targets, 'ports:', ports || '(default 1000)', 'scanType:', config.scanType);
 
       // Build plans based on selected tools
       const plans: Plan[] = [];
@@ -165,13 +177,19 @@ const useAppStore = create<AppState & AppActions>((set) => {
 
         switch (config.scanType) {
           case 'quick':
-            // Use basic nmap plan with quick args
+            // Quick scan: fast, no version detection, normal host discovery
+            const quickArgs = ['-T4']; // Fast timing, let nmap do host discovery
+            if (config.detectOS) quickArgs.push('-O');
+            if (config.skipPing) quickArgs.push('-Pn'); // Only skip ping if user explicitly asks
+            // Don't use -sV in quick scans - it's too slow
+            // if (config.detectVersions) quickArgs.push('-sV');
+
             nmapPlan = await invoke<Plan>('create_nmap_plan', {
               scanId,
               targets,
               ports,
               scanType: 'quick',
-              extraArgs: ['-T4', '-F'],
+              extraArgs: quickArgs,
             });
             break;
           case 'comprehensive':
@@ -196,7 +214,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
             const nmapArgs: string[] = [];
             if (config.detectOS) nmapArgs.push('-O');
             if (config.detectVersions) nmapArgs.push('-sV');
-            if (config.skipPing) nmapArgs.push('-Pn');
+            if (config.skipPing) nmapArgs.push('-Pn'); // Only if user explicitly enables
             if (config.extra) {
               nmapArgs.push(...config.extra.split(' '));
             }

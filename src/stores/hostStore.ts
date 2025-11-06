@@ -45,13 +45,11 @@ const useHostStore = create<HostStore>((set, get) => {
     const partialHost: Partial<Host> = {
       ip: hostEvent.ip,
       hostname: hostEvent.hostname,
-      mac_address: hostEvent.mac_address,
+      mac_address: hostEvent.mac, // Backend emits 'mac', we store as 'mac_address'
       vendor: hostEvent.vendor,
-      os_name: hostEvent.os_name,
-      os_family: hostEvent.os_family,
-      os_accuracy: hostEvent.os_accuracy,
+      os_name: hostEvent.os, // Backend emits 'os', we store as 'os_name'
+      status: hostEvent.status,
       id: hostEvent.ip, // Use IP as temporary ID
-      status: 'up', // Assume host is up if discovered
       created_at: hostEvent.timestamp,
       updated_at: hostEvent.timestamp,
       last_seen: hostEvent.timestamp,
@@ -88,8 +86,8 @@ const useHostStore = create<HostStore>((set, get) => {
     const ip = event.payload as string;
     console.log('Received refresh_host_data event for IP:', ip);
 
-    // Add a small delay to allow database to be updated first
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // Add delay to allow database batch to be flushed (5 second batch interval)
+    await new Promise(resolve => setTimeout(resolve, 6000));
 
     try {
       const { invoke } = await import('@tauri-apps/api/core');
@@ -100,8 +98,29 @@ const useHostStore = create<HostStore>((set, get) => {
         const idx = state.hosts.findIndex(h => h.ip === ip);
         if (idx !== -1) {
           const updated = [...state.hosts];
-          // Merge refreshed data with any existing fields
-          updated[idx] = { ...updated[idx], ...detailedHost };
+          const existing = updated[idx];
+          // Smart merge: only update fields that are non-null in detailedHost
+          // This prevents overwriting good live data with stale null values from DB
+          updated[idx] = {
+            ...existing,
+            // Only update if new value is not null/undefined
+            hostname: detailedHost.hostname ?? existing.hostname,
+            mac_address: detailedHost.mac_address ?? existing.mac_address,
+            vendor: detailedHost.vendor ?? existing.vendor,
+            os_name: detailedHost.os_name ?? existing.os_name,
+            os_family: detailedHost.os_family ?? existing.os_family,
+            os_accuracy: detailedHost.os_accuracy ?? existing.os_accuracy,
+            // Always update these from DB (they should be most current)
+            // EXCEPT status - trust live events over DB for status (DB may have stale data)
+            status: existing.status === 'up' ? existing.status : detailedHost.status,
+            port_count: detailedHost.port_count,
+            vulnerability_count: detailedHost.vulnerability_count,
+            last_seen: detailedHost.last_seen,
+            updated_at: detailedHost.updated_at,
+            notes: detailedHost.notes ?? existing.notes,
+            tags: detailedHost.tags.length > 0 ? detailedHost.tags : existing.tags,
+            scan_progress: detailedHost.scan_progress ?? existing.scan_progress,
+          };
           console.log('Updated host with detailed data:', updated[idx]);
           return { hosts: updated };
         }

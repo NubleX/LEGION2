@@ -94,26 +94,6 @@ impl NmapParser {
     }
 
     pub fn parse_line(&mut self, line: &str) -> Option<Observation> {
-        // Parse "Nmap scan report for X.X.X.X"
-        if line.contains("Nmap scan report for") {
-            let ip = extract_ip_from_line(line)?;
-            let ip_key = format!("host-{}", ip);
-            return Some(Observation {
-                scan_id: self.scan_id,
-                kind: ObservationKind::Host,
-                fields: {
-                    let mut fields = serde_json::Map::new();
-                    fields.insert("ip".to_string(), ip.into());
-                    fields.insert("status".to_string(), "up".into());
-                    fields
-                },
-                ts: chrono::Utc::now(),
-                key: ip_key,
-                raw: Some(line.to_string()),
-            });
-        }
-    
-
         if line.is_empty() {
             return None;
         }
@@ -129,12 +109,18 @@ impl NmapParser {
                     .to_string();
                 self.current_host = Some(clean_ip.clone());
                 // Don't create observation yet - wait for status information
+                // Also ignore "[host down]" annotations in the scan report line
                 return None;
             }
         }
 
+        // Ignore "[host down]" status lines - we don't want to show down hosts
+        if line.contains("[host down]") {
+            return None;
+        }
+
         // Check for host status lines
-        else if line.contains("Host is up") || line.contains("Host is down") {
+        if line.contains("Host is up") || line.contains("Host is down") {
             if let Some(ref current_ip) = self.current_host {
                 let status = if line.contains("Host is up") {
                     "up"
@@ -174,7 +160,7 @@ impl NmapParser {
             }
         }
         // Check for MAC address lines
-        else if line.contains("MAC Address:") {
+        if line.contains("MAC Address:") {
             if let Some(current_ip) = self.current_host.clone() {
                 if let Some(mac_info) = self.parse_mac_address(line) {
                     return Some(Observation {
@@ -202,9 +188,9 @@ impl NmapParser {
             }
         }
         // Check for OS detection lines
-        else if line.contains("OS details:") 
-            || line.contains("Running:") 
-            || line.contains("OS CPE:") 
+        if line.contains("OS details:")
+            || line.contains("Running:")
+            || line.contains("OS CPE:")
             || line.contains("Aggressive OS guesses:")
         {
             if let Some(current_ip) = self.current_host.clone() {
@@ -240,9 +226,9 @@ impl NmapParser {
                 }
             }
         }
-        
+
         // Check for hostname resolution lines
-        else if line.contains("rDNS record for")
+        if line.contains("rDNS record for")
             || (self.current_host.is_some()
                 && line.contains(".")
                 && !line.contains("/")
@@ -268,7 +254,7 @@ impl NmapParser {
             }
         }
         // Check for port discovery lines
-        else if line.contains("open") && (line.contains("/tcp") || line.contains("/udp")) {
+        if line.contains("open") && (line.contains("/tcp") || line.contains("/udp")) {
             // Parse port discovery: "22/tcp   open  ssh     OpenSSH 7.4 (protocol 2.0)"
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 3 {
@@ -314,7 +300,7 @@ impl NmapParser {
             }
         }
         // Check for masscan-style output
-        else if line.contains("Discovered open port") {
+        if line.contains("Discovered open port") {
             if let Some(parts) = self.parse_discovered_port_line(line) {
                 let key = format!("service-{}-{}-{}", parts.ip, parts.port, parts.protocol);
                 return Some(Observation {
@@ -335,8 +321,28 @@ impl NmapParser {
                 });
             }
         }
+        // Check for ARP scan details
+        if line.contains("ARP")
+            || line.contains("Sending")
+            || line.contains("packets")
+        {
+            return Some(Observation {
+                scan_id: self.scan_id,
+                kind: ObservationKind::Metric,
+                fields: {
+                    let mut fields = serde_json::Map::new();
+                    fields.insert("message".to_string(), line.into());
+                    fields.insert("type".to_string(), "arp_scan".into());
+                    fields
+                },
+                ts: chrono::Utc::now(),
+                key: "arp-scan".to_string(),
+                raw: Some(line.to_string()),
+            });
+        }
+
         // Check for scan progress lines
-        else if line.contains("Scanning")
+        if line.contains("Scanning")
             || line.contains("Completed")
             || line.contains("Initiating")
             || line.contains("Nmap done")
@@ -354,23 +360,10 @@ impl NmapParser {
                 key: "scan-progress".to_string(),
                 raw: Some(line.to_string()),
             });
-        } else {
-            // For lines that don't match specific patterns, create raw output metric
-            return Some(Observation {
-                scan_id: self.scan_id,
-                kind: ObservationKind::Metric,
-                fields: {
-                    let mut fields = serde_json::Map::new();
-                    fields.insert("message".to_string(), line.into());
-                    fields.insert("type".to_string(), "raw_output".into());
-                    fields
-                },
-                ts: chrono::Utc::now(),
-                key: format!("raw-{}", chrono::Utc::now().timestamp_nanos()),
-                raw: Some(line.to_string()),
-            });
         }
-        
+
+        // Don't create observations for unmatched lines - too noisy
+        // Only create observations for lines we explicitly care about
         None
     }
         

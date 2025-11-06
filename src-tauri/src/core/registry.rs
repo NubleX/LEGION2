@@ -15,6 +15,8 @@ use crate::database::Db;
 use crate::plan::Plan;
 use crate::scanners::masscan::MasscanScanner;
 use crate::scanners::nmap::NmapScanner;
+use crate::scanners::netsniffer::NetSnifferSource;
+use std::path::PathBuf;
 
 /// Registry for managing scanning components and their lifecycle
 
@@ -56,6 +58,13 @@ impl Registry {
             }
             "nmap" => {
                 let scanner = NmapScanner::new();
+                Ok(Box::new(scanner))
+            }
+            "netsniffer" => {
+                // Get interface from plan or use default
+                let interface = plan.interface.clone().unwrap_or_else(|| "default".to_string());
+                let output_dir = PathBuf::from(".scans");
+                let scanner = NetSnifferSource::new(interface, output_dir);
                 Ok(Box::new(scanner))
             }
             _ => Err(anyhow!("Unknown source type: {}", plan.source_type)),
@@ -120,6 +129,7 @@ impl Registry {
         // Register standard sources
         self.register_source("masscan".to_string());
         self.register_source("nmap".to_string());
+        self.register_source("netsniffer".to_string());
 
         // Register standard transforms
         self.register_transform("ip_enrichment".to_string());

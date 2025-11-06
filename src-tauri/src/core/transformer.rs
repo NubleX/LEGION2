@@ -202,6 +202,219 @@ impl Transform for ProgressTrackingTransform {
     }
 }
 
+/// Transform that enriches host observations with MAC vendor information
+/// Uses OUI (Organizationally Unique Identifier) lookups from netsniffer data
+pub struct MacEnrichmentTransform {
+    // OUI map for MAC vendor lookups - could be loaded from file or embedded
+    oui_map: std::sync::Arc<std::collections::HashMap<[u8; 3], String>>,
+}
+
+impl MacEnrichmentTransform {
+    pub fn new() -> Self {
+        // Initialize OUI map with common vendors
+        let mut oui_map = std::collections::HashMap::new();
+
+        // Add common OUI prefixes (these would typically be loaded from a database)
+        // Format: [first 3 bytes of MAC] -> Vendor Name
+        oui_map.insert([0x00, 0x50, 0x56], "VMware".to_string());
+        oui_map.insert([0x00, 0x0C, 0x29], "VMware".to_string());
+        oui_map.insert([0x00, 0x1C, 0x42], "Parallels".to_string());
+        oui_map.insert([0x08, 0x00, 0x27], "Oracle VirtualBox".to_string());
+        oui_map.insert([0x00, 0x15, 0x5D], "Microsoft Hyper-V".to_string());
+        oui_map.insert([0xD8, 0x9E, 0xF3], "Google".to_string());
+        oui_map.insert([0x00, 0x1A, 0x11], "Google".to_string());
+        oui_map.insert([0xF0, 0x18, 0x98], "Apple".to_string());
+        oui_map.insert([0x00, 0x50, 0xF2], "Microsoft".to_string());
+        oui_map.insert([0x00, 0x23, 0x12], "Cisco Systems".to_string());
+        oui_map.insert([0x00, 0x1B, 0x44], "Cisco-Linksys".to_string());
+        oui_map.insert([0x00, 0x04, 0x20], "Cisco Systems".to_string());
+        oui_map.insert([0xB8, 0x27, 0xEB], "Raspberry Pi Foundation".to_string());
+        oui_map.insert([0xDC, 0xA6, 0x32], "Raspberry Pi Trading".to_string());
+        oui_map.insert([0x00, 0x1C, 0xC0], "TP-Link".to_string());
+        oui_map.insert([0x74, 0xDA, 0x38], "D-Link".to_string());
+        oui_map.insert([0x00, 0x11, 0x32], "Synology".to_string());
+        oui_map.insert([0x00, 0x90, 0x4C], "NETGEAR".to_string());
+
+        Self {
+            oui_map: std::sync::Arc::new(oui_map),
+        }
+    }
+
+    /// Lookup vendor by MAC address
+    fn lookup_vendor(&self, mac: &str) -> Option<String> {
+        // Parse MAC address (format: AA:BB:CC:DD:EE:FF or AA-BB-CC-DD-EE-FF)
+        let parts: Vec<&str> = mac.split(|c| c == ':' || c == '-').collect();
+        if parts.len() < 3 {
+            return None;
+        }
+
+        let oui: [u8; 3] = [
+            u8::from_str_radix(parts[0], 16).ok()?,
+            u8::from_str_radix(parts[1], 16).ok()?,
+            u8::from_str_radix(parts[2], 16).ok()?,
+        ];
+
+        self.oui_map.get(&oui).cloned()
+    }
+}
+
+#[async_trait]
+impl Transform for MacEnrichmentTransform {
+    fn name(&self) -> &'static str {
+        "mac_enrichment"
+    }
+
+    async fn apply(&self, input: ObsStream) -> Result<ObsStream> {
+        let oui_map = self.oui_map.clone();
+
+        let enriched_stream = input.map(move |mut obs| {
+            if obs.kind == ObservationKind::Host {
+                // Check if we have MAC address and need vendor lookup
+                // Extract all needed values first to avoid borrow conflicts
+                let (mac_str, vendor_needed) = {
+                    let mac_str = obs.fields.get("mac_address").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let has_vendor = obs.fields.contains_key("vendor");
+                    let vendor_value = obs.fields.get("vendor").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let vendor_needed = !has_vendor || vendor_value.as_deref() == Some("Unknown");
+                    (mac_str, vendor_needed)
+                };
+                
+                if let Some(mac) = mac_str {
+                    if vendor_needed {
+                        // Parse MAC OUI and lookup vendor
+                        let parts: Vec<&str> = mac.split(|c| c == ':' || c == '-').collect();
+                        if parts.len() >= 3 {
+                            if let (Ok(b1), Ok(b2), Ok(b3)) = (
+                                u8::from_str_radix(parts[0], 16),
+                                u8::from_str_radix(parts[1], 16),
+                                u8::from_str_radix(parts[2], 16),
+                            ) {
+                                let oui = [b1, b2, b3];
+                                if let Some(vendor) = oui_map.get(&oui) {
+                                    let vendor_clone = vendor.clone();
+                                    let oui_str = format!("{:02X}:{:02X}:{:02X}", b1, b2, b3);
+                                    obs.fields.insert("vendor".to_string(), vendor_clone.clone().into());
+                                    obs.fields.insert("oui".to_string(), oui_str.into());
+                                    log::debug!("Enriched MAC {} with vendor: {}", mac, vendor_clone);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            obs
+        });
+
+        Ok(enriched_stream.boxed())
+    }
+}
+
+/// Transform that performs passive OS detection using network fingerprints
+/// Combines TTL analysis, TCP window size, and TCP options from netsniffer
+pub struct PassiveOsTransform;
+
+impl PassiveOsTransform {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Detect OS family from TTL value
+    fn detect_os_from_ttl(ttl: u8) -> Option<String> {
+        match ttl {
+            253..=255 => Some("Linux/Unix (TTL 255)".to_string()),
+            125..=128 => Some("Windows (TTL 128)".to_string()),
+            61..=64 => Some("Linux/Unix (TTL 64)".to_string()),
+            29..=32 => Some("Unix/AIX (TTL 32)".to_string()),
+            _ => None,
+        }
+    }
+
+    /// Detect OS from TCP window size and other TCP parameters
+    fn detect_os_from_tcp_signature(window: u16, ttl: u8, mss: Option<u16>, wscale: Option<u8>) -> Option<String> {
+        // Common TCP signatures for OS detection
+        match (window, ttl, mss) {
+            // Windows signatures
+            (8192, 128, Some(1460)) => Some("Windows 7/8/10".to_string()),
+            (65535, 128, Some(1460)) => Some("Windows XP/2003".to_string()),
+            (16384, 128, _) => Some("Windows Server".to_string()),
+
+            // Linux signatures
+            (5840, 64, Some(1460)) => Some("Linux 2.6.x".to_string()),
+            (29200, 64, Some(1460)) => Some("Linux 3.x/4.x".to_string()),
+            (14600, 64, _) if wscale.is_some() => Some("Modern Linux".to_string()),
+
+            // macOS/BSD signatures
+            (65535, 64, Some(1460)) => Some("macOS/BSD".to_string()),
+            (32768, 64, Some(1460)) => Some("macOS 10.x".to_string()),
+
+            // IoT/Embedded signatures
+            (5840, 64, Some(536)) => Some("Embedded Linux".to_string()),
+            (_, 255, _) => Some("Network Device/Router".to_string()),
+
+            _ => None,
+        }
+    }
+}
+
+#[async_trait]
+impl Transform for PassiveOsTransform {
+    fn name(&self) -> &'static str {
+        "passive_os"
+    }
+
+    async fn apply(&self, input: ObsStream) -> Result<ObsStream> {
+        let enriched_stream = input.map(|mut obs| {
+            if obs.kind == ObservationKind::Host {
+                // Passive OS detection from TTL
+                if let Some(ttl) = obs.fields.get("ttl").and_then(|v| v.as_u64()) {
+                    if let Some(os_guess) = Self::detect_os_from_ttl(ttl as u8) {
+                        if !obs.fields.contains_key("os_name") {
+                            obs.fields.insert("passive_os".to_string(), os_guess.into());
+                            obs.fields.insert("os_detection_method".to_string(), "passive_ttl".into());
+                        }
+                    }
+                }
+
+                // Enhanced OS detection from TCP signature
+                if let (Some(ttl), Some(tcp_win)) = (
+                    obs.fields.get("ttl").and_then(|v| v.as_u64()),
+                    obs.fields.get("tcp_window").and_then(|v| v.as_u64()),
+                ) {
+                    let mss = obs.fields.get("tcp_mss").and_then(|v| v.as_u64()).map(|v| v as u16);
+                    let wscale = obs.fields.get("tcp_wscale").and_then(|v| v.as_u64()).map(|v| v as u8);
+
+                    if let Some(os_guess) = Self::detect_os_from_tcp_signature(
+                        tcp_win as u16,
+                        ttl as u8,
+                        mss,
+                        wscale,
+                    ) {
+                        let os_guess_clone = os_guess.clone();
+                        obs.fields.insert("passive_os".to_string(), os_guess.into());
+                        obs.fields.insert("os_detection_method".to_string(), "passive_tcp_signature".into());
+                        log::debug!("Passive OS detection: {} (TTL={}, Window={})", os_guess_clone, ttl, tcp_win);
+                    }
+                }
+
+                // Add confidence score based on available data
+                let mut confidence_score = 0;
+                if obs.fields.contains_key("ttl") { confidence_score += 20; }
+                if obs.fields.contains_key("tcp_window") { confidence_score += 30; }
+                if obs.fields.contains_key("tcp_mss") { confidence_score += 20; }
+                if obs.fields.contains_key("tcp_wscale") { confidence_score += 15; }
+                if obs.fields.contains_key("tcp_sack_ok") { confidence_score += 15; }
+
+                if confidence_score > 0 {
+                    obs.fields.insert("passive_os_confidence".to_string(), confidence_score.into());
+                }
+            }
+            obs
+        });
+
+        Ok(enriched_stream.boxed())
+    }
+}
+
 /// Composite transform that applies multiple transforms in sequence
 pub struct CompositeTransform {
     transforms: Vec<Box<dyn Transform>>,

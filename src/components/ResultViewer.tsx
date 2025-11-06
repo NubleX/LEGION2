@@ -50,7 +50,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
   const loadPorts = (ip: string) => {
     console.log('Loading ports for host:', ip);
     setLoadingPorts(true);
-    invoke<PortInfo[]>('get_host_ports_detailed', { host_ip: ip })
+    invoke<PortInfo[]>('get_host_ports_detailed', { hostIp: ip })
       .then(ports => {
         console.log('Loaded ports:', ports);
         setHostPorts(ports);
@@ -93,7 +93,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
     if (currentHost?.ip) {
       console.log('Loading vulnerabilities for host:', currentHost.ip);
       setLoadingVulnerabilities(true);
-      invoke<VulnerabilityInfo[]>('get_host_vulnerabilities', { host_ip: currentHost.ip })
+      invoke<VulnerabilityInfo[]>('get_host_vulnerabilities', { hostIp: currentHost.ip })
         .then(vulns => {
           console.log('Loaded vulnerabilities:', vulns);
           setHostVulnerabilities(vulns);

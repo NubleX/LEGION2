@@ -152,4 +152,65 @@ impl Plan {
         self.interface = Some(interface);
         self
     }
+
+    /// Create a netsniffer plan for passive network monitoring
+    /// Captures packets on the specified interface for OS fingerprinting and MAC enrichment
+    pub fn netsniffer(scan_id: Uuid, interface: String) -> Self {
+        Self {
+            scan_id,
+            targets: String::new(), // No active targets for passive monitoring
+            ports: String::new(),   // Captures all ports
+            rate: None,
+            extra: vec![],
+            modules: vec![
+                "mac_enrichment".to_string(),
+                "passive_os".to_string(),
+            ],
+            source_type: "netsniffer".to_string(),
+            sink_types: vec![
+                "ui".to_string(),
+                "db".to_string(),
+            ],
+            interface: Some(interface),
+        }
+    }
+
+    /// Create a hybrid scan plan: masscan for fast port discovery + nmap for detailed analysis
+    /// This is the "unity" pattern - combining speed with depth
+    pub fn hybrid(
+        scan_id: Uuid,
+        targets: String,
+        ports: String,
+        masscan_rate: u64,
+    ) -> Vec<Self> {
+        vec![
+            // Phase 1: Fast port discovery with masscan
+            Self::masscan(scan_id, targets.clone(), ports.clone(), Some(masscan_rate))
+                .with_modules(vec!["ip_enrichment".to_string()]),
+            // Phase 2: Detailed service/OS detection with nmap
+            // Note: In practice, this would use discovered hosts/ports from phase 1
+            Self::nmap(
+                scan_id,
+                targets,
+                ports,
+                vec!["-sV".to_string(), "-O".to_string(), "-sC".to_string()],
+            )
+            .with_modules(vec![
+                "service_parsing".to_string(),
+                "vulnerability".to_string(),
+            ]),
+        ]
+    }
+
+    /// Create a continuous monitoring plan: netsniffer + periodic nmap
+    /// Passive monitoring combined with periodic active scanning
+    pub fn continuous_monitor(scan_id: Uuid, targets: String, interface: String) -> Vec<Self> {
+        vec![
+            // Continuous passive monitoring
+            Self::netsniffer(scan_id, interface),
+            // Periodic active OS detection
+            Self::os_detection(scan_id, targets)
+                .with_modules(vec!["passive_os".to_string(), "mac_enrichment".to_string()]),
+        ]
+    }
 }

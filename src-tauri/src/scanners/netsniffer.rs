@@ -726,7 +726,6 @@ fn handle_packet(
                         }
                         Timestamp(_, _) => kinds.push(8),
                         Noop => kinds.push(1),
-                        _ => kinds.push(0xff),
                     }
                 }
             }
@@ -789,7 +788,6 @@ fn handle_packet(
                         }
                         Timestamp(_, _) => kinds.push(8),
                         Noop => kinds.push(1),
-                        _ => kinds.push(0xff),
                     }
                 }
             }
@@ -900,4 +898,256 @@ pub fn log_artifact(data: serde_json::Value) {
         .unwrap();
 
     writeln!(file, "{}", serde_json::to_string(&data).unwrap()).unwrap();
+}
+
+// =====================================================================
+// UNIFIED PIPELINE INTEGRATION - Source Trait Implementation
+// =====================================================================
+
+use crate::shared::shared::{ObsStream, Observation, ObservationKind};
+use crate::shared::traits::Source;
+use crate::plan::Plan;
+use futures::stream::{self, StreamExt as FuturesStreamExt};
+
+/// NetSniffer as a Source in the unified scanner pipeline
+/// Provides passive network monitoring, OS fingerprinting, MAC vendor lookup
+pub struct NetSnifferSource {
+    interface: String,
+    output_dir: PathBuf,
+    max_packets: Option<usize>,  // Optional limit for testing
+}
+
+impl NetSnifferSource {
+    pub fn new(interface: String, output_dir: PathBuf) -> Self {
+        Self {
+            interface,
+            output_dir,
+            max_packets: None,
+        }
+    }
+
+    pub fn with_max_packets(mut self, max: usize) -> Self {
+        self.max_packets = Some(max);
+        self
+    }
+
+    /// Convert PktMeta to Observation for the pipeline
+    fn pkt_to_observation(pkt: PktMeta, scan_id: uuid::Uuid) -> Vec<Observation> {
+        let mut observations = Vec::new();
+        let ts = chrono::Utc::now();
+
+        // 1. Host Observation with MAC/Vendor/Passive OS hints
+        let mut host_fields = serde_json::Map::new();
+        host_fields.insert("ip".to_string(), pkt.src_ip.clone().into());
+        host_fields.insert("mac_address".to_string(), pkt.src_mac.clone().into());
+
+        if let Some(ref vendor) = pkt.oui_vendor {
+            host_fields.insert("vendor".to_string(), vendor.clone().into());
+        }
+
+        // Passive OS detection hints from TTL
+        host_fields.insert("ttl".to_string(), pkt.ttl_hop.into());
+        if let Some(df) = pkt.ip_df {
+            host_fields.insert("df_flag".to_string(), df.into());
+        }
+        if let Some(ip_id) = pkt.ip_id {
+            host_fields.insert("ip_id".to_string(), ip_id.into());
+        }
+
+        // TCP fingerprint data for passive OS detection
+        if let Some(tcp_win) = pkt.tcp_win {
+            host_fields.insert("tcp_window".to_string(), tcp_win.into());
+        }
+        if let Some(mss) = pkt.tcp_mss {
+            host_fields.insert("tcp_mss".to_string(), mss.into());
+        }
+        if let Some(wscale) = pkt.tcp_wscale {
+            host_fields.insert("tcp_wscale".to_string(), wscale.into());
+        }
+        if let Some(sack) = pkt.tcp_sack_ok {
+            host_fields.insert("tcp_sack_ok".to_string(), sack.into());
+        }
+        if let Some(opts_hash) = pkt.tcp_opts_hash {
+            host_fields.insert("tcp_opts_hash".to_string(), opts_hash.to_string().into());
+        }
+
+        host_fields.insert("status".to_string(), "up".into());
+        host_fields.insert("source".to_string(), "netsniffer".into());
+
+        observations.push(Observation {
+            scan_id,
+            kind: ObservationKind::Host,
+            fields: host_fields,
+            ts,
+            key: format!("host-{}", pkt.src_ip),
+            raw: Some(serde_json::to_string(&pkt).unwrap_or_default()),
+        });
+
+        // 2. Service Observation if we have port information
+        if let (Some(sport), Some(dport)) = (pkt.sport, pkt.dport) {
+            let mut service_fields = serde_json::Map::new();
+            service_fields.insert("ip".to_string(), pkt.src_ip.clone().into());
+            service_fields.insert("port".to_string(), sport.into());
+            service_fields.insert("protocol".to_string(), pkt.proto.into());
+            service_fields.insert("state".to_string(), "open".into());
+            service_fields.insert("source".to_string(), "netsniffer".into());
+
+            if let Some(flags) = pkt.flags {
+                service_fields.insert("tcp_flags".to_string(), flags.into());
+            }
+
+            observations.push(Observation {
+                scan_id,
+                kind: ObservationKind::Service,
+                fields: service_fields,
+                ts,
+                key: format!("service-{}-{}-{}", pkt.src_ip, sport, pkt.proto),
+                raw: None,
+            });
+        }
+
+        // 3. Metric Observation for network statistics
+        let mut metric_fields = serde_json::Map::new();
+        metric_fields.insert("packet_length".to_string(), pkt.pkt_len.into());
+        metric_fields.insert("protocol".to_string(), pkt.proto.into());
+        metric_fields.insert("interface".to_string(), pkt.iface.into());
+        metric_fields.insert("direction".to_string(), pkt.dir.into());
+
+        observations.push(Observation {
+            scan_id,
+            kind: ObservationKind::Metric,
+            fields: metric_fields,
+            ts,
+            key: "netsniffer-packet-stats".to_string(),
+            raw: None,
+        });
+
+        observations
+    }
+}
+
+#[async_trait::async_trait]
+impl Source for NetSnifferSource {
+    fn name(&self) -> &'static str {
+        "netsniffer"
+    }
+
+    async fn start(&self, plan: &Plan) -> Result<ObsStream> {
+        let scan_id = plan.scan_id;
+        let interface = self.interface.clone();
+        let output_dir = self.output_dir.clone();
+        let max_packets = self.max_packets;
+
+        // Ensure output directory exists
+        create_dir_all(&output_dir)?;
+
+        // Build BPF filter for scanner replies
+        // This captures replies to our scanner (incoming traffic)
+        let scanner_ip = ""; // TODO: Get local IP from interface
+        let bpf_filter = format!(
+            "tcp or udp or icmp"
+        ); // Simplified for now, can be enhanced with dst host filtering
+
+        log::info!("Starting NetSniffer on interface: {}, BPF: {}", interface, bpf_filter);
+
+        // Open capture device
+        let dev = if interface == "default" {
+            Device::lookup()?.ok_or_else(|| anyhow!("no default capture device"))?
+        } else {
+            Device::list()?
+                .into_iter()
+                .find(|d| d.name == interface)
+                .ok_or_else(|| anyhow!("interface {} not found", interface))?
+        };
+
+        let mut cap = Capture::from_device(dev)?
+            .promisc(true)
+            .timeout(100) // 100ms timeout for next()
+            .buffer_size(8 << 20) // 8MB buffer for high-speed capture
+            .open()?;
+
+        cap.filter(&bpf_filter, true)?;
+
+        // Create observation stream from packet capture
+        let stream = stream::unfold(
+            (cap, 0usize, output_dir, interface.clone()),
+            move |(mut cap, mut packet_count, output_dir, interface)| async move {
+                // Check for max packet limit
+                if let Some(max) = max_packets {
+                    if packet_count >= max {
+                        log::info!("NetSniffer reached max packet limit: {}", max);
+                        return None;
+                    }
+                }
+
+                // Capture next packet (non-blocking with timeout)
+                match cap.next_packet() {
+                    Ok(packet) => {
+                        packet_count += 1;
+
+                        // Parse packet to PktMeta
+                        if let Some(pkt_meta) = handle_packet(&packet.data, &packet.header, "scanner", &interface) {
+                            // Convert to observations
+                            let observations = Self::pkt_to_observation(pkt_meta, scan_id);
+
+                            // Log to NDJSON file
+                            for obs in &observations {
+                                if let Ok(json_str) = serde_json::to_string(obs) {
+                                    log_artifact(serde_json::from_str(&json_str).unwrap_or(json!({})));
+                                }
+                            }
+
+                            // Emit first observation, keep state for next iteration
+                            if let Some(first_obs) = observations.into_iter().next() {
+                                return Some((first_obs, (cap, packet_count, output_dir, interface)));
+                            }
+                        }
+
+                        // No valid observation, continue to next packet
+                        Some((
+                            Observation {
+                                scan_id,
+                                kind: ObservationKind::Metric,
+                                fields: {
+                                    let mut fields = serde_json::Map::new();
+                                    fields.insert("packet_count".to_string(), packet_count.into());
+                                    fields
+                                },
+                                ts: chrono::Utc::now(),
+                                key: "netsniffer-progress".to_string(),
+                                raw: None,
+                            },
+                            (cap, packet_count, output_dir, interface),
+                        ))
+                    }
+                    Err(pcap::Error::TimeoutExpired) => {
+                        // Timeout is expected, continue waiting
+                        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                        Some((
+                            Observation {
+                                scan_id,
+                                kind: ObservationKind::Metric,
+                                fields: {
+                                    let mut fields = serde_json::Map::new();
+                                    fields.insert("status".to_string(), "listening".into());
+                                    fields.insert("packet_count".to_string(), packet_count.into());
+                                    fields
+                                },
+                                ts: chrono::Utc::now(),
+                                key: "netsniffer-heartbeat".to_string(),
+                                raw: None,
+                            },
+                            (cap, packet_count, output_dir, interface),
+                        ))
+                    }
+                    Err(e) => {
+                        log::error!("NetSniffer capture error: {}", e);
+                        None
+                    }
+                }
+            },
+        );
+
+        Ok(Box::pin(stream))
+    }
 }
