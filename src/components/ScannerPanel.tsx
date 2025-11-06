@@ -38,6 +38,7 @@ const EnhancedScannerPanel = () => {
     metrics,
     startScan,
     resetScan,
+    startNetsniffer,
   } = useAppStore();
 
   // Load existing hosts from database on mount
@@ -281,12 +282,28 @@ const EnhancedScannerPanel = () => {
                   Scan Configuration
                 </h2>
               </div>
-              <div className="flex-1 p-4 overflow-y-auto">
+              <div className="flex-1 p-4 overflow-y-auto flex flex-col gap-4">
                 <ScanForm
                   onStartScan={handleStartScan}
                   isScanning={scanInProgress}
                   className="h-full"
                 />
+                
+                {/* Netsniffer Button */}
+                <div className="mt-4 pt-4 border-t border-gray-700">
+                  <button
+                    onClick={() => startNetsniffer('default')}
+                    disabled={hosts.length === 0 || scanInProgress}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded transition-colors"
+                    title={hosts.length === 0 ? 'Start a scan first to discover hosts' : scanInProgress ? 'Wait for current scan to complete' : 'Start passive network monitoring'}
+                  >
+                    <Wifi className="w-4 h-4" />
+                    {hosts.length === 0 ? 'Start Network Sniffer (requires hosts)' : 'Start Network Sniffer'}
+                  </button>
+                  <p className="mt-2 text-xs text-gray-400 text-center">
+                    Monitor network traffic and enrich discovered hosts with MAC addresses, vendors, and OS information
+                  </p>
+                </div>
               </div>
             </div>
 

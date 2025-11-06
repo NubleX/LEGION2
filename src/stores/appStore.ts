@@ -35,6 +35,7 @@ interface AppState {
 
   // Simple UI state
   scanInProgress: boolean;
+  pendingScans: number; // Track number of pending scans in multi-scan sequences
 }
 
 interface AppActions {
@@ -44,6 +45,7 @@ interface AppActions {
   clearOutput: () => void;
   resetScan: () => void;
   loadExistingData: () => Promise<void>;
+  startNetsniffer: (iface?: string) => Promise<void>;
 }
 
 const useAppStore = create<AppState & AppActions>((set) => {
@@ -94,10 +96,18 @@ const useAppStore = create<AppState & AppActions>((set) => {
 
 
     await listen('obs:done', () => {
-      set((state) => ({
-        scanInProgress: false,
-        liveOutput: [...state.liveOutput, 'Scan completed. Ready for new scan.']
-      }));
+      set((state) => {
+        const newPendingScans = Math.max(0, (state.pendingScans || 0) - 1);
+        const allScansDone = newPendingScans === 0;
+        
+        return {
+          pendingScans: newPendingScans,
+          scanInProgress: !allScansDone, // Only set to false when all scans are done
+          liveOutput: allScansDone 
+            ? [...state.liveOutput, 'All scans completed. Ready for new scan.']
+            : [...state.liveOutput, 'Scan phase completed. Continuing...']
+        };
+      });
     });
   };
 
@@ -136,6 +146,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
     },
 
     scanInProgress: false,
+    pendingScans: 0,
 
     // Actions
     startScan: async (config: ScanConfig) => {
@@ -154,100 +165,123 @@ const useAppStore = create<AppState & AppActions>((set) => {
 
       console.log('[appStore] Processed targets:', targets, 'ports:', ports || '(default 1000)', 'scanType:', config.scanType);
 
-      // Build plans based on selected tools
+      // Use massmap - unified scanner that intelligently uses masscan + nmap
+      const scanId = crypto.randomUUID();
+      
+      // Parse extra args
+      const extraArgs = config.extra ? config.extra.split(' ').filter(a => a.trim()) : [];
+      
+      const massmapResult = await invoke<{
+        use_masscan: boolean;
+        masscan_plan: Plan | null;
+        nmap_plan: Plan;
+      }>('create_massmap_plan', {
+        scanId,
+        targets,
+        ports,
+        scanType: config.scanType,
+        extraArgs,
+        detectOs: config.detectOS,
+        detectVersions: config.detectVersions,
+        skipPing: config.skipPing,
+        rate: config.rate || 1000,
+        interface: config.interface || null,
+      });
+
+      // Build plans to execute sequentially
       const plans: Plan[] = [];
-
-      if (config.useMasscan) {
-        // Use Plan::masscan builder method
-        const scanId = crypto.randomUUID();
-        const masscanPlan = await invoke<Plan>('create_masscan_plan', {
-          scanId,
-          targets,
-          ports,
-          rate: config.rate || 1000,
-          interface: config.interface,
-        });
-        plans.push(masscanPlan);
+      
+      // If masscan is needed, add it first
+      if (massmapResult.use_masscan && massmapResult.masscan_plan) {
+        plans.push(massmapResult.masscan_plan);
       }
-
-      if (config.useNmap) {
-        // Use appropriate Plan builder based on scan type
-        let nmapPlan: Plan;
-        const scanId = crypto.randomUUID();
-
-        switch (config.scanType) {
-          case 'quick':
-            // Quick scan: fast, no version detection, normal host discovery
-            const quickArgs = ['-T4']; // Fast timing, let nmap do host discovery
-            if (config.detectOS) quickArgs.push('-O');
-            if (config.skipPing) quickArgs.push('-Pn'); // Only skip ping if user explicitly asks
-            // Don't use -sV in quick scans - it's too slow
-            // if (config.detectVersions) quickArgs.push('-sV');
-
-            nmapPlan = await invoke<Plan>('create_nmap_plan', {
-              scanId,
-              targets,
-              ports,
-              scanType: 'quick',
-              extraArgs: quickArgs,
-            });
-            break;
-          case 'comprehensive':
-            // Use Plan::comprehensive builder
-            nmapPlan = await invoke<Plan>('create_comprehensive_plan', {
-              scanId,
-              targets,
-              ports,
-            });
-            break;
-          case 'stealth':
-            // Use nmap plan with stealth args
-            nmapPlan = await invoke<Plan>('create_nmap_plan', {
-              scanId,
-              targets,
-              ports,
-              extraArgs: ['-sS', '-T2', '-f', '--randomize-hosts'],
-            });
-            break;
-          default:
-            // Standard nmap plan
-            const nmapArgs: string[] = [];
-            if (config.detectOS) nmapArgs.push('-O');
-            if (config.detectVersions) nmapArgs.push('-sV');
-            if (config.skipPing) nmapArgs.push('-Pn'); // Only if user explicitly enables
-            if (config.extra) {
-              nmapArgs.push(...config.extra.split(' '));
-            }
-
-            nmapPlan = await invoke<Plan>('create_nmap_plan', {
-              scanId,
-              targets,
-              ports,
-              extraArgs: nmapArgs,
-            });
-        }
-
-        // OS detection is already handled in the comprehensive plan
-        // Module system will be implemented later
-
-        plans.push(nmapPlan);
-      }
+      
+      // Always add nmap plan for detailed scanning
+      plans.push(massmapResult.nmap_plan);
 
       set((state) => ({
         scanInProgress: true,
+        pendingScans: plans.length, // Track total number of scans
         liveOutput: [...state.liveOutput, `Starting scan for ${targets} using ${plans.map(p => p.source_type).join(' & ')}...`],
       }));
 
       try {
-        for (const plan of plans) {
+        // Helper function to wait for scan completion
+        const waitForScanCompletion = async (scanId: string): Promise<void> => {
+          return new Promise(async (resolve, reject) => {
+            // Set up a timeout to prevent infinite waiting
+            let timeout: NodeJS.Timeout | null = null;
+            let unlistenFn: (() => void) | null = null;
+
+            try {
+              // Listen for obs:done event
+              unlistenFn = await listen('obs:done', () => {
+                if (timeout) clearTimeout(timeout);
+                if (unlistenFn) unlistenFn();
+                resolve();
+              });
+
+              // Set up timeout
+              timeout = setTimeout(() => {
+                if (unlistenFn) unlistenFn();
+                reject(new Error(`Scan ${scanId} timed out after 30 minutes`));
+              }, 30 * 60 * 1000); // 30 minutes timeout
+            } catch (error) {
+              if (timeout) clearTimeout(timeout);
+              if (unlistenFn) unlistenFn();
+              reject(error);
+            }
+          });
+        };
+
+        // Execute plans sequentially, waiting for each to complete
+        for (let i = 0; i < plans.length; i++) {
+          const plan = plans[i];
+          const isLastPlan = i === plans.length - 1;
+          
           console.log('Executing scan plan:', plan);
+          set((state) => ({
+            liveOutput: [...state.liveOutput, `Starting ${plan.source_type} scan...`]
+          }));
+
+          // Set up completion listener BEFORE starting the scan (to avoid race condition)
+          let completionPromise: Promise<void> | null = null;
+          if (!isLastPlan) {
+            console.log(`Setting up completion listener for ${plan.source_type} scan...`);
+            completionPromise = waitForScanCompletion(plan.scan_id);
+          }
+
+          // Execute the plan
           await invoke('engine_execute', { plan });
-          console.log('Plan executed successfully');
+          
+          // Wait for this scan to complete before proceeding (except for the last one)
+          if (!isLastPlan && completionPromise) {
+            console.log(`Waiting for ${plan.source_type} scan to complete before starting next scan...`);
+            set((state) => ({
+              liveOutput: [...state.liveOutput, `Waiting for ${plan.source_type} to complete...`]
+            }));
+            
+            try {
+              await completionPromise;
+              console.log(`${plan.source_type} scan completed successfully`);
+              set((state) => ({
+                liveOutput: [...state.liveOutput, `${plan.source_type} scan completed. Starting next phase...`]
+              }));
+            } catch (error) {
+              console.error(`Failed to wait for ${plan.source_type} completion:`, error);
+              set((state) => ({
+                liveOutput: [...state.liveOutput, `Warning: ${plan.source_type} scan completion check failed, continuing anyway...`]
+              }));
+              // Continue anyway - don't block the next scan if wait fails
+            }
+          } else {
+            console.log('Plan executed successfully (last plan, no wait needed)');
+          }
         }
 
-        // Don't set scanInProgress to false here - let the backend handle it via obs:done event
+        // Don't set scanInProgress to false here - let the backend handle it via obs:done event from the last scan
         set((state) => ({
-          liveOutput: [...state.liveOutput, 'All scan plans submitted to backend.']
+          liveOutput: [...state.liveOutput, 'All scan plans submitted and executed.']
         }));
       } catch (error) {
         console.error('Scan execution failed:', error);
@@ -281,6 +315,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
     resetScan: () => {
       set({
         scanInProgress: false,
+        pendingScans: 0,
         liveOutput: ['Previous scan data preserved. Ready for new scan.'],
         // Keep existing data persistent:
         // recentHosts: [],
@@ -310,6 +345,40 @@ const useAppStore = create<AppState & AppActions>((set) => {
         }
       } catch (error) {
         console.error('Failed to load existing data:', error);
+      }
+    },
+
+    startNetsniffer: async (iface?: string) => {
+      try {
+        const scanId = crypto.randomUUID();
+        const interfaceName = iface || 'default';
+        
+        console.log('[appStore] Starting netsniffer with interface:', interfaceName);
+        
+        set((state) => ({
+          liveOutput: [...state.liveOutput, `Starting network sniffer on interface: ${interfaceName}...`]
+        }));
+
+        // Create netsniffer plan
+        const plan = await invoke<Plan>('create_netsniffer_plan', {
+          scanId,
+          interface: interfaceName,
+        });
+
+        console.log('[appStore] Created netsniffer plan:', plan);
+
+        // Execute the plan via engine
+        await invoke('engine_execute', { plan });
+
+        set((state) => ({
+          liveOutput: [...state.liveOutput, 'Network sniffer started. Monitoring network traffic and enriching knowledgebase...']
+        }));
+      } catch (error) {
+        console.error('Failed to start netsniffer:', error);
+        set((state) => ({
+          liveOutput: [...state.liveOutput, `ERROR: Failed to start network sniffer - ${error}`]
+        }));
+        throw error;
       }
     }
   };

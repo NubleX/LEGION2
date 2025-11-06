@@ -36,7 +36,63 @@ interface ResultViewerProps {
 }
 
 
+/**
+ * Compares two port arrays to determine if they are different.
+ * Returns true if ports have changed, false if identical.
+ */
+function portsChanged(oldPorts: PortInfo[], newPorts: PortInfo[]): boolean {
+  if (oldPorts.length !== newPorts.length) return true;
+  
+  // Create a map for quick comparison
+  const oldPortsMap = new Map(oldPorts.map(p => [`${p.number}/${p.protocol}`, p]));
+  
+  for (const newPort of newPorts) {
+    const key = `${newPort.number}/${newPort.protocol}`;
+    const oldPort = oldPortsMap.get(key);
+    
+    if (!oldPort) return true; // New port found
+    
+    // Compare critical fields
+    if (oldPort.state !== newPort.state ||
+        oldPort.service !== newPort.service ||
+        oldPort.version !== newPort.version ||
+        oldPort.banner !== newPort.banner) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * Compares two vulnerability arrays to determine if they are different.
+ * Returns true if vulnerabilities have changed, false if identical.
+ */
+function vulnerabilitiesChanged(oldVulns: VulnerabilityInfo[], newVulns: VulnerabilityInfo[]): boolean {
+  if (oldVulns.length !== newVulns.length) return true;
+  
+  // Create a map for quick comparison
+  const oldVulnsMap = new Map(oldVulns.map(v => [v.id || v.name, v]));
+  
+  for (const newVuln of newVulns) {
+    const key = newVuln.id || newVuln.name;
+    const oldVuln = oldVulnsMap.get(key);
+    
+    if (!oldVuln) return true; // New vulnerability found
+    
+    // Compare critical fields
+    if (oldVuln.severity !== newVuln.severity ||
+        oldVuln.cvss_score !== newVuln.cvss_score ||
+        oldVuln.last_seen !== newVuln.last_seen) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
 const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHost }) => {
+  // Only subscribe to hosts array, memoize the current host lookup
   const hosts = useHostStore(state => state.hosts);
   
   const [selectedTab, setSelectedTab] = useState<'ports' | 'vulnerabilities' | 'details'>('ports');
@@ -46,14 +102,25 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
   const [loadingVulnerabilities, setLoadingVulnerabilities] = useState(false);
 
   // Get the host either from selectedHost prop or by selectedScanId (treating it as host ID)
-  const currentHost = selectedHost || (selectedScanId ? hosts.find(h => h.id === selectedScanId) : null);
+  // Memoize to avoid recalculating on every render
+  const currentHost = useMemo(() => {
+    return selectedHost || (selectedScanId ? hosts.find(h => h.id === selectedScanId) : null);
+  }, [selectedHost, selectedScanId, hosts]);
+
   const loadPorts = useCallback((ip: string) => {
     console.log('[ResultViewer] Loading ports for host:', ip);
     setLoadingPorts(true);
     invoke<PortInfo[]>('get_host_ports_detailed', { hostIp: ip })
       .then(ports => {
         console.log(`[ResultViewer] Successfully loaded ${ports.length} ports for host ${ip}:`, ports);
-        setHostPorts(ports);
+        // Only update state if ports have actually changed
+        setHostPorts(prevPorts => {
+          if (!portsChanged(prevPorts, ports)) {
+            console.log('[ResultViewer] Ports unchanged, skipping state update');
+            return prevPorts;
+          }
+          return ports;
+        });
         if (ports.length === 0) {
           console.warn(`[ResultViewer] No ports found for host ${ip} - this may indicate a database issue or the host has no ports`);
         }
@@ -119,7 +186,14 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
       invoke<VulnerabilityInfo[]>('get_host_vulnerabilities', { hostIp: currentHost.ip })
         .then(vulns => {
           console.log('Loaded vulnerabilities:', vulns);
-          setHostVulnerabilities(vulns);
+          // Only update state if vulnerabilities have actually changed
+          setHostVulnerabilities(prevVulns => {
+            if (!vulnerabilitiesChanged(prevVulns, vulns)) {
+              console.log('[ResultViewer] Vulnerabilities unchanged, skipping state update');
+              return prevVulns;
+            }
+            return vulns;
+          });
         })
         .catch(err => {
           console.error('Failed to load vulnerabilities:', err);

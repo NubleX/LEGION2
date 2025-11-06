@@ -341,13 +341,19 @@ impl Db {
             // Ensure host row exists - mark as 'up' since we're inserting a port (host is alive)
             // Hosts with ports are guaranteed to be alive
             // Use ON CONFLICT(id) since id is the PRIMARY KEY and conflicts occur there first
+            // Preserve existing port_count, vulnerability_count, and ip_encrypted when updating
+            // Don't update ip_encrypted if it already exists to avoid UNIQUE constraint violations
             if let Err(e) = conn.execute(
                 r#"INSERT INTO hosts(id, ip_encrypted, first_seen, last_seen, created_at, updated_at, status, port_count, vulnerability_count)
                    VALUES(?1, ?2, ?3, ?3, ?3, ?3, 'up', 0, 0)
                    ON CONFLICT(id) DO UPDATE SET 
                        status='up',
                        last_seen=excluded.last_seen, 
-                       updated_at=excluded.updated_at"#,
+                       updated_at=excluded.updated_at,
+                       -- Preserve existing counts and encrypted IP to avoid data loss
+                       port_count=hosts.port_count,
+                       vulnerability_count=hosts.vulnerability_count,
+                       ip_encrypted=COALESCE(hosts.ip_encrypted, excluded.ip_encrypted)"#,
                 params![&ip, &ip_encrypted, &t],
             ) {
                 log::error!("Failed to ensure host exists for port {}:{}: {}", ip, port, e);

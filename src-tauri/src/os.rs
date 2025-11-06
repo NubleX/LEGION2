@@ -167,7 +167,12 @@ pub fn get_nmap_binary_name() -> &'static str {
 
 /// Check if a command/binary is available on the system or locally
 pub async fn is_command_available(command_path: &Path) -> bool {
-    // Try --version first, then --help as fallback
+    // First check if the file exists (for absolute paths)
+    if command_path.is_absolute() && !command_path.exists() {
+        return false;
+    }
+    
+    // Try --version first (masscan returns non-zero but still prints version)
     let result_version = tokio::process::Command::new(command_path)
         .arg("--version")
         .output()
@@ -175,8 +180,18 @@ pub async fn is_command_available(command_path: &Path) -> bool {
 
     match result_version {
         Ok(output) if output.status.success() => return true,
-        Ok(_) => {
-            // Try --help as fallback (some tools like masscan exit with non-zero on --version)
+        Ok(output) => {
+            // Masscan returns non-zero exit code but still prints version info
+            // Check if we got any output that looks like version info
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stdout.contains("version") || stdout.contains("Version") || 
+               stderr.contains("version") || stderr.contains("Version") ||
+               stdout.contains("masscan") || stderr.contains("masscan") {
+                return true;
+            }
+            
+            // Try --help as fallback
             let result_help = tokio::process::Command::new(command_path)
                 .arg("--help")
                 .output()
@@ -186,8 +201,13 @@ pub async fn is_command_available(command_path: &Path) -> bool {
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    // Check if help output contains usage information
-                    stdout.contains("usage:")
+                    // Check if help output contains any useful information
+                    // Masscan help doesn't contain "usage:" but contains "MASSCAN" or "masscan"
+                    stdout.contains("masscan")
+                        || stderr.contains("masscan")
+                        || stdout.contains("MASSCAN")
+                        || stderr.contains("MASSCAN")
+                        || stdout.contains("usage:")
                         || stderr.contains("usage:")
                         || stdout.contains("Usage:")
                         || stderr.contains("Usage:")
@@ -195,7 +215,21 @@ pub async fn is_command_available(command_path: &Path) -> bool {
                 Err(_) => false,
             }
         }
-        Err(_) => false,
+        Err(_) => {
+            // If command couldn't be spawned, try to find it in PATH
+            // For relative paths like "masscan", try which/whereis
+            if !command_path.is_absolute() {
+                let which_result = tokio::process::Command::new("which")
+                    .arg(command_path.to_string_lossy().as_ref())
+                    .output()
+                    .await;
+                
+                if let Ok(output) = which_result {
+                    return output.status.success();
+                }
+            }
+            false
+        }
     }
 }
 /// Check if masscan is available (checks local /bin first, then system PATH)

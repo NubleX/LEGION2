@@ -50,6 +50,21 @@ fn main() {
     let db = Arc::new(open_db().expect("Failed to open database"));
 
     tauri::Builder::default()
+        .setup(|app| {
+            // Start periodic background task to refresh all hosts every 5 seconds
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+                loop {
+                    interval.tick().await;
+                    log::debug!("Emitting refresh_all_hosts event");
+                    if let Err(e) = tauri::Emitter::emit(&app_handle, "refresh_all_hosts", ()) {
+                        log::warn!("Failed to emit refresh_all_hosts event: {}", e);
+                    }
+                }
+            });
+            Ok(())
+        })
         .manage(db.clone())
         .invoke_handler(tauri::generate_handler![
             commands::engine_commands::engine_execute,
@@ -82,6 +97,8 @@ fn main() {
             commands::plan_commands::plan_with_sink,
             commands::plan_commands::get_available_modules,
             commands::plan_commands::create_plan_with_modules,
+            commands::plan_commands::create_massmap_plan,
+            commands::plan_commands::create_netsniffer_plan,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

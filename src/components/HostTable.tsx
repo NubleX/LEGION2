@@ -10,7 +10,8 @@ interface HostTableProps {
   className?: string;
 }
 
-const HostTable: React.FC<HostTableProps> = ({ onHostSelect, className = '' }) => {
+const HostTable: React.FC<HostTableProps> = React.memo(({ onHostSelect, className = '' }) => {
+  // Subscribe to hosts array from store
   const hosts = useHostStore(state => state.hosts);
 
   const formatTimestamp = (timestamp?: string) => {
@@ -120,6 +121,8 @@ const HostTable: React.FC<HostTableProps> = ({ onHostSelect, className = '' }) =
       </div>
     </div>
   );
-};
+});
+
+HostTable.displayName = 'HostTable';
 
 export default HostTable;

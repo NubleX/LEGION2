@@ -20,7 +20,7 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, isScanning }) => {
     ports: '', // Empty = use -p- (all ports) in backend
     excludeHosts: '',
     useNmap: true,
-    useMasscan: false,
+    useMasscan: true,
     extra: '',
     rate: 1000,
     detectOS: true, // Enable OS detection by default
@@ -137,38 +137,6 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, isScanning }) => {
           </div>
         </div>
 
-        {/* Scanning Tools */}
-        <div>
-          <label className="block text-sm font-medium text-gray-300 mb-2">
-            Scanning Tools
-          </label>
-          <div className="space-y-2">
-            <label className="flex items-center">
-              <input
-                type="checkbox"
-                checked={config.useNmap}
-                onChange={(e) => setConfig(prev => ({ ...prev, useNmap: e.target.checked }))}
-                className="rounded bg-gray-700 border-gray-600 text-blue-600"
-                disabled={isScanning}
-              />
-              <span className="ml-2 text-sm text-gray-300">
-                Nmap (detailed scanning & service detection)
-              </span>
-            </label>
-            <label className="flex items-center">
-              <input
-                type="checkbox"
-                checked={config.useMasscan}
-                onChange={(e) => setConfig(prev => ({ ...prev, useMasscan: e.target.checked }))}
-                className="rounded bg-gray-700 border-gray-600 text-blue-600"
-                disabled={isScanning}
-              />
-              <span className="ml-2 text-sm text-gray-300">
-                Masscan (ultra-fast port discovery)
-              </span>
-            </label>
-          </div>
-        </div>
 
         {/* Advanced Options */}
         <div>
@@ -227,38 +195,20 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, isScanning }) => {
                 />
               </div>
 
-              {config.useMasscan && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Masscan Rate (packets/sec)
-                  </label>
-                  <input
-                    type="number"
-                    value={config.rate}
-                    onChange={(e) => setConfig(prev => ({ ...prev, rate: parseInt(e.target.value) }))}
-                    min="100"
-                    max="100000"
-                    className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white focus:ring-2 focus:ring-blue-500"
-                    disabled={isScanning}
-                  />
-                </div>
-              )}
 
-              {config.useNmap && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Additional Nmap Options
-                  </label>
-                  <input
-                    type="text"
-                    value={config.extra}
-                    onChange={(e) => setConfig(prev => ({ ...prev, extra: e.target.value }))}
-                    placeholder="-T4 --script vuln"
-                    className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white focus:ring-2 focus:ring-blue-500"
-                    disabled={isScanning}
-                  />
-                </div>
-              )}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Additional Massmap Options
+                </label>
+                <input
+                  type="text"
+                  value={config.extra}
+                  onChange={(e) => setConfig(prev => ({ ...prev, extra: e.target.value }))}
+                  placeholder="-T4 --script vuln"
+                  className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white focus:ring-2 focus:ring-blue-500"
+                  disabled={isScanning}
+                />
+              </div>
 
               <div className="space-y-2">
                 <label className="flex items-center">

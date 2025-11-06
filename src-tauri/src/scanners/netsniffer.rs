@@ -61,10 +61,20 @@ use etherparse::{PacketHeaders, TcpHeader, TcpOptionElement, TcpOptionsIterator}
 use pcap::{Active, Capture, Device};
 use serde::Serialize;
 use serde_json::json;
+use std::collections::VecDeque;
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::Write;
 use std::net::{Ipv4Addr, Ipv6Addr, UdpSocket};
 use std::path::{Path, PathBuf};
+use crate::commands::engine_commands;
+
+// Minimal packet info for channel communication
+struct PacketInfo {
+    data: Vec<u8>,
+    len: u32,
+    ts_sec: i64,
+    ts_usec: i64,
+}
 
 #[derive(Serialize)]
 struct PktMeta {
@@ -672,6 +682,17 @@ fn handle_packet(
     vantage: &str,
     iface: &str,
 ) -> Option<PktMeta> {
+    handle_packet_with_ts(raw, h.ts.tv_sec, h.ts.tv_usec, h.len, vantage, iface)
+}
+
+fn handle_packet_with_ts(
+    raw: &[u8],
+    ts_sec: i64,
+    ts_usec: i64,
+    pkt_len: u32,
+    vantage: &str,
+    iface: &str,
+) -> Option<PktMeta> {
     let ph = PacketHeaders::from_ethernet_slice(raw).ok()?;
     // Ethernet
     let (src_mac, dst_mac) = match ph.link {
@@ -824,7 +845,7 @@ fn handle_packet(
         _ => return None, // Skip non-TCP packets for now
     };
 
-    let ts_ns = (h.ts.tv_sec as u128) * 1_000_000_000u128 + (h.ts.tv_usec as u128) * 1_000u128;
+    let ts_ns = (ts_sec as u128) * 1_000_000_000u128 + (ts_usec as u128) * 1_000u128;
     let meta = PktMeta {
         ts_ns,
         ts: Utc::now().to_rfc3339(),
@@ -850,7 +871,7 @@ fn handle_packet(
         } else {
             Some(hash_opts_kinds(&opt_kinds))
         },
-        pkt_len: h.len,
+        pkt_len,
         dir: "in",
         scan_id: None,
         probe_type: None,
@@ -1060,71 +1081,142 @@ impl Source for NetSnifferSource {
                 .ok_or_else(|| anyhow!("interface {} not found", interface))?
         };
 
-        let mut cap = Capture::from_device(dev)?
+        let cap = Capture::from_device(dev)?
             .promisc(true)
             .timeout(100) // 100ms timeout for next()
             .buffer_size(8 << 20) // 8MB buffer for high-speed capture
             .open()?;
 
-        cap.filter(&bpf_filter, true)?;
+        // Create channel for packet communication between blocking and async contexts
+        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel::<PacketInfo>();
 
-        // Create observation stream from packet capture
-        let stream = stream::unfold(
-            (cap, 0usize, output_dir, interface.clone()),
-            move |(mut cap, mut packet_count, output_dir, interface)| async move {
-                // Check for max packet limit
+        // Clone interface name for blocking task
+        let interface_for_blocking = interface.clone();
+        
+        // Spawn blocking task for packet capture
+        let cap_for_blocking = cap;
+        tokio::task::spawn_blocking(move || {
+            let mut cap = cap_for_blocking;
+            if let Err(e) = cap.filter(&bpf_filter, true) {
+                log::error!("Failed to set BPF filter: {}", e);
+                return;
+            }
+
+            let mut packet_count: usize = 0;
+            let mut last_heartbeat = std::time::Instant::now();
+            let heartbeat_interval = std::time::Duration::from_secs(5);
+
+            loop {
+                // Check cancellation
+                if engine_commands::is_scan_cancelled() {
+                    log::info!("NetSniffer capture cancelled by user");
+                    break;
+                }
+
+                // Check max packet limit
                 if let Some(max) = max_packets {
                     if packet_count >= max {
                         log::info!("NetSniffer reached max packet limit: {}", max);
-                        return None;
+                        break;
                     }
                 }
 
-                // Capture next packet (non-blocking with timeout)
+                // Capture next packet (blocking call)
                 match cap.next_packet() {
                     Ok(packet) => {
                         packet_count += 1;
-
-                        // Parse packet to PktMeta
-                        if let Some(pkt_meta) = handle_packet(&packet.data, &packet.header, "scanner", &interface) {
-                            // Convert to observations
-                            let observations = Self::pkt_to_observation(pkt_meta, scan_id);
-
-                            // Log to NDJSON file
-                            for obs in &observations {
-                                if let Ok(json_str) = serde_json::to_string(obs) {
-                                    log_artifact(serde_json::from_str(&json_str).unwrap_or(json!({})));
-                                }
-                            }
-
-                            // Emit first observation, keep state for next iteration
-                            if let Some(first_obs) = observations.into_iter().next() {
-                                return Some((first_obs, (cap, packet_count, output_dir, interface)));
-                            }
+                        // Create packet info with minimal data needed
+                        let packet_info = PacketInfo {
+                            data: packet.data.to_vec(),
+                            len: packet.header.len,
+                            ts_sec: packet.header.ts.tv_sec,
+                            ts_usec: packet.header.ts.tv_usec,
+                        };
+                        
+                        if packet_tx.send(packet_info).is_err() {
+                            // Receiver dropped, stream ended
+                            log::debug!("Packet channel receiver dropped, stopping capture");
+                            break;
                         }
-
-                        // No valid observation, continue to next packet
-                        Some((
-                            Observation {
-                                scan_id,
-                                kind: ObservationKind::Metric,
-                                fields: {
-                                    let mut fields = serde_json::Map::new();
-                                    fields.insert("packet_count".to_string(), packet_count.into());
-                                    fields
-                                },
-                                ts: chrono::Utc::now(),
-                                key: "netsniffer-progress".to_string(),
-                                raw: None,
-                            },
-                            (cap, packet_count, output_dir, interface),
-                        ))
+                        last_heartbeat = std::time::Instant::now();
                     }
                     Err(pcap::Error::TimeoutExpired) => {
-                        // Timeout is expected, continue waiting
-                        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                        Some((
-                            Observation {
+                        // Timeout is expected, check if we need to send heartbeat
+                        let now = std::time::Instant::now();
+                        if now.duration_since(last_heartbeat) >= heartbeat_interval {
+                            // Send heartbeat signal (empty data)
+                            if packet_tx.send(PacketInfo {
+                                data: Vec::new(),
+                                len: 0,
+                                ts_sec: 0,
+                                ts_usec: 0,
+                            }).is_err() {
+                                break;
+                            }
+                            last_heartbeat = now;
+                        }
+                        continue;
+                    }
+                    Err(e) => {
+                        log::error!("NetSniffer capture error: {}", e);
+                        // For fatal errors, break the loop
+                        // For transient errors, continue
+                        let error_str = format!("{}", e);
+                        if error_str.contains("permission") || error_str.contains("memory") || error_str.contains("fatal") {
+                            log::error!("Fatal capture error, stopping: {}", e);
+                            break;
+                        } else {
+                            log::warn!("Transient capture error, continuing: {}", e);
+                            continue;
+                        }
+                    }
+                }
+            }
+            log::info!("NetSniffer blocking task completed");
+        });
+
+        // Create observation stream from channel
+        let mut obs_queue = VecDeque::new();
+        let mut packet_count: usize = 0;
+        let mut last_heartbeat_time = std::time::Instant::now();
+        let interface_for_stream = interface.clone();
+
+        let stream = stream::unfold(
+            (packet_rx, obs_queue, packet_count, last_heartbeat_time, interface_for_stream),
+            move |(mut packet_rx, mut obs_queue, mut packet_count, mut last_heartbeat_time, interface_for_stream)| async move {
+                // First, emit from observation queue if available
+                if let Some(obs) = obs_queue.pop_front() {
+                    return Some((obs, (packet_rx, obs_queue, packet_count, last_heartbeat_time, interface_for_stream)));
+                }
+
+                // Check cancellation
+                if engine_commands::is_scan_cancelled() {
+                    log::info!("NetSniffer stream cancelled by user");
+                    let cancel_obs = Observation {
+                        scan_id,
+                        kind: ObservationKind::Metric,
+                        fields: {
+                            let mut fields = serde_json::Map::new();
+                            fields.insert("status".to_string(), "cancelled".into());
+                            fields
+                        },
+                        ts: chrono::Utc::now(),
+                        key: "scan-status".to_string(),
+                        raw: None,
+                    };
+                    return Some((cancel_obs, (packet_rx, obs_queue, packet_count, last_heartbeat_time, interface_for_stream)));
+                }
+
+                // Receive packet from channel with timeout
+                match tokio::time::timeout(
+                    tokio::time::Duration::from_millis(100),
+                    packet_rx.recv()
+                ).await {
+                    Ok(Some(packet_info)) => {
+                        // Check if this is a heartbeat signal (empty data)
+                        if packet_info.data.is_empty() {
+                            // Emit heartbeat observation
+                            let heartbeat_obs = Observation {
                                 scan_id,
                                 kind: ObservationKind::Metric,
                                 fields: {
@@ -1136,13 +1228,100 @@ impl Source for NetSnifferSource {
                                 ts: chrono::Utc::now(),
                                 key: "netsniffer-heartbeat".to_string(),
                                 raw: None,
+                            };
+                            return Some((heartbeat_obs, (packet_rx, obs_queue, packet_count, last_heartbeat_time, interface_for_stream)));
+                        }
+
+                        packet_count += 1;
+
+                        // Parse packet to PktMeta using timestamp and length directly
+                        if let Some(pkt_meta) = handle_packet_with_ts(
+                            &packet_info.data,
+                            packet_info.ts_sec,
+                            packet_info.ts_usec,
+                            packet_info.len,
+                            "scanner",
+                            &interface_for_stream
+                        ) {
+                            // Convert to observations (may return multiple: Host, Service, Metric)
+                            let observations = Self::pkt_to_observation(pkt_meta, scan_id);
+
+                            // Log to NDJSON file
+                            for obs in &observations {
+                                if let Ok(json_str) = serde_json::to_string(obs) {
+                                    log_artifact(serde_json::from_str(&json_str).unwrap_or(json!({})));
+                                }
+                            }
+
+                            // Queue all observations for emission
+                            for obs in observations {
+                                obs_queue.push_back(obs);
+                            }
+
+                            // Emit first observation from queue
+                            if let Some(obs) = obs_queue.pop_front() {
+                                return Some((obs, (packet_rx, obs_queue, packet_count, last_heartbeat_time, interface_for_stream)));
+                            }
+                        }
+
+                        // No valid observation, emit progress metric
+                        let progress_obs = Observation {
+                            scan_id,
+                            kind: ObservationKind::Metric,
+                            fields: {
+                                let mut fields = serde_json::Map::new();
+                                fields.insert("packet_count".to_string(), packet_count.into());
+                                fields
                             },
-                            (cap, packet_count, output_dir, interface),
-                        ))
+                            ts: chrono::Utc::now(),
+                            key: "netsniffer-progress".to_string(),
+                            raw: None,
+                        };
+                        Some((progress_obs, (packet_rx, obs_queue, packet_count, last_heartbeat_time, interface_for_stream)))
                     }
-                    Err(e) => {
-                        log::error!("NetSniffer capture error: {}", e);
+                    Ok(None) => {
+                        // Channel closed, capture task ended
+                        log::info!("NetSniffer packet channel closed");
                         None
+                    }
+                    Err(_) => {
+                        // Timeout waiting for packet, emit heartbeat if needed
+                        let now = std::time::Instant::now();
+                        if now.duration_since(last_heartbeat_time) >= std::time::Duration::from_secs(5) {
+                            last_heartbeat_time = now;
+                            let heartbeat_obs = Observation {
+                                scan_id,
+                                kind: ObservationKind::Metric,
+                                fields: {
+                                    let mut fields = serde_json::Map::new();
+                                    fields.insert("status".to_string(), "listening".into());
+                                    fields.insert("packet_count".to_string(), packet_count.into());
+                                    fields
+                                },
+                                ts: chrono::Utc::now(),
+                                key: "netsniffer-heartbeat".to_string(),
+                                raw: None,
+                            };
+                            Some((heartbeat_obs, (packet_rx, obs_queue, packet_count, last_heartbeat_time, interface_for_stream)))
+                        } else {
+                            // Continue waiting
+                            Some((
+                                Observation {
+                                    scan_id,
+                                    kind: ObservationKind::Metric,
+                                    fields: {
+                                        let mut fields = serde_json::Map::new();
+                                        fields.insert("status".to_string(), "waiting".into());
+                                        fields.insert("packet_count".to_string(), packet_count.into());
+                                        fields
+                                    },
+                                    ts: chrono::Utc::now(),
+                                    key: "netsniffer-waiting".to_string(),
+                                    raw: None,
+                                },
+                                (packet_rx, obs_queue, packet_count, last_heartbeat_time, interface_for_stream),
+                            ))
+                        }
                     }
                 }
             },
