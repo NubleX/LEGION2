@@ -26,6 +26,9 @@ pub async fn engine_execute(
 ) -> Result<(), String> {
     log::info!("Engine execute called with plan: {:?}", plan);
 
+    // Reset cancellation flag for new scan
+    reset_scan_cancellation();
+
     // Get or create engine instance
     let mut engine_guard = GLOBAL_ENGINE.lock().await;
     let engine = match engine_guard.as_ref() {
@@ -44,7 +47,7 @@ pub async fn engine_execute(
             log::info!("Creating new engine instance");
 
             // Build engine from registry, wire Arc<Db> into DbSink
-            let mut registry = Registry::new(state_db.inner().clone(), app);
+            let registry = Registry::new(state_db.inner().clone(), app);
 
             // Initialize all standard components in registry
             if let Err(e) = registry.initialize_standard_components().await {
@@ -65,8 +68,17 @@ pub async fn engine_execute(
         }
     };
 
-    // Release the lock
+    // Release the lock before spawning background task
     drop(engine_guard);
+
+    // Check if engine is ready before spawning (double-check after lock release)
+    if !engine.is_ready().await {
+        let current_state = engine.get_state().await;
+        return Err(format!(
+            "Engine not ready for new scan. Current state: {:?}",
+            current_state
+        ));
+    }
 
     // Execute in background task - return immediately while streaming
     tokio::spawn(async move {
@@ -111,6 +123,9 @@ pub async fn engine_cancel_scan() -> Result<(), String> {
 #[tauri::command]
 pub async fn engine_reset() -> Result<(), String> {
     log::info!("Engine reset requested");
+
+    // Reset cancellation flag
+    reset_scan_cancellation();
 
     let engine_guard = GLOBAL_ENGINE.lock().await;
     if let Some(engine) = engine_guard.as_ref() {

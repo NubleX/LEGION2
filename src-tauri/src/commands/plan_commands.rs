@@ -2,8 +2,18 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 use crate::plan::Plan;
-use crate::shared::{ScanTypes::{PortRange, ScanType}, shared::{PortState, Protocol}};
+use crate::shared::ScanTypes::PortRange;
+use crate::shared::shared::{PortState, Protocol};
 use uuid::Uuid;
+
+/// Parse scan ID from optional string, generating a new UUID if None
+fn parse_scan_id(scan_id: Option<String>) -> Result<Uuid, String> {
+    Ok(scan_id
+        .map(|s| Uuid::parse_str(&s))
+        .transpose()
+        .map_err(|e| format!("Invalid UUID: {}", e))?
+        .unwrap_or_else(Uuid::new_v4))
+}
 
 /// Create a masscan plan using the builder pattern
 #[tauri::command]
@@ -14,11 +24,7 @@ pub fn create_masscan_plan(
     rate: Option<u64>,
     interface: Option<String>,
 ) -> Result<Plan, String> {
-    let scan_id = scan_id
-        .map(|s| Uuid::parse_str(&s))
-        .transpose()
-        .map_err(|e| format!("Invalid UUID: {}", e))?
-        .unwrap_or_else(Uuid::new_v4);
+    let scan_id = parse_scan_id(scan_id)?;
 
     let mut plan = Plan::masscan(scan_id, targets, ports, rate);
     if let Some(iface) = interface {
@@ -29,18 +35,14 @@ pub fn create_masscan_plan(
 
 /// Create an nmap plan using the builder pattern
 #[tauri::command]
-pub async fn create_nmap_plan(
+pub fn create_nmap_plan(
     scan_id: Option<String>,
     targets: String,
     ports: String,
     extra_args: Vec<String>,
     interface: Option<String>,
 ) -> Result<Plan, String> {
-    let scan_id = scan_id
-        .map(|s| Uuid::parse_str(&s))
-        .transpose()
-        .map_err(|e| format!("Invalid UUID: {}", e))?
-        .unwrap_or_else(Uuid::new_v4);
+    let scan_id = parse_scan_id(scan_id)?;
 
     let mut plan = Plan::nmap(scan_id, targets, ports, extra_args);
     if let Some(iface) = interface {
@@ -57,11 +59,7 @@ pub fn create_comprehensive_plan(
     ports: String,
     interface: Option<String>,
 ) -> Result<Plan, String> {
-    let scan_id = scan_id
-        .map(|s| Uuid::parse_str(&s))
-        .transpose()
-        .map_err(|e| format!("Invalid UUID: {}", e))?
-        .unwrap_or_else(Uuid::new_v4);
+    let scan_id = parse_scan_id(scan_id)?;
 
     let mut plan = Plan::comprehensive(scan_id, targets, ports);
     if let Some(iface) = interface {
@@ -72,14 +70,17 @@ pub fn create_comprehensive_plan(
 
 /// Create an OS detection plan using the builder pattern
 #[tauri::command]
-pub fn create_os_detection_plan(scan_id: Option<String>, targets: String) -> Result<Plan, String> {
-    let scan_id = scan_id
-        .map(|s| Uuid::parse_str(&s))
-        .transpose()
-        .map_err(|e| format!("Invalid UUID: {}", e))?
-        .unwrap_or_else(Uuid::new_v4);
+pub fn create_os_detection_plan(
+    scan_id: Option<String>,
+    targets: String,
+    interface: Option<String>,
+) -> Result<Plan, String> {
+    let scan_id = parse_scan_id(scan_id)?;
 
-    let plan = Plan::os_detection(scan_id, targets);
+    let mut plan = Plan::os_detection(scan_id, targets);
+    if let Some(iface) = interface {
+        plan = plan.with_interface(iface);
+    }
     Ok(plan)
 }
 
@@ -195,14 +196,11 @@ pub fn create_plan_with_modules(
     source_type: String,
     modules: Vec<String>,
     sink_types: Vec<String>,
+    interface: Option<String>,
 ) -> Result<Plan, String> {
-    let scan_id = scan_id
-        .map(|s| Uuid::parse_str(&s))
-        .transpose()
-        .map_err(|e| format!("Invalid UUID: {}", e))?
-        .unwrap_or_else(Uuid::new_v4);
+    let scan_id = parse_scan_id(scan_id)?;
 
-    let plan = Plan {
+    let mut plan = Plan {
         scan_id,
         targets,
         ports,
@@ -213,6 +211,22 @@ pub fn create_plan_with_modules(
         sink_types,
         interface: None,
     };
+    
+    if let Some(iface) = interface {
+        plan = plan.with_interface(iface);
+    }
 
+    Ok(plan)
+}
+
+/// Create a netsniffer plan for passive network monitoring
+#[tauri::command]
+pub fn create_netsniffer_plan(
+    scan_id: Option<String>,
+    interface: String,
+) -> Result<Plan, String> {
+    let scan_id = parse_scan_id(scan_id)?;
+
+    let plan = Plan::netsniffer(scan_id, interface);
     Ok(plan)
 }

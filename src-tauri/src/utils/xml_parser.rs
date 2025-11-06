@@ -95,10 +95,25 @@ impl XmlParser {
             observations.push(host_obs);
 
             // Parse ports for this host
-            for port_node in host_node
-                .descendants()
-                .filter(|n| n.tag_name().name() == "port")
+            // Try to find ports element first, then get direct children (more accurate)
+            // If no ports element, fall back to descendants search
+            let ports_to_parse: Vec<_> = if let Some(ports_node) = host_node
+                .children()
+                .find(|n| n.tag_name().name() == "ports")
             {
+                ports_node
+                    .children()
+                    .filter(|n| n.tag_name().name() == "port")
+                    .collect()
+            } else {
+                // Fallback: search all descendants for port nodes
+                host_node
+                    .descendants()
+                    .filter(|n| n.tag_name().name() == "port")
+                    .collect()
+            };
+            
+            for port_node in ports_to_parse {
                 let port_obs = self.create_service_observation(&host_node, &port_node)?;
                 observations.push(port_obs);
             }
@@ -300,17 +315,23 @@ impl XmlParser {
         fields.insert("port".to_string(), port.into());
         fields.insert("protocol".to_string(), protocol.into());
 
-        // Get state information
+        // Get state information - REQUIRED for port to be stored
         if let Some(state_node) = port_node
             .children()
             .find(|n| n.tag_name().name() == "state")
         {
             if let Some(state) = state_node.attribute("state") {
                 fields.insert("state".to_string(), state.into());
+            } else {
+                // If no state attribute, default to "unknown" to ensure port is stored
+                fields.insert("state".to_string(), "unknown".into());
             }
             if let Some(reason) = state_node.attribute("reason") {
                 fields.insert("reason".to_string(), reason.into());
             }
+        } else {
+            // Port node without state element - default to "unknown" to ensure it's stored
+            fields.insert("state".to_string(), "unknown".into());
         }
 
         // Get service information - based on legacy Service.rs

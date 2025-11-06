@@ -283,7 +283,7 @@ impl Db {
         state: Option<&str>,
     ) -> Result<()> {
         // For backward compatibility, just call the enhanced version
-        self.upsert_service_detailed(ip, port, proto, state, None, None, None).await
+        self.upsert_service_detailed(ip, port, proto, state, None, None, None, None).await
     }
 
     pub async fn upsert_service_detailed(
@@ -293,6 +293,7 @@ impl Db {
         proto: &str,
         state: Option<&str>,
         service: Option<&str>,
+        product: Option<&str>,
         version: Option<&str>,
         banner: Option<&str>,
     ) -> Result<()> {
@@ -308,12 +309,18 @@ impl Db {
         let proto = proto.to_string();
         let state = state.map(|s| s.to_string());
         let service = service.map(|s| s.to_string());
+        let product = product.map(|s| s.to_string());
         let version = version.map(|s| s.to_string());
         let banner = banner.map(|s| s.to_string());
         
         // Encrypt sensitive service data outside the closure
         let service_encrypted = if let Some(s) = &service {
             Some(self.encryption.encrypt(s)?)
+        } else {
+            None
+        };
+        let product_encrypted = if let Some(p) = &product {
+            Some(self.encryption.encrypt(p)?)
         } else {
             None
         };
@@ -331,18 +338,29 @@ impl Db {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock();
 
-            // Ensure host row exists, but mark as 'down' by default until proven up
-            // This prevents phantom hosts from appearing as 'up' in the UI
-            conn.execute(
+            // Ensure host row exists - mark as 'up' since we're inserting a port (host is alive)
+            // Hosts with ports are guaranteed to be alive
+            // Use ON CONFLICT(id) since id is the PRIMARY KEY and conflicts occur there first
+            if let Err(e) = conn.execute(
                 r#"INSERT INTO hosts(id, ip_encrypted, first_seen, last_seen, created_at, updated_at, status, port_count, vulnerability_count)
-                   VALUES(?1, ?2, ?3, ?3, ?3, ?3, 'down', 0, 0)
-                   ON CONFLICT(ip_encrypted) DO UPDATE SET last_seen=excluded.last_seen, updated_at=excluded.updated_at"#,
+                   VALUES(?1, ?2, ?3, ?3, ?3, ?3, 'up', 0, 0)
+                   ON CONFLICT(id) DO UPDATE SET 
+                       status='up',
+                       last_seen=excluded.last_seen, 
+                       updated_at=excluded.updated_at"#,
                 params![&ip, &ip_encrypted, &t],
-            )?;
+            ) {
+                log::error!("Failed to ensure host exists for port {}:{}: {}", ip, port, e);
+                return Err(anyhow::anyhow!("Failed to ensure host exists: {}", e));
+            }
 
             let port_id = format!("{}:{}/{}", &ip, port, &proto);
             
-            conn.execute(
+            log::debug!("Inserting port into database - port_id: {}, host_id: {}, number: {}, protocol: {}, state: {:?}", 
+                       port_id, ip, port, proto, state);
+            
+            // Insert port with explicit error handling for foreign key constraint violations
+            let rows_affected = match conn.execute(
                 r#"INSERT INTO ports(id, host_id, number, protocol, state, service_name, product, version, banner, first_seen, last_seen)
                    VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
                    ON CONFLICT(host_id, number, protocol)
@@ -353,8 +371,24 @@ impl Db {
                        version=COALESCE(excluded.version, ports.version),
                        banner=COALESCE(excluded.banner, ports.banner),
                        last_seen=excluded.last_seen"#,
-                params![port_id, &ip, port as i64, &proto, state, service_encrypted, service_encrypted, version_encrypted, banner_encrypted, &t],
-            )?;
+                params![port_id, &ip, port as i64, &proto, state, service_encrypted, product_encrypted, version_encrypted, banner_encrypted, &t],
+            ) {
+                Ok(count) => count,
+                Err(rusqlite::Error::SqliteFailure(
+                    sqlite_err,
+                    Some(msg)
+                )) if msg.contains("FOREIGN KEY") || sqlite_err.code == rusqlite::ffi::ErrorCode::ConstraintViolation => {
+                    log::error!("Foreign key constraint violation inserting port {}:{} - host_id '{}' may not exist. Error: {:?}", 
+                               ip, port, ip, msg);
+                    return Err(anyhow::anyhow!("Foreign key constraint violation: host_id '{}' does not exist. Error: {}", ip, msg));
+                }
+                Err(e) => {
+                    log::error!("Failed to insert port {}:{}: {}", ip, port, e);
+                    return Err(anyhow::anyhow!("Failed to insert port: {}", e));
+                }
+            };
+            
+            log::debug!("Port insert completed - port_id: {}, rows_affected: {}", port_id, rows_affected);
             Ok::<(), anyhow::Error>(())
         }).await??;
         
@@ -487,13 +521,16 @@ impl Db {
             let mut stmt = conn.prepare(
                 "SELECT number, protocol, state, service_name, version, banner FROM ports WHERE host_id = ? ORDER BY number",
             )?;
-            let rows = stmt.query_map([host_id], |row| {
+            let rows = stmt.query_map([host_id.clone()], |row| {
                 let number: i32 = row.get(0)?;
                 let protocol: String = row.get(1)?;
-                let state: String = row.get(2)?;
+                let state: Option<String> = row.get(2)?;
                 let service_encrypted: Option<String> = row.get(3)?;
                 let version_encrypted: Option<String> = row.get(4)?;
                 let banner_encrypted: Option<String> = row.get(5)?;
+                
+                // Handle NULL state - default to "unknown" if not set
+                let state = state.unwrap_or_else(|| "unknown".to_string());
                 
                 // Decrypt service data
                 let service = if let Some(s_enc) = service_encrypted {
@@ -523,9 +560,18 @@ impl Db {
             })?;
             
             let mut ports = Vec::new();
+            let mut error_count = 0;
             for row in rows {
-                ports.push(row?);
+                match row {
+                    Ok(port) => ports.push(port),
+                    Err(e) => {
+                        error_count += 1;
+                        log::error!("Error processing port row for host_id {}: {}", host_id, e);
+                    }
+                }
             }
+            
+            log::info!("Found {} ports for host_id {} ({} errors encountered)", ports.len(), host_id, error_count);
             Ok(ports)
         }).await?
     }

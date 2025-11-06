@@ -2,7 +2,7 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 import { AlertTriangle, Download, Shield, Network, Server } from 'lucide-react';
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import useHostStore, { type Host } from '../stores/hostStore';
@@ -47,20 +47,23 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
 
   // Get the host either from selectedHost prop or by selectedScanId (treating it as host ID)
   const currentHost = selectedHost || (selectedScanId ? hosts.find(h => h.id === selectedScanId) : null);
-  const loadPorts = (ip: string) => {
-    console.log('Loading ports for host:', ip);
+  const loadPorts = useCallback((ip: string) => {
+    console.log('[ResultViewer] Loading ports for host:', ip);
     setLoadingPorts(true);
     invoke<PortInfo[]>('get_host_ports_detailed', { hostIp: ip })
       .then(ports => {
-        console.log('Loaded ports:', ports);
+        console.log(`[ResultViewer] Successfully loaded ${ports.length} ports for host ${ip}:`, ports);
         setHostPorts(ports);
+        if (ports.length === 0) {
+          console.warn(`[ResultViewer] No ports found for host ${ip} - this may indicate a database issue or the host has no ports`);
+        }
       })
       .catch(err => {
-        console.error('Failed to load ports:', err);
+        console.error(`[ResultViewer] Failed to load ports for host ${ip}:`, err);
         setHostPorts([]);
       })
       .finally(() => setLoadingPorts(false));
-  };
+  }, []);
 
   // Load ports when host changes
   useEffect(() => {
@@ -77,6 +80,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
     (async () => {
       unlisten = await listen<string>('refresh_host_ports', (event) => {
         if (currentHost?.ip && event.payload === currentHost.ip) {
+          console.log('[ResultViewer] Received refresh_host_ports event for', currentHost.ip);
           loadPorts(currentHost.ip);
         }
       });
@@ -87,6 +91,25 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
       }
     };
   }, [currentHost?.ip]);
+
+  // Periodic refresh to fetch updated data from DB (every 5 seconds while a host is selected)
+  useEffect(() => {
+    if (!currentHost?.ip) {
+      return;
+    }
+
+    const hostIp = currentHost.ip;
+    console.log('[ResultViewer] Starting periodic refresh for host', hostIp);
+    const intervalId = setInterval(() => {
+      console.log('[ResultViewer] Periodic refresh: fetching ports for', hostIp);
+      loadPorts(hostIp);
+    }, 5000); // Refresh every 5 seconds
+
+    return () => {
+      console.log('[ResultViewer] Stopping periodic refresh for host', hostIp);
+      clearInterval(intervalId);
+    };
+  }, [currentHost?.ip, loadPorts]);
 
   // Load vulnerabilities when host changes
   useEffect(() => {
