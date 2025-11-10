@@ -3,22 +3,17 @@
 
 use crate::commands::engine_commands;
 use crate::plan::Plan;
-use crate::scanners::events::{EventType, ScanEvent};
-use crate::shared::shared::{ObsStream, Observation, ObservationKind};
-use crate::shared::shared::{PortState, Protocol, ScanPort, ScanVulnerability};
-use crate::shared::ScanTypes::{ScanProgress, ScanTarget};
+use crate::shared::shared::{ObsStream, Observation, ObservationKind, ScanProgress, ScanStatus};
+use crate::shared::shared::{ScanPort, ScanVulnerability};
 use crate::shared::traits::Source;
-use crate::shared::ScanTypes::ScanType;
 use crate::utils::parsing::NmapParser;
 use crate::utils::xml_parser::XmlParser;
 use crate::shared::ScanTypes::OSDetection;
-use crate::os::{get_nmap_binary_path, is_nmap_available};
-use anyhow::{anyhow, Context, Result};
+use crate::os::{get_nmap_binary_path};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio_stream::StreamExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -37,14 +32,7 @@ pub struct ScanResult {
     pub command_used: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum ScanStatus {
-    Queued,
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-}
+// ScanStatus is now imported from shared::shared
 
 pub struct NmapScanner {
     // Add configuration options if needed
@@ -190,6 +178,28 @@ impl NmapScanner {
         // Enable verbose output for parsing
         cmd.arg("-v");
 
+        // Add NSE scripts if specified
+        if let Some(ref scripts) = plan.nse_scripts {
+            if !scripts.is_empty() {
+                // Join scripts with comma: --script "script1,script2,script3"
+                let script_list = scripts.join(",");
+                cmd.arg("--script").arg(&script_list);
+            }
+        }
+
+        // Add NSE script arguments if specified
+        if let Some(ref script_args) = plan.nse_script_args {
+            if !script_args.is_empty() {
+                // Format: --script-args 'script1.arg1=value1,script2.arg2=value2'
+                let args_list: Vec<String> = script_args
+                    .iter()
+                    .map(|(key, value)| format!("{}={}", key, value))
+                    .collect();
+                let args_string = args_list.join(",");
+                cmd.arg("--script-args").arg(&args_string);
+            }
+        }
+
         // Use /tmp for XML output when running with pkexec (root can write there)
         let scan_dir = if needs_elevation && !Self::is_running_as_root() {
             // Running with pkexec - use /tmp which is writable by root
@@ -277,17 +287,21 @@ impl Source for NmapScanner {
         });
 
         let scan_id = plan.scan_id;
+        let targets = plan.targets.clone();
+        let start_time = chrono::Utc::now();
+        let mut unique_hosts = std::collections::HashSet::new();
+        let mut ports_found = 0u64;
 
         // Use stateful parser with Arc<Mutex<>> to allow sharing across async closure
         use std::sync::{Arc, Mutex};
         let parser = Arc::new(Mutex::new(NmapParser::new(scan_id)));
 
         let stream = stream::unfold(
-            (lines, parser, child, xml_file.clone(), false, Vec::new()),
-            move |(mut lines, parser, mut child, xml_file, xml_parsed, mut xml_obs_queue)| async move {
+            (lines, parser, child, xml_file.clone(), false, Vec::new(), start_time, unique_hosts, ports_found, targets.clone()),
+            move |(mut lines, parser, mut child, xml_file, xml_parsed, mut xml_obs_queue, start_time, mut unique_hosts, mut ports_found, targets)| async move {
                 // First, emit any queued XML observations
                 if let Some(queued_obs) = xml_obs_queue.pop() {
-                    return Some((queued_obs, (lines, parser, child, xml_file, xml_parsed, xml_obs_queue)));
+                    return Some((queued_obs, (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone())));
                 }
 
                 match lines.next_line().await {
@@ -307,7 +321,7 @@ impl Source for NmapScanner {
                             };
                             return Some((
                                 cancel_obs,
-                                (lines, parser, child, xml_file, xml_parsed, xml_obs_queue),
+                                (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone()),
                             ));
                         }
                         log::info!("Nmap output line: {}", line);
@@ -318,7 +332,35 @@ impl Source for NmapScanner {
 
                         if let Some(observation) = obs {
                             log::info!("Parsed nmap observation: {:?}", observation);
-                            Some((observation, (lines, parser, child, xml_file, xml_parsed, xml_obs_queue)))
+                            
+                            // Track hosts and ports for progress
+                            if observation.kind == ObservationKind::Host {
+                                if let Some(ip_str) = observation.fields.get("ip").and_then(|v| v.as_str()) {
+                                    unique_hosts.insert(ip_str.to_string());
+                                }
+                            } else if observation.kind == ObservationKind::Service {
+                                ports_found += 1;
+                                if let Some(ip_str) = observation.fields.get("ip").and_then(|v| v.as_str()) {
+                                    unique_hosts.insert(ip_str.to_string());
+                                }
+                            }
+                            
+                            // Emit progress observation every 10 services or on first service
+                            if observation.kind == ObservationKind::Service && (ports_found % 10 == 0 || ports_found == 1) {
+                                let elapsed = (chrono::Utc::now() - start_time).num_seconds() as u64;
+                                let progress_obs = create_nmap_progress_observation(
+                                    scan_id,
+                                    ports_found,
+                                    unique_hosts.len() as u32,
+                                    elapsed,
+                                    &targets,
+                                );
+                                // Emit both the service observation and progress
+                                xml_obs_queue.push(observation);
+                                Some((progress_obs, (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone())))
+                            } else {
+                                Some((observation, (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone())))
+                            }
                         } else {
                             // Even if no observation was created, continue parsing
                             // This happens for lines that set context but don't create observations
@@ -336,7 +378,7 @@ impl Source for NmapScanner {
                                     key: "nmap-output".to_string(),
                                     raw: Some(line),
                                 },
-                                (lines, parser, child, xml_file, xml_parsed, xml_obs_queue),
+                                (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone()),
                             ))
                         }
                     }
@@ -394,7 +436,7 @@ impl Source for NmapScanner {
                                                 log::info!("Queued {} XML observations for emission", xml_obs_queue.len());
                                                 return Some((
                                                     completion_obs,
-                                                    (lines, parser, child, xml_file, true, xml_obs_queue),
+                                                    (lines, parser, child, xml_file, true, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone()),
                                                 ));
                                             }
                                             Err(e) => {
@@ -429,5 +471,64 @@ impl Source for NmapScanner {
         );
 
         Ok(Box::pin(stream))
+    }
+}
+
+/// Create a progress observation for nmap using ScanProgress struct
+fn create_nmap_progress_observation(
+    scan_id: uuid::Uuid,
+    ports_found: u64,
+    hosts_discovered: u32,
+    elapsed_time: u64,
+    targets: &str,
+) -> Observation {
+    let now = chrono::Utc::now();
+    let progress = ScanProgress {
+        scan_id: scan_id.to_string(),
+        status: ScanStatus::Running,
+        percentage: 0.0, // Nmap doesn't provide percentage in real-time
+        stage: "service_detection".to_string(),
+        targets_completed: 0,
+        targets_total: 1,
+        hosts_found: hosts_discovered as usize,
+        services_found: ports_found as usize,
+        eta_seconds: None,
+        started_at: now - chrono::Duration::seconds(elapsed_time as i64),
+        updated_at: now,
+        rate: None,
+        details: {
+            let mut details = std::collections::HashMap::new();
+            details.insert("ports_found".to_string(), ports_found.into());
+            details.insert("hosts_discovered".to_string(), hosts_discovered.into());
+            details.insert("targets".to_string(), targets.into());
+            details.insert("scanner".to_string(), "nmap".into());
+            details
+        },
+        progress: 0.0,
+        current_target: Some(targets.to_string()),
+        hosts_discovered,
+        ports_found: ports_found as u32,
+        vulnerabilities: 0,
+        elapsed_time,
+        estimated_remaining: None,
+        message: Some(format!("Nmap found {} services on {} hosts", ports_found, hosts_discovered)),
+        start_time: now - chrono::Duration::seconds(elapsed_time as i64),
+        current_phase: "service_detection".to_string(),
+    };
+
+    // Serialize ScanProgress to JSON and include in observation fields
+    let mut fields = serde_json::Map::new();
+    fields.insert("scan_progress".to_string(), serde_json::to_value(&progress).unwrap_or(serde_json::Value::Null));
+    fields.insert("scan_status".to_string(), "running".into());
+    fields.insert("ports_found".to_string(), ports_found.into());
+    fields.insert("hosts_discovered".to_string(), hosts_discovered.into());
+
+    Observation {
+        scan_id,
+        kind: ObservationKind::Metric,
+        fields,
+        ts: now,
+        key: format!("nmap-progress-{}", ports_found),
+        raw: None,
     }
 }

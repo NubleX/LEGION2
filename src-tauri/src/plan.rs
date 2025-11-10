@@ -2,6 +2,7 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Plan defines what the engine should execute - moved from core/types.rs
@@ -16,6 +17,8 @@ pub struct Plan {
     pub source_type: String,
     pub sink_types: Vec<String>,
     pub interface: Option<String>,
+    pub nse_scripts: Option<Vec<String>>,
+    pub nse_script_args: Option<HashMap<String, String>>,
 }
 
 impl Plan {
@@ -35,6 +38,8 @@ impl Plan {
                 "vulnerability".to_string(),
             ],
             interface: None,
+            nse_scripts: None,
+            nse_script_args: None,
         }
     }
 
@@ -54,6 +59,8 @@ impl Plan {
                 "vulnerability".to_string(),
             ],
             interface: None,
+            nse_scripts: None,
+            nse_script_args: None,
         }
     }
 
@@ -115,6 +122,8 @@ impl Plan {
                 "vulnerability".to_string(),
             ],
             interface: None,
+            nse_scripts: None,
+            nse_script_args: None,
         }
     }
 
@@ -144,6 +153,8 @@ impl Plan {
                 "vulnerability".to_string(),
             ],
             interface: None,
+            nse_scripts: None,
+            nse_script_args: None,
         }
     }
 
@@ -175,6 +186,8 @@ impl Plan {
                 "db".to_string(),
             ],
             interface: Some(interface),
+            nse_scripts: None,
+            nse_script_args: None,
         }
     }
 
@@ -226,12 +239,27 @@ impl Plan {
                 "vulnerability".to_string(),
             ],
             interface: None,
+            nse_scripts: None,
+            nse_script_args: None,
         }
     }
 
     /// Filter which IoT protocols to use
     pub fn with_iot_protocols(mut self, protocols: Vec<String>) -> Self {
         self.extra = protocols;
+        self
+    }
+
+    /// Add NSE scripts to execute during nmap scan
+    pub fn with_nse_scripts(mut self, scripts: Vec<String>) -> Self {
+        self.nse_scripts = Some(scripts);
+        self
+    }
+
+    /// Add NSE script arguments
+    /// Format: HashMap with keys like "script1.arg1" -> "value1"
+    pub fn with_nse_script_args(mut self, args: HashMap<String, String>) -> Self {
+        self.nse_script_args = Some(args);
         self
     }
 

@@ -78,7 +78,8 @@ Phase 2: Nmap (always runs)
     ├─ If no Masscan: Scans original target range
     ├─ Service detection (-sV)
     ├─ OS fingerprinting (-O, if enabled)
-    ├─ NSE scripts (if configured)
+    ├─ NSE scripts (if configured via Plan::with_nse_scripts())
+    ├─ NSE script arguments (if configured via Plan::with_nse_script_args())
     └─ Vulnerability detection (via VulnerabilityAnalysisSink)
 ```
 
@@ -412,6 +413,9 @@ nmap --osscan-guess          # Guess OS more aggressively
 
 ### NSE Scripting Engine
 
+LEGION2 now supports NSE (Nmap Scripting Engine) scripts for enhanced vulnerability detection and service enumeration.
+
+**Basic Usage**:
 ```bash
 nmap -sC                     # Default scripts
 nmap --script http-title
@@ -422,6 +426,69 @@ nmap --script-trace
 nmap --script-updatedb       # Update script DB
 nmap --script-help=ssl-heartbleed
 ```
+
+**LEGION2 Integration**:
+
+NSE script support is integrated into the Plan structure and NmapScanner:
+
+```rust
+use crate::plan::Plan;
+use std::collections::HashMap;
+use uuid::Uuid;
+
+// Create nmap plan with NSE scripts
+let plan = Plan::nmap(scan_id, targets, ports, extra_args)
+    .with_nse_scripts(vec![
+        "vuln".to_string(),
+        "http-title".to_string(),
+        "ssh-hostkey".to_string()
+    ])
+    .with_nse_script_args({
+        let mut args = HashMap::new();
+        args.insert("vuln.mincvss".to_string(), "7.0".to_string());
+        args.insert("http-title.user-agent".to_string(), "Mozilla/5.0".to_string());
+        args
+    });
+```
+
+**Script Output Parsing**:
+
+NSE script output is automatically parsed from nmap XML and included in observations:
+
+- **Script observations**: Created for each script execution
+- **Script ID**: Identifies which script ran (e.g., "vuln", "http-title")
+- **Script output**: Raw script output text
+- **Script elements**: Parsed key-value pairs from script output
+- **CVE extraction**: CVE IDs automatically extracted from script output
+
+**Example Script Observations**:
+
+```json
+{
+  "kind": "Script",
+  "key": "script-192.168.1.100-vuln",
+  "fields": {
+    "ip": "192.168.1.100",
+    "script_id": "vuln",
+    "script_output": "CVE-2021-44228: Log4j vulnerability detected...",
+    "script_elements": {
+      "cve": "CVE-2021-44228",
+      "severity": "critical"
+    },
+    "cve_ids": "CVE-2021-44228"
+  }
+}
+```
+
+**Common NSE Scripts**:
+
+- **vuln**: Vulnerability detection (CVE matching)
+- **http-title**: HTTP page title extraction
+- **ssh-hostkey**: SSH host key fingerprinting
+- **ssl-heartbleed**: Heartbleed vulnerability detection
+- **smb-vuln-ms17-010**: EternalBlue vulnerability detection
+- **http-enum**: HTTP directory enumeration
+- **snmp-info**: SNMP information gathering
 
 ### Firewall/IDS Evasion
 
@@ -528,6 +595,107 @@ Broadcast Channel → Multiple Sinks
 5. **User-Friendly**: Single interface, automatic optimization
 6. **Database-Driven**: Leverages existing knowledge to avoid redundant work
 
+## NSE Script Support
+
+LEGION2 supports NSE (Nmap Scripting Engine) scripts for enhanced vulnerability detection and service enumeration. Scripts are configured via the Plan structure and automatically executed during nmap scans.
+
+### Adding NSE Scripts to Scans
+
+```rust
+use crate::plan::Plan;
+use std::collections::HashMap;
+use uuid::Uuid;
+
+// Basic script usage
+let plan = Plan::nmap(scan_id, targets, ports, vec!["-sV".to_string()])
+    .with_nse_scripts(vec!["vuln".to_string()]);
+
+// Multiple scripts
+let plan = Plan::nmap(scan_id, targets, ports, vec!["-sV".to_string()])
+    .with_nse_scripts(vec![
+        "vuln".to_string(),
+        "http-title".to_string(),
+        "ssh-hostkey".to_string()
+    ]);
+
+// Scripts with arguments
+let plan = Plan::nmap(scan_id, targets, ports, vec!["-sV".to_string()])
+    .with_nse_scripts(vec!["vuln".to_string()])
+    .with_nse_script_args({
+        let mut args = HashMap::new();
+        args.insert("vuln.mincvss".to_string(), "7.0".to_string());
+        args.insert("http-title.user-agent".to_string(), "Mozilla/5.0".to_string());
+        args
+    });
+```
+
+### Script Output Processing
+
+NSE script output is automatically parsed from nmap XML output:
+
+1. **XML Parsing**: Script results are extracted from `<script>` elements in nmap XML
+2. **Observation Creation**: Each script execution creates a Script observation
+3. **CVE Extraction**: CVE IDs are automatically extracted from script output using regex
+4. **Database Storage**: Script results are stored in the database with host/service associations
+
+### Common Use Cases
+
+**Vulnerability Scanning**:
+```rust
+let plan = Plan::nmap(scan_id, targets, ports, vec!["-sV".to_string()])
+    .with_nse_scripts(vec!["vuln".to_string()])
+    .with_nse_script_args({
+        let mut args = HashMap::new();
+        args.insert("vuln.mincvss".to_string(), "7.0".to_string()); // Only CVSS >= 7.0
+        args
+    });
+```
+
+**HTTP Service Enumeration**:
+```rust
+let plan = Plan::nmap(scan_id, targets, "80,443,8080".to_string(), vec!["-sV".to_string()])
+    .with_nse_scripts(vec![
+        "http-title".to_string(),
+        "http-headers".to_string(),
+        "http-enum".to_string()
+    ]);
+```
+
+**SSH Fingerprinting**:
+```rust
+let plan = Plan::nmap(scan_id, targets, "22".to_string(), vec!["-sV".to_string()])
+    .with_nse_scripts(vec!["ssh-hostkey".to_string()]);
+```
+
+### Script Output in Observations
+
+Script observations include:
+
+- **script_id**: Name of the script (e.g., "vuln", "http-title")
+- **script_output**: Raw text output from the script
+- **script_elements**: Parsed key-value pairs from structured output
+- **cve_ids**: Extracted CVE identifiers (comma-separated)
+
+Example observation:
+```json
+{
+  "kind": "Script",
+  "key": "script-192.168.1.100-vuln",
+  "fields": {
+    "ip": "192.168.1.100",
+    "port": "443",
+    "script_id": "vuln",
+    "script_output": "CVE-2021-44228: Apache Log4j 2.x before 2.15.0...",
+    "script_elements": {
+      "cve": "CVE-2021-44228",
+      "severity": "critical",
+      "cvss": "10.0"
+    },
+    "cve_ids": "CVE-2021-44228"
+  }
+}
+```
+
 ## Best Practices
 
 1. **Large Networks**: Use quick scans for initial discovery, then comprehensive scans on specific targets
@@ -535,6 +703,8 @@ Broadcast Channel → Multiple Sinks
 3. **Rate Limiting**: Adjust masscan rate based on network capacity (default 1000 pps)
 4. **Interface Selection**: Specify network interface for better performance on multi-homed systems
 5. **OS Detection**: Enable for comprehensive scans, disable for quick scans to save time
+6. **NSE Scripts**: Use vulnerability scripts (`vuln`) for security assessments, service-specific scripts for enumeration
+7. **Script Arguments**: Configure script arguments to filter results (e.g., `vuln.mincvss=7.0` for high-severity only)
 
 ## References
 

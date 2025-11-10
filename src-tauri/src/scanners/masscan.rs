@@ -4,11 +4,10 @@
 use crate::commands::engine_commands;
 use crate::os::is_command_available;
 use crate::plan::Plan;
-use crate::scanners::events::{EventType, ScanEvent};
-use crate::shared::shared::{ObsStream, Observation, ObservationKind};
-use crate::shared::ScanTypes::{ScanProgress, ScanStatus, ScanTarget};
+use crate::shared::shared::{ObsStream, Observation, ObservationKind, ScanProgress, ScanStatus, ScanTarget, EventType, ScanEvent};
 use crate::shared::traits::Source;
 use crate::utils::xml_parser::XmlParser;
+
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use futures::{stream, StreamExt};
@@ -317,16 +316,19 @@ impl Source for MasscanScanner {
         let lines = reader.lines();
 
         let scan_id = plan.scan_id;
+        let targets = plan.targets.clone();
         let discovered_count = 0u64;
+        let start_time = Utc::now();
+        let mut unique_hosts = std::collections::HashSet::new();
 
         log::info!("Starting masscan stream processing");
 
         let stream = stream::unfold(
-            (lines, discovered_count, child, xml_file.clone(), false, Vec::new()),
-            move |(mut lines, mut count, mut child, xml_file, xml_parsed, mut xml_obs_queue)| async move {
+            (lines, discovered_count, child, xml_file.clone(), false, Vec::new(), start_time, unique_hosts, targets.clone()),
+            move |(mut lines, mut count, mut child, xml_file, xml_parsed, mut xml_obs_queue, start_time, mut unique_hosts, targets)| async move {
                 // First, emit any queued XML observations
                 if let Some(queued_obs) = xml_obs_queue.pop() {
-                    return Some((queued_obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue)));
+                    return Some((queued_obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone())));
                 }
 
                 match lines.next_line().await {
@@ -344,20 +346,32 @@ impl Source for MasscanScanner {
                                 key: "scan-status".to_string(),
                                 raw: None,
                             };
-                            return Some((cancel_obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue)));
+                            return Some((cancel_obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone())));
                         }
                         log::info!("Masscan output line: {}", line);
                         if let Some(obs) = parse_masscan_line(&line, scan_id) {
                             count += 1;
+                            
+                            // Track unique hosts
+                            if let Some(ip_str) = obs.fields.get("ip").and_then(|v| v.as_str()) {
+                                unique_hosts.insert(ip_str.to_string());
+                            }
+                            
                             log::info!("Parsed masscan observation: {:?}", obs);
 
-                            // Create a progress observation every 10 discoveries
-                            if count % 10 == 0 {
-                                let progress_obs =
-                                    create_progress_observation(&line, scan_id, count);
-                                Some((progress_obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue)))
+                            // Create a progress observation every 10 discoveries or on first discovery
+                            if count % 10 == 0 || count == 1 {
+                                let elapsed = (Utc::now() - start_time).num_seconds() as u64;
+                                let progress_obs = create_scan_progress_observation(
+                                    scan_id,
+                                    count,
+                                    unique_hosts.len() as u32,
+                                    elapsed,
+                                    &targets,
+                                );
+                                Some((progress_obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone())))
                             } else {
-                                Some((obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue)))
+                                Some((obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone())))
                             }
                         } else {
                             log::debug!("Non-service masscan line: {}", line);
@@ -377,7 +391,7 @@ impl Source for MasscanScanner {
                                     key: "masscan-output".to_string(),
                                     raw: Some(line),
                                 },
-                                (lines, count, child, xml_file, xml_parsed, xml_obs_queue),
+                                (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone()),
                             ))
                         }
                     }
@@ -434,7 +448,7 @@ impl Source for MasscanScanner {
                                                 log::info!("Queued {} XML observations for emission", xml_obs_queue.len());
                                                 return Some((
                                                     completion_obs,
-                                                    (lines, count, child, xml_file, true, xml_obs_queue),
+                                                    (lines, count, child, xml_file, true, xml_obs_queue, start_time, unique_hosts, targets.clone()),
                                                 ));
                                             }
                                             Err(e) => {
@@ -536,27 +550,61 @@ fn parse_masscan_line(line: &str, scan_id: uuid::Uuid) -> Option<Observation> {
     None
 }
 
-/// Create a progress observation for masscan using ScanProgress  
-fn create_progress_observation(
-    line: &str,
+/// Create a progress observation for masscan using ScanProgress struct
+fn create_scan_progress_observation(
     scan_id: uuid::Uuid,
-    discovered_count: u64,
+    ports_found: u64,
+    hosts_discovered: u32,
+    elapsed_time: u64,
+    targets: &str,
 ) -> Observation {
+    let now = Utc::now();
+    let progress = ScanProgress {
+        scan_id: scan_id.to_string(),
+        status: ScanStatus::Running,
+        percentage: 0.0, // Masscan doesn't provide percentage, we track ports found instead
+        stage: "port_scanning".to_string(),
+        targets_completed: 0,
+        targets_total: 1,
+        hosts_found: hosts_discovered as usize,
+        services_found: ports_found as usize,
+        eta_seconds: None,
+        started_at: now - chrono::Duration::seconds(elapsed_time as i64),
+        updated_at: now,
+        rate: None,
+        details: {
+            let mut details = HashMap::new();
+            details.insert("ports_found".to_string(), ports_found.into());
+            details.insert("hosts_discovered".to_string(), hosts_discovered.into());
+            details.insert("targets".to_string(), targets.into());
+            details
+        },
+        progress: 0.0,
+        current_target: Some(targets.to_string()),
+        hosts_discovered,
+        ports_found: ports_found as u32,
+        vulnerabilities: 0,
+        elapsed_time,
+        estimated_remaining: None,
+        message: Some(format!("Masscan found {} open ports on {} hosts", ports_found, hosts_discovered)),
+        start_time: now - chrono::Duration::seconds(elapsed_time as i64),
+        current_phase: "port_scanning".to_string(),
+    };
+
+    // Serialize ScanProgress to JSON and include in observation fields
     let mut fields = serde_json::Map::new();
-    fields.insert("scan_phase".to_string(), "port_scan".into());
-    fields.insert("services_found".to_string(), discovered_count.into());
-    fields.insert(
-        "progress_message".to_string(),
-        format!("Masscan found {} open ports", discovered_count).into(),
-    );
+    fields.insert("scan_progress".to_string(), serde_json::to_value(&progress).unwrap_or(serde_json::Value::Null));
+    fields.insert("scan_status".to_string(), "running".into());
+    fields.insert("ports_found".to_string(), ports_found.into());
+    fields.insert("hosts_discovered".to_string(), hosts_discovered.into());
 
     Observation {
         scan_id,
         kind: ObservationKind::Metric,
         fields,
-        ts: Utc::now(),
-        key: format!("masscan-progress-{}", discovered_count),
-        raw: Some(line.to_string()),
+        ts: now,
+        key: format!("masscan-progress-{}", ports_found),
+        raw: None,
     }
 }
 

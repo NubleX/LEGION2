@@ -139,24 +139,22 @@ impl SSDPProbe {
 }
 
 /// mDNS/DNS-SD Probe Implementation
+/// Based on NSE library dnssd.lua - implements mDNS service discovery with proper DNS parsing
 pub struct MDNSProbe;
 
 impl MDNSProbe {
     /// Build mDNS query for _services._dns-sd._udp.local
+    /// Based on NSE library dnssd.lua Helper.queryAllServices
     pub fn build_probe() -> Vec<u8> {
-        // Simple mDNS query packet
-        // Transaction ID: random 16-bit
-        // Flags: Standard query (0x0000)
-        // Questions: 1
-        // Query: _services._dns-sd._udp.local, type PTR, class IN
+        // Manual DNS packet construction (dns-parser 0.9 doesn't have a Builder API)
         let mut packet = Vec::new();
         
         // Transaction ID (random)
         let tx_id = rand::random::<u16>();
         packet.extend_from_slice(&tx_id.to_be_bytes());
         
-        // Flags: Standard query, recursion desired
-        packet.extend_from_slice(&0x0100u16.to_be_bytes());
+        // Flags: Standard query (for mDNS, typically 0x0000 - no recursion desired)
+        packet.extend_from_slice(&0x0000u16.to_be_bytes());
         
         // Questions: 1
         packet.extend_from_slice(&1u16.to_be_bytes());
@@ -167,6 +165,7 @@ impl MDNSProbe {
         packet.extend_from_slice(&0u16.to_be_bytes());
         
         // Query name: _services._dns-sd._udp.local
+        // DNS name encoding: length byte + label, terminated by 0x00
         let query_name = b"\x09_services\x07_dns-sd\x04_udp\x05local\x00";
         packet.extend_from_slice(query_name);
         
@@ -180,24 +179,120 @@ impl MDNSProbe {
     }
 
     /// Parse mDNS response
+    /// Based on NSE library dnssd.lua Comm.decodeRecords and Helper.queryServices
     pub fn parse_response(data: &[u8]) -> Result<IoTProbeResponse> {
-        // Basic mDNS parsing - extract service names from DNS packet
-        // Full DNS parsing would use dns-parser crate, but for now we do basic extraction
+        use dns_parser::{Packet, RData};
+        
         let mut device_info = HashMap::new();
         
-        // Check if this looks like a DNS packet (starts with transaction ID)
-        if data.len() >= 12 {
-            // DNS header is 12 bytes
-            // Answers section starts after questions
-            // For now, just mark that we received a response
-            device_info.insert(
-                "response_received".to_string(),
-                serde_json::Value::Bool(true),
-            );
-            device_info.insert(
-                "packet_length".to_string(),
-                serde_json::Value::Number(Number::from(data.len())),
-            );
+        // Parse DNS packet using dns-parser crate
+        match Packet::parse(data) {
+            Ok(packet) => {
+                device_info.insert(
+                    "response_received".to_string(),
+                    serde_json::Value::Bool(true),
+                );
+                
+                // Extract service names from PTR records (answers)
+                let mut services = Vec::new();
+                for answer in packet.answers {
+                    if let RData::PTR(name) = answer.data {
+                        let service_name = name.to_string();
+                        services.push(serde_json::Value::String(service_name));
+                    }
+                }
+                
+                // Extract additional records (SRV, TXT, A, AAAA)
+                let mut additional_info = serde_json::Map::new();
+                let mut ipv4_addrs = Vec::new();
+                let mut ipv6_addrs = Vec::new();
+                let mut txt_records = Vec::new();
+                let mut srv_records = Vec::new();
+                
+                for additional in packet.additional {
+                    match additional.data {
+                        RData::A(addr) => {
+                            ipv4_addrs.push(serde_json::Value::String(addr.0.to_string()));
+                        }
+                        RData::AAAA(addr) => {
+                            ipv6_addrs.push(serde_json::Value::String(addr.0.to_string()));
+                        }
+                        RData::TXT(txt) => {
+                            // TXT records are key-value pairs
+                            let txt_str = txt.iter()
+                                .filter_map(|bytes| String::from_utf8(bytes.to_vec()).ok())
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            if !txt_str.is_empty() {
+                                txt_records.push(serde_json::Value::String(txt_str));
+                            }
+                        }
+                        RData::SRV(srv_data) => {
+                            // SRV record structure in dns-parser 0.8
+                            let mut srv = serde_json::Map::new();
+                            srv.insert("priority".to_string(), (srv_data.priority as i64).into());
+                            srv.insert("weight".to_string(), (srv_data.weight as i64).into());
+                            srv.insert("port".to_string(), (srv_data.port as i64).into());
+                            srv.insert("target".to_string(), srv_data.target.to_string().into());
+                            srv_records.push(srv.into());
+                        }
+                        RData::PTR(name) => {
+                            // Additional PTR records
+                            services.push(serde_json::Value::String(name.to_string()));
+                        }
+                        _ => {}
+                    }
+                }
+                
+                if !services.is_empty() {
+                    device_info.insert(
+                        "services".to_string(),
+                        serde_json::Value::Array(services),
+                    );
+                }
+                
+                if !ipv4_addrs.is_empty() {
+                    additional_info.insert("ipv4".to_string(), serde_json::Value::Array(ipv4_addrs));
+                }
+                
+                if !ipv6_addrs.is_empty() {
+                    additional_info.insert("ipv6".to_string(), serde_json::Value::Array(ipv6_addrs));
+                }
+                
+                if !txt_records.is_empty() {
+                    additional_info.insert("txt_records".to_string(), serde_json::Value::Array(txt_records));
+                }
+                
+                if !srv_records.is_empty() {
+                    additional_info.insert("srv_records".to_string(), serde_json::Value::Array(srv_records));
+                }
+                
+                if !additional_info.is_empty() {
+                    device_info.insert(
+                        "additional_info".to_string(),
+                        additional_info.into(),
+                    );
+                }
+                
+                // Extract hostname from questions or answers
+                if let Some(question) = packet.questions.first() {
+                    device_info.insert(
+                        "query_name".to_string(),
+                        serde_json::Value::String(question.qname.to_string()),
+                    );
+                }
+            }
+            Err(_) => {
+                // Not a valid DNS packet, but mark as received
+                device_info.insert(
+                    "response_received".to_string(),
+                    serde_json::Value::Bool(true),
+                );
+                device_info.insert(
+                    "packet_length".to_string(),
+                    serde_json::Value::Number(Number::from(data.len())),
+                );
+            }
         }
 
         Ok(IoTProbeResponse {
@@ -286,56 +381,226 @@ impl WSDDProbe {
 }
 
 /// SNMP Probe Implementation
+/// Based on NSE library snmp.lua - implements SNMP v2c GetRequest with proper ASN.1 DER encoding
 pub struct SNMPProbe;
 
 impl SNMPProbe {
-    /// Build SNMP GetRequest for system description (OID 1.3.6.1.2.1.1.1.0)
-    pub fn build_probe(community: &str) -> Vec<u8> {
-        // Simplified SNMP v2c GetRequest
-        // This is a minimal implementation - full ASN.1 encoding would be more complex
-        // For now, return a basic structure that can be enhanced later
-        let mut packet = Vec::new();
-        
-        // SNMP version: 1 (v2c)
-        // Community: public
-        // PDU: GetRequest
-        // OID: 1.3.6.1.2.1.1.1.0 (sysDescr)
-        
-        // This is a placeholder - full SNMP encoding requires ASN.1 DER encoding
-        // For production, use snmp-parser crate or implement full ASN.1 encoder
-        packet.extend_from_slice(community.as_bytes());
-        
-        packet
+    /// Encode ASN.1 length field
+    fn encode_length(len: usize) -> Vec<u8> {
+        if len < 128 {
+            vec![len as u8]
+        } else {
+            let mut bytes = Vec::new();
+            let mut n = len;
+            while n > 0 {
+                bytes.push((n & 0xFF) as u8);
+                n >>= 8;
+            }
+            bytes.reverse();
+            vec![0x80 | bytes.len() as u8]
+                .into_iter()
+                .chain(bytes.into_iter())
+                .collect()
+        }
     }
 
-    /// Parse SNMP response
+    /// Encode OID component (base 128 encoding)
+    fn encode_oid_component(value: u32) -> Vec<u8> {
+        let mut result = Vec::new();
+        let mut val = value;
+        
+        while val >= 128 {
+            result.push((0x80 | (val & 0x7F)) as u8);
+            val >>= 7;
+        }
+        result.push((val & 0x7F) as u8);
+        result
+    }
+
+    /// Encode OID string to ASN.1 format
+    /// OID format: 1.3.6.1.2.1.1.1.0 -> encoded bytes
+    fn encode_oid(oid_str: &str) -> Vec<u8> {
+        let parts: Vec<u32> = oid_str
+            .split('.')
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        
+        if parts.len() < 2 {
+            return Vec::new();
+        }
+        
+        // First two components encoded as: first * 40 + second
+        let mut encoded = vec![(parts[0] * 40 + parts[1]) as u8];
+        
+        // Encode remaining components
+        for &part in parts.iter().skip(2) {
+            encoded.extend_from_slice(&Self::encode_oid_component(part));
+        }
+        
+        encoded
+    }
+
+    /// Encode ASN.1 INTEGER
+    fn encode_integer(value: i32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut val = value as u64;
+        
+        // Handle negative numbers
+        if value < 0 {
+            val = (!value as u64) + 1;
+        }
+        
+        // Encode in big-endian
+        while val > 0 || bytes.is_empty() {
+            bytes.push((val & 0xFF) as u8);
+            val >>= 8;
+        }
+        bytes.reverse();
+        
+        // Remove leading zeros (except for value 0)
+        while bytes.len() > 1 && bytes[0] == 0 && (bytes[1] & 0x80 == 0) {
+            bytes.remove(0);
+        }
+        while bytes.len() > 1 && bytes[0] == 0xFF && (bytes[1] & 0x80 != 0) {
+            bytes.remove(0);
+        }
+        
+        bytes
+    }
+
+    /// Encode ASN.1 OCTET STRING
+    fn encode_octet_string(data: &[u8]) -> Vec<u8> {
+        let mut result = vec![0x04]; // OCTET STRING tag
+        result.extend_from_slice(&Self::encode_length(data.len()));
+        result.extend_from_slice(data);
+        result
+    }
+
+    /// Encode ASN.1 SEQUENCE
+    fn encode_sequence(elements: &[Vec<u8>]) -> Vec<u8> {
+        let mut content = Vec::new();
+        for elem in elements {
+            content.extend_from_slice(elem);
+        }
+        let mut result = vec![0x30]; // SEQUENCE tag
+        result.extend_from_slice(&Self::encode_length(content.len()));
+        result.extend_from_slice(&content);
+        result
+    }
+
+    /// Build SNMP v2c GetRequest for system description (OID 1.3.6.1.2.1.1.1.0)
+    /// Based on NSE library snmp.lua buildGetRequest function
+    pub fn build_probe(community: &str) -> Vec<u8> {
+        // Generate random request ID (0-65000)
+        let req_id = (rand::random::<u32>() % 65000) as i32;
+        
+        // Encode OID: 1.3.6.1.2.1.1.1.0 (sysDescr)
+        let oid_encoded = Self::encode_oid("1.3.6.1.2.1.1.1.0");
+        let oid_tag = vec![0x06]; // OID tag
+        let mut oid_element = oid_tag;
+        oid_element.extend_from_slice(&Self::encode_length(oid_encoded.len()));
+        oid_element.extend_from_slice(&oid_encoded);
+        
+        // NULL value for GetRequest
+        let null_value = vec![0x05, 0x00]; // NULL tag + length 0
+        
+        // VarBind: SEQUENCE of {OID, NULL}
+        let varbind = Self::encode_sequence(&[oid_element, null_value]);
+        
+        // VarBindList: SEQUENCE of VarBind
+        let varbind_list = Self::encode_sequence(&[varbind]);
+        
+        // GetRequest-PDU: SEQUENCE {requestID, error-status, error-index, variable-bindings}
+        // Tag 0xA0 = GetRequest-PDU (context-specific, constructed)
+        let req_id_encoded = {
+            let mut result = vec![0x02]; // INTEGER tag
+            let id_bytes = Self::encode_integer(req_id);
+            result.extend_from_slice(&Self::encode_length(id_bytes.len()));
+            result.extend_from_slice(&id_bytes);
+            result
+        };
+        
+        let error_status = {
+            let mut result = vec![0x02]; // INTEGER tag
+            let err_bytes = Self::encode_integer(0); // noError
+            result.extend_from_slice(&Self::encode_length(err_bytes.len()));
+            result.extend_from_slice(&err_bytes);
+            result
+        };
+        
+        let error_index = {
+            let mut result = vec![0x02]; // INTEGER tag
+            let idx_bytes = Self::encode_integer(0);
+            result.extend_from_slice(&Self::encode_length(idx_bytes.len()));
+            result.extend_from_slice(&idx_bytes);
+            result
+        };
+        
+        let pdu_content = vec![req_id_encoded, error_status, error_index, varbind_list];
+        let mut pdu = vec![0xA0]; // GetRequest-PDU tag
+        let pdu_elements: Vec<Vec<u8>> = pdu_content.iter().cloned().collect();
+        let pdu_encoded = Self::encode_sequence(&pdu_elements);
+        pdu.extend_from_slice(&pdu_encoded[1..]); // Skip SEQUENCE tag, use our PDU tag
+        
+        // SNMP Message: SEQUENCE {version, community, PDU}
+        let version = {
+            let mut result = vec![0x02]; // INTEGER tag
+            let ver_bytes = Self::encode_integer(1); // SNMPv2c
+            result.extend_from_slice(&Self::encode_length(ver_bytes.len()));
+            result.extend_from_slice(&ver_bytes);
+            result
+        };
+        
+        let community_encoded = Self::encode_octet_string(community.as_bytes());
+        
+        let message_elements = vec![version, community_encoded, pdu];
+        Self::encode_sequence(&message_elements)
+    }
+
+    /// Parse SNMP response - extracts system description and other OID values
+    /// Based on NSE library snmp.lua decode function
     pub fn parse_response(data: &[u8]) -> Result<IoTProbeResponse> {
-        // Basic SNMP response detection
-        // Full SNMP parsing requires ASN.1 DER decoding (complex)
-        // For now, just detect if we got a response
         let mut device_info = HashMap::new();
         
-        // SNMP v2c response starts with version (0x02), length, value (0x01 for v2c)
-        // Then community string, then PDU type (0xA2 for Response-PDU)
-        if data.len() > 4 && data[0] == 0x30 {
-            // Looks like ASN.1 SEQUENCE (SNMP message)
+        if data.len() < 4 || data[0] != 0x30 {
+            // Not a valid SNMP message (should start with SEQUENCE 0x30)
+            return Ok(IoTProbeResponse {
+                protocol: IoTProtocol::SNMP,
+                source_ip: String::new(),
+                source_port: 161,
+                device_info,
+                raw_response: data.to_vec(),
+            });
+        }
+        
+        device_info.insert(
+            "response_received".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        
+        // Try to find Response-PDU marker (0xA2)
+        if data.iter().any(|&b| b == 0xA2) {
             device_info.insert(
-                "response_received".to_string(),
-                serde_json::Value::Bool(true),
-            );
-            device_info.insert(
-                "packet_length".to_string(),
-                serde_json::Value::Number(Number::from(data.len())),
+                "pdu_type".to_string(),
+                serde_json::Value::String("response".to_string()),
             );
             
-            // Try to find Response-PDU marker (0xA2)
-            if data.windows(1).any(|w| w[0] == 0xA2) {
-                device_info.insert(
-                    "pdu_type".to_string(),
-                    serde_json::Value::String("response".to_string()),
-                );
+            // Try to extract system description from response
+            // Look for OID 1.3.6.1.2.1.1.1.0 followed by OCTET STRING (0x04)
+            if let Some(oid_pos) = Self::find_oid_in_response(data, &[1, 3, 6, 1, 2, 1, 1, 1, 0]) {
+                if let Some(sys_descr) = Self::extract_string_after_oid(data, oid_pos) {
+                    device_info.insert(
+                        "system_description".to_string(),
+                        serde_json::Value::String(sys_descr),
+                    );
+                }
             }
         }
+        
+        device_info.insert(
+            "packet_length".to_string(),
+            serde_json::Value::Number(Number::from(data.len())),
+        );
 
         Ok(IoTProbeResponse {
             protocol: IoTProtocol::SNMP,
@@ -345,79 +610,260 @@ impl SNMPProbe {
             raw_response: data.to_vec(),
         })
     }
+
+    /// Find OID in SNMP response (simplified search)
+    fn find_oid_in_response(data: &[u8], _oid: &[u32]) -> Option<usize> {
+        // Simplified OID search - look for pattern
+        // In practice, would need full ASN.1 parsing
+        // For now, just check if response contains expected structure
+        if data.len() > 20 {
+            // OID 1.3.6.1.2.1.1.1.0 encoded as: 0x2b 0x06 0x01 0x02 0x01 0x01 0x01 0x00
+            // 0x2b = 1*40 + 3 = 43
+            let oid_pattern = &[0x2b, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00];
+            for i in 0..data.len().saturating_sub(oid_pattern.len()) {
+                if data[i..].starts_with(oid_pattern) {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
+    /// Extract string value after OID in SNMP response
+    fn extract_string_after_oid(data: &[u8], oid_pos: usize) -> Option<String> {
+        // Look for OCTET STRING tag (0x04) after OID
+        let search_start = oid_pos + 8; // Skip OID
+        for i in search_start..data.len().saturating_sub(2) {
+            if data[i] == 0x04 {
+                // Found OCTET STRING tag
+                if i + 1 < data.len() {
+                    let len = data[i + 1] as usize;
+                    if i + 2 + len <= data.len() {
+                        let string_data = &data[i + 2..i + 2 + len];
+                        if let Ok(s) = String::from_utf8(string_data.to_vec()) {
+                            return Some(s);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 /// CoAP Probe Implementation
+/// Based on NSE library coap.lua - implements CoAP GET request with proper option encoding
 pub struct CoAPProbe;
 
 impl CoAPProbe {
     /// Build CoAP GET request for /.well-known/core
+    /// Based on NSE library coap.lua COAP.header.build and COAP.header.options.build
     pub fn build_probe() -> Vec<u8> {
-        // CoAP packet structure:
+        // CoAP packet structure (RFC 7252):
         // Byte 0: Version (2 bits) + Type (2 bits) + Token Length (4 bits)
-        // Byte 1: Code (GET = 0x01)
+        // Byte 1: Code (GET = 0.01 = 0x01)
         // Bytes 2-3: Message ID
-        // Option: Uri-Path: .well-known
-        // Option: Uri-Path: core
+        // Options: Uri-Path: .well-known, Uri-Path: core
         
         let mut packet = Vec::new();
         
-        // Header: Version=1, Type=Non-Confirmable, Token Length=0
-        packet.push(0x40);
+        // Header: Version=1, Type=Non-Confirmable (1), Token Length=0
+        // ver << 6 | type << 4 | tkl
+        // 1 << 6 = 0x40, 1 << 4 = 0x10, 0 = 0x00
+        // 0x40 | 0x10 | 0x00 = 0x50
+        packet.push(0x50);
         
-        // Code: GET (0x01)
+        // Code: GET (0.01) = 0x01
         packet.push(0x01);
         
         // Message ID (random)
         let msg_id = rand::random::<u16>();
         packet.extend_from_slice(&msg_id.to_be_bytes());
         
-        // Uri-Path option: .well-known (length 11)
-        packet.push(0xB0 | 11u8); // Option delta=11 (Uri-Path), length=11
-        packet.extend_from_slice(b".well-known");
+        // Token (empty, tkl=0)
+        // No token bytes
         
-        // Uri-Path option: core (length 4)
-        packet.push(0xB0 | 4u8); // Option delta=11 (Uri-Path), length=4
-        packet.extend_from_slice(b"core");
+        // Options: Uri-Path options
+        // Option format: Option Delta (4 bits) | Option Length (4 bits) | Option Value
+        // Uri-Path option number = 11
+        // First option: delta=11, length=11, value=".well-known"
+        let opt1_delta = 11u8; // Uri-Path
+        let opt1_value = b".well-known";
+        let opt1_len = opt1_value.len() as u8;
+        packet.push((opt1_delta << 4) | opt1_len);
+        packet.extend_from_slice(opt1_value);
+        
+        // Second option: delta=0 (same option number), length=4, value="core"
+        let opt2_delta = 0u8; // Same option (Uri-Path)
+        let opt2_value = b"core";
+        let opt2_len = opt2_value.len() as u8;
+        packet.push((opt2_delta << 4) | opt2_len);
+        packet.extend_from_slice(opt2_value);
+        
+        // No payload marker (0xFF) needed for GET request
         
         packet
     }
 
     /// Parse CoAP response (Link-Format)
+    /// Based on NSE library coap.lua COAP.parse and COAP.payload.application_link_format.parse
     pub fn parse_response(data: &[u8]) -> Result<IoTProbeResponse> {
-        // Basic CoAP response parsing
         let mut device_info = HashMap::new();
         
+        if data.len() < 4 {
+            return Ok(IoTProbeResponse {
+                protocol: IoTProtocol::CoAP,
+                source_ip: String::new(),
+                source_port: 5683,
+                device_info,
+                raw_response: data.to_vec(),
+            });
+        }
+        
+        // Parse fixed header
+        let ver_type_tkl = data[0];
+        let version = (ver_type_tkl >> 6) & 0x03;
+        let message_type = (ver_type_tkl >> 4) & 0x03;
+        let token_length = ver_type_tkl & 0x0F;
+        
+        if version != 1 {
+            // Invalid CoAP version
+            return Ok(IoTProbeResponse {
+                protocol: IoTProtocol::CoAP,
+                source_ip: String::new(),
+                source_port: 5683,
+                device_info,
+                raw_response: data.to_vec(),
+            });
+        }
+        
+        device_info.insert(
+            "response_received".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        
+        // Parse code (class and detail)
+        let code_byte = data[1];
+        let code_class = (code_byte >> 5) & 0x07;
+        let code_detail = code_byte & 0x1F;
+        let code_str = format!("{}.{:02}", code_class, code_detail);
+        device_info.insert(
+            "code".to_string(),
+            serde_json::Value::String(code_str),
+        );
+        
+        // Parse message type
+        let type_str = match message_type {
+            0 => "confirmable",
+            1 => "non-confirmable",
+            2 => "acknowledgement",
+            3 => "reset",
+            _ => "unknown",
+        };
+        device_info.insert(
+            "type".to_string(),
+            serde_json::Value::String(type_str.to_string()),
+        );
+        
+        // Parse message ID
         if data.len() >= 4 {
-            // Check CoAP version (should be 1)
-            let version = (data[0] >> 6) & 0x03;
-            if version == 1 {
-                device_info.insert(
-                    "response_received".to_string(),
-                    serde_json::Value::Bool(true),
-                );
-                
-                // Extract code (success = 2.05 = 0x45)
-                let code = data[1];
-                device_info.insert(
-                    "code".to_string(),
-                    serde_json::Value::Number(code.into()),
-                );
-                
-                // Try to extract payload (Link-Format)
-                if data.len() > 4 {
-                    // Look for payload marker (0xFF)
-                    if let Some(payload_start) = data.iter().position(|&b| b == 0xFF) {
-                        if payload_start + 1 < data.len() {
-                            let payload = &data[payload_start + 1..];
-                            if let Ok(link_format) = String::from_utf8(payload.to_vec()) {
-                                device_info.insert(
-                                    "resources".to_string(),
-                                    serde_json::Value::String(link_format),
-                                );
+            let msg_id = u16::from_be_bytes([data[2], data[3]]);
+            device_info.insert(
+                "message_id".to_string(),
+                serde_json::Value::Number(Number::from(msg_id)),
+            );
+        }
+        
+        // Skip token if present
+        let mut pos = 4 + token_length as usize;
+        
+        // Parse options (simplified - just skip them for now)
+        // In full implementation, would parse Uri-Path, Content-Format, etc.
+        while pos < data.len() && data[pos] != 0xFF {
+            if data[pos] == 0xFF {
+                break; // Payload marker
+            }
+            let opt_byte = data[pos];
+            let opt_delta = (opt_byte >> 4) & 0x0F;
+            let opt_length = opt_byte & 0x0F;
+            
+            // Extended delta/length handling (simplified)
+            pos += 1;
+            if opt_delta == 13 {
+                pos += 1; // Extended delta
+            } else if opt_delta == 14 {
+                pos += 2; // Extended delta
+            }
+            if opt_length == 13 {
+                pos += 1; // Extended length
+            } else if opt_length == 14 {
+                pos += 2; // Extended length
+            }
+            
+            pos += opt_length as usize;
+        }
+        
+        // Extract payload (Link-Format)
+        if pos < data.len() && data[pos] == 0xFF {
+            pos += 1; // Skip payload marker
+            if pos < data.len() {
+                let payload = &data[pos..];
+                if let Ok(link_format) = String::from_utf8(payload.to_vec()) {
+                    // Parse Link-Format resources (RFC 6690)
+                    // Format: </path>;attr1=val1;attr2=val2,</path2>;attr=val
+                    let resources: Vec<serde_json::Value> = link_format
+                        .split(',')
+                        .filter_map(|link| {
+                            let link = link.trim();
+                            if link.is_empty() {
+                                return None;
                             }
-                        }
+                            
+                            // Extract path and attributes
+                            if let Some((path, attrs)) = link.split_once(';') {
+                                let path = path.trim().trim_matches(|c| c == '<' || c == '>');
+                                let mut resource = serde_json::Map::new();
+                                resource.insert("path".to_string(), path.into());
+                                
+                                // Parse attributes
+                                let mut attrs_map = serde_json::Map::new();
+                                for attr in attrs.split(';') {
+                                    if let Some((key, val)) = attr.split_once('=') {
+                                        attrs_map.insert(
+                                            key.trim().to_string(),
+                                            val.trim().trim_matches('"').into(),
+                                        );
+                                    } else {
+                                        attrs_map.insert(attr.trim().to_string(), true.into());
+                                    }
+                                }
+                                if !attrs_map.is_empty() {
+                                    resource.insert("attributes".to_string(), attrs_map.into());
+                                }
+                                
+                                Some(resource.into())
+                            } else {
+                                // Just a path
+                                let path = link.trim().trim_matches(|c| c == '<' || c == '>');
+                                let mut resource = serde_json::Map::new();
+                                resource.insert("path".to_string(), path.into());
+                                Some(resource.into())
+                            }
+                        })
+                        .collect();
+                    
+                    if !resources.is_empty() {
+                        device_info.insert(
+                            "parsed_resources".to_string(),
+                            serde_json::Value::Array(resources),
+                        );
                     }
+                    
+                    // Store raw link format string
+                    device_info.insert(
+                        "resources".to_string(),
+                        serde_json::Value::String(link_format),
+                    );
                 }
             }
         }

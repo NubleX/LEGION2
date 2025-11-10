@@ -163,7 +163,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
     };
   }, [currentHost?.ip]);
 
-  // Periodic refresh to fetch updated data from DB (every 5 seconds while a host is selected)
+  // Periodic refresh to fetch updated data from DB (every 27 seconds while a host is selected)
   useEffect(() => {
     if (!currentHost?.ip) {
       return;
@@ -174,7 +174,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
     const intervalId = setInterval(() => {
       console.log('[ResultViewer] Periodic refresh: fetching ports for', hostIp);
       loadPorts(hostIp);
-    }, 5000); // Refresh every 5 seconds
+    }, 27000); // Refresh every 27 seconds
 
     return () => {
       console.log('[ResultViewer] Stopping periodic refresh for host', hostIp);

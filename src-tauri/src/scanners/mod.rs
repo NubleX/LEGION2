@@ -11,5 +11,4 @@ pub mod probes {
 
 // Events module re-exports from shared
 pub mod events {
-    pub use crate::shared::shared::{EventType, ScanEvent};
 }

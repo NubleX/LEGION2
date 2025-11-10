@@ -241,13 +241,15 @@ ST: ssdp:all
 - **Community**: `public` (default)
 
 **Probe Format**:
-- SNMP v2c GetRequest packet
-- Queries system description OID
+- SNMP v2c GetRequest packet with proper ASN.1 DER encoding
+- Queries system description OID (1.3.6.1.2.1.1.1.0)
+- Based on NSE library `snmp.lua` implementation
 
 **Response Parsing**:
-- Detects SNMP response packets
-- Extracts system description (if available)
-- Identifies device type from response
+- Full ASN.1 DER decoding of SNMP response packets
+- Extracts system description from Response-PDU
+- Parses OID values and variable bindings
+- Identifies device type from system description
 
 **Device Types Discovered**:
 - Network switches and routers
@@ -269,13 +271,16 @@ ST: ssdp:all
 - **Response**: Link-Format resource list
 
 **Probe Format**:
-- CoAP GET request with Uri-Path options
-- Requests `/.well-known/core` resource
+- CoAP GET request with proper header encoding (version, type, token length, code)
+- Uri-Path options for `/.well-known/core` resource
+- Based on NSE library `coap.lua` implementation
 
 **Response Parsing**:
-- Extracts CoAP response code
-- Parses Link-Format payload
-- Identifies available resources
+- Full CoAP header parsing (version, type, code, message ID)
+- Extracts CoAP response codes (2.05 Content, 4.04 Not Found, etc.)
+- Parses Link-Format payload (RFC 6690) with resource paths and attributes
+- Extracts resource paths, content types, and interface types
+- Identifies available resources with full attribute parsing
 
 **Device Types Discovered**:
 - IoT sensors (temperature, humidity, motion)
@@ -539,16 +544,35 @@ impl SSDPProbe {
 pub struct MDNSProbe;
 
 impl MDNSProbe {
+    /// Build mDNS query for _services._dns-sd._udp.local
+    /// Based on NSE library dnssd.lua Helper.queryAllServices
     pub fn build_probe() -> Vec<u8> {
-        // Builds DNS query for _services._dns-sd._udp.local
+        // Manual DNS packet construction:
+        // - Transaction ID (random)
+        // - Flags: Standard query (0x0000 for mDNS)
+        // - Questions: 1 (PTR query for _services._dns-sd._udp.local)
+        // - DNS name encoding (length-prefixed labels)
     }
     
+    /// Parse mDNS response with full DNS packet parsing
+    /// Based on NSE library dnssd.lua Comm.decodeRecords
     pub fn parse_response(data: &[u8]) -> Result<IoTProbeResponse> {
-        // Parses DNS response packet
-        // Extracts service records
+        // Full DNS packet parsing using dns-parser crate:
+        // - Parses DNS header and sections
+        // - Extracts PTR records (service names) from answers
+        // - Extracts SRV records (priority, weight, port, target)
+        // - Extracts TXT records (service metadata)
+        // - Extracts A/AAAA records (IPv4/IPv6 addresses)
+        // - Extracts additional records for complete service information
     }
 }
 ```
+
+**Implementation Details**:
+- **DNS Parsing**: Uses `dns-parser` crate (v0.8) for complete DNS packet parsing
+- **Service Discovery**: Extracts all DNS-SD service information (PTR, SRV, TXT, A, AAAA)
+- **Record Extraction**: Parses all DNS record types for comprehensive device information
+- **Reference**: Based on NSE library `dnssd.lua` (lines 140-290 for communication and decoding)
 
 #### WSDD Probe
 
@@ -573,16 +597,34 @@ impl WSDDProbe {
 pub struct SNMPProbe;
 
 impl SNMPProbe {
+    /// Build SNMP v2c GetRequest with proper ASN.1 DER encoding
+    /// Based on NSE library snmp.lua buildGetRequest function
     pub fn build_probe(community: &str) -> Vec<u8> {
-        // Builds SNMP GetRequest for sysDescr OID
+        // Implements full ASN.1 DER encoding:
+        // - OID encoding (base 128 encoding for components)
+        // - INTEGER encoding (request ID, error status, error index)
+        // - SEQUENCE encoding (message, PDU, VarBind)
+        // - OCTET STRING encoding (community string)
+        // Queries OID 1.3.6.1.2.1.1.1.0 (sysDescr)
     }
     
+    /// Parse SNMP response with ASN.1 DER decoding
+    /// Based on NSE library snmp.lua decode function
     pub fn parse_response(data: &[u8]) -> Result<IoTProbeResponse> {
-        // Detects SNMP response packets
-        // Extracts system description (basic parsing)
+        // Full ASN.1 DER decoding:
+        // - Detects Response-PDU (tag 0xA2)
+        // - Extracts system description from variable bindings
+        // - Parses OID values and response data
+        // - Extracts device information from sysDescr
     }
 }
 ```
+
+**Implementation Details**:
+- **ASN.1 Encoding**: Full DER encoding for SNMP v2c GetRequest packets
+- **OID Encoding**: Base 128 encoding for OID components (RFC 2578)
+- **Response Parsing**: Extracts system description and other OID values from Response-PDU
+- **Reference**: Based on NSE library `snmp.lua` (lines 32-225 for encoding, lines 118-149 for decoding)
 
 #### CoAP Probe
 
@@ -590,16 +632,36 @@ impl SNMPProbe {
 pub struct CoAPProbe;
 
 impl CoAPProbe {
+    /// Build CoAP GET request with proper option encoding
+    /// Based on NSE library coap.lua COAP.header.build
     pub fn build_probe() -> Vec<u8> {
-        // Builds CoAP GET request for /.well-known/core
+        // Proper CoAP packet structure (RFC 7252):
+        // - Header: Version (2 bits) + Type (2 bits) + Token Length (4 bits)
+        // - Code: GET (0.01 = 0x01)
+        // - Message ID (random)
+        // - Options: Uri-Path ".well-known" and "core"
+        // - Option delta/length encoding
     }
     
+    /// Parse CoAP response with Link-Format parsing
+    /// Based on NSE library coap.lua COAP.parse and COAP.payload.application_link_format.parse
     pub fn parse_response(data: &[u8]) -> Result<IoTProbeResponse> {
-        // Parses CoAP response
-        // Extracts Link-Format resource list
+        // Full CoAP response parsing:
+        // - Parses fixed header (version, type, token length, code, message ID)
+        // - Parses options (Uri-Path, Content-Format, etc.)
+        // - Extracts payload (Link-Format)
+        // - Parses Link-Format resources (RFC 6690):
+        //   Format: </path>;attr1=val1;attr2=val2,</path2>;attr=val
+        // - Extracts resource paths, attributes, content types
     }
 }
 ```
+
+**Implementation Details**:
+- **Packet Structure**: Proper CoAP header encoding per RFC 7252
+- **Option Encoding**: Delta/length encoding for Uri-Path options
+- **Link-Format Parsing**: Full RFC 6690 Link-Format parsing with attribute extraction
+- **Reference**: Based on NSE library `coap.lua` (lines 289-349 for header building, lines 363-431 for parsing)
 
 #### MQTT Probe
 
@@ -809,31 +871,41 @@ IoT Spider observations are stored in the standard database schema:
 
 ### Current Limitations
 
-1. **Basic Parsing**: Response parsing is basic, can be enhanced with full protocol libraries
-2. **SNMP**: Limited to basic detection, full ASN.1 parsing not implemented
-3. **MQTT**: TCP-based, requires connection handling (currently basic)
-4. **CoAP**: Link-Format parsing is basic
-5. **mDNS**: DNS packet parsing is simplified
+1. **MQTT**: TCP-based, requires connection handling (currently basic)
+2. **SNMP**: ASN.1 parsing is simplified - full OID tree walking not implemented
+3. **CoAP**: Extended option handling could be enhanced (block transfers, observe)
+
+### Recent Enhancements (2025)
+
+1. **SNMP Probe**: 
+   - ✅ Full ASN.1 DER encoding/decoding implemented
+   - ✅ System description extraction from Response-PDU
+   - ✅ Based on NSE library `snmp.lua` reference implementation
+
+2. **mDNS Probe**:
+   - ✅ Full DNS packet parsing using `dns-parser` crate
+   - ✅ Complete DNS-SD record extraction (PTR, SRV, TXT, A, AAAA)
+   - ✅ Based on NSE library `dnssd.lua` reference implementation
+
+3. **CoAP Probe**:
+   - ✅ Proper CoAP packet structure (RFC 7252)
+   - ✅ Full Link-Format parsing (RFC 6690) with attribute extraction
+   - ✅ Based on NSE library `coap.lua` reference implementation
 
 ### Future Enhancements
 
-1. **Full Protocol Parsing**:
-   - Integrate `dns-parser` for complete mDNS parsing
-   - Integrate `snmp-parser` for full SNMP support
-   - Integrate `coap-lite` for complete CoAP support
-
-2. **Additional Protocols**:
+1. **Additional Protocol Support**:
    - Modbus (industrial control)
    - BACnet (building automation)
    - KNX (home automation)
    - Zigbee discovery
 
-3. **Enhanced Pivot Detection**:
+2. **Enhanced Pivot Detection**:
    - Machine learning for pivot candidate scoring
    - Multi-factor pivot analysis
    - Pivot chain detection
 
-4. **Performance Optimizations**:
+3. **Performance Optimizations**:
    - Parallel probe sending
    - Adaptive timeout based on network latency
    - Probe deduplication

@@ -52,10 +52,10 @@ fn main() {
 
     tauri::Builder::default()
         .setup(|app| {
-            // Start periodic background task to refresh all hosts every 5 seconds
+            // Start periodic background task to refresh all hosts every 27 seconds
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(27));
                 loop {
                     interval.tick().await;
                     log::debug!("Emitting refresh_all_hosts event");

@@ -1,6 +1,5 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-use crate::scanners::netsniffer;
 
 use anyhow;
 use chrono::{DateTime, Utc};
@@ -9,6 +8,33 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 use uuid::Uuid;
+
+// Re-export proper types from ScanTypes.rs
+pub use crate::shared::ScanTypes::{
+    ScanProgress, ScanStatus, ScanTarget, ScanType, ScanConfig, ScanResult,
+    DiscoveredHost, DiscoveredService, ScanError, ScanStatistics, NetworkStats, OSDetection,
+    PortRange, Protocol as ScanProtocol,
+};
+
+// Event types for scan event system (used by masscan.rs)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum EventType {
+    ScanStarted,
+    ScanCompleted,
+    ScanFailed,
+    ScanProgress,
+    ScanOutput,
+    Error,
+    ServiceDiscovered,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanEvent {
+    pub scan_id: String,
+    pub event_type: EventType,
+    pub timestamp: DateTime<Utc>,
+    pub data: serde_json::Value,
+}
 
 // Core observation types - moved from core/types.rs
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -294,23 +320,6 @@ pub struct ScanPort {
     pub scripts: Option<Vec<ScriptResult>>,
 }
 
-// This Port struct is for database storage, with fields relevant for persistence.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredPort {
-    pub id: String,
-    pub host_id: String,
-    pub number: i32,
-    pub protocol: Protocol,
-    pub state: PortState,
-    pub service: Option<String>,
-    pub version: Option<String>,
-    pub banner: Option<String>,
-    pub confidence: Option<f32>,
-    pub cpe: Vec<String>,
-    pub discovered_at: DateTime<Utc>,
-    pub last_seen: DateTime<Utc>,
-}
-
 // This Vulnerability struct is for scan results.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanVulnerability {
@@ -326,71 +335,4 @@ pub struct ScanVulnerability {
     pub discovered_at: DateTime<Utc>,
     pub verified: bool,
     pub false_positive: bool,
-}
-
-// This Vulnerability struct is for database storage.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredVulnerability {
-    pub id: String,
-    pub host_id: String,
-    pub port_id: Option<String>,
-    pub name: String,
-    pub severity: Severity,
-    pub description: String,
-    pub cvss_score: Option<f32>,
-    pub cvss_vector: Option<String>,
-    pub cve_id: Option<String>,
-    pub reference_links: Vec<String>,
-    pub exploitable: bool,
-    pub discovered_at: DateTime<Utc>,
-    pub verified: bool,
-    pub false_positive: bool,
-}
-
-// Simple event system
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum EventType {
-    ScanStarted,
-    ScanCompleted,
-    ScanFailed,
-    ScanProgress,
-    ScanOutput,
-    HostDiscovered,
-    ServiceDiscovered,
-    Progress,
-    Error,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanEvent {
-    pub scan_id: String,
-    pub event_type: EventType,
-    pub timestamp: DateTime<Utc>,
-    pub data: serde_json::Value,
-}
-
-// Minimal event streamer
-pub struct EventStreamer {
-    events: std::sync::Arc<tokio::sync::RwLock<Vec<ScanEvent>>>,
-}
-
-impl EventStreamer {
-    pub fn new() -> Self {
-        Self {
-            events: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
-        }
-    }
-
-    pub async fn send_event(&self, event: ScanEvent) {
-        self.events.write().await.push(event);
-    }
-
-    pub async fn get_recent_events(&self, limit: usize) -> Vec<ScanEvent> {
-        let events = self.events.read().await;
-        if events.len() > limit {
-            events[events.len() - limit..].to_vec()
-        } else {
-            events.clone()
-        }
-    }
 }

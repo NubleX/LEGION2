@@ -826,8 +826,12 @@ impl Db {
         let cve_id = cve_id.map(|s| s.to_string());
         let _remediation = remediation.map(|s| s.to_string()); // Not stored in DB schema yet
         
-        tokio::task::spawn_blocking(move || {
+        let was_new = tokio::task::spawn_blocking(move || {
             let conn = conn.lock();
+            
+            // Check if vulnerability already exists
+            let mut check_stmt = conn.prepare("SELECT id FROM vulnerabilities WHERE id = ?1")?;
+            let exists = check_stmt.exists([&id])?;
             
             // Find port ID if exists
             let port_id = {
@@ -844,11 +848,13 @@ impl Db {
                 params![&id, &host_id, port_id, &name, &severity, &description, cve_id, cvss_score, &timestamp],
             )?;
             
-            Ok::<(), anyhow::Error>(())
+            Ok::<bool, anyhow::Error>(!exists) // Return true if it was new
         }).await??;
         
-        // Increment host vulnerability count
-        self.increment_host_vulnerability_count(host_ip).await?;
+        // Only increment host vulnerability count if this was a new vulnerability
+        if was_new {
+            self.increment_host_vulnerability_count(host_ip).await?;
+        }
         
         Ok(())
     }

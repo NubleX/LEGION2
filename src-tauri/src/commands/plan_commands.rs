@@ -217,6 +217,8 @@ pub fn create_plan_with_modules(
         source_type,
         sink_types,
         interface: None,
+        nse_scripts: None,
+        nse_script_args: None,
     };
     
     if let Some(iface) = interface {
