@@ -207,4 +207,7 @@ For bug reports, feature requests, and development discussions, please use our G
 
 ---
 
+
 *LEGION2 - Modern network security scanning for the next generation of cybersecurity professionals.*
+
+Visit https://www.idarti.com
