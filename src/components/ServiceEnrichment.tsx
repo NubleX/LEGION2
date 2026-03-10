@@ -2,9 +2,9 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 import React, { useState } from 'react';
-import { AlertTriangle, ExternalLink, RefreshCw, X } from 'lucide-react';
+import { ExternalLink, RefreshCw, X } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import type { ServiceInfo, CveInfo, ServiceEnrichment } from '../types/services';
+import type { ServiceInfo, ServiceEnrichment } from '../types/services';
 
 interface ServiceEnrichmentProps {
   service: ServiceInfo;
@@ -21,7 +21,7 @@ const ServiceEnrichment: React.FC<ServiceEnrichmentProps> = ({ service, hostIp, 
     setEnriching(true);
     setError(null);
     try {
-      const result = await invoke<string>('enrich_service_osint', {
+      await invoke<string>('enrich_service_osint', {
         hostIp,
         port: service.port,
         serviceName: service.name,
@@ -40,16 +40,6 @@ const ServiceEnrichment: React.FC<ServiceEnrichmentProps> = ({ service, hostIp, 
       setError(err instanceof Error ? err.message : 'Failed to enrich service');
     } finally {
       setEnriching(false);
-    }
-  };
-
-  const getSeverityColor = (severity: string) => {
-    switch (severity.toLowerCase()) {
-      case 'critical': return 'text-red-500 bg-red-500/10 border-red-500/30';
-      case 'high': return 'text-orange-500 bg-orange-500/10 border-orange-500/30';
-      case 'medium': return 'text-yellow-500 bg-yellow-500/10 border-yellow-500/30';
-      case 'low': return 'text-blue-500 bg-blue-500/10 border-blue-500/30';
-      default: return 'text-gray-400 bg-gray-500/10 border-gray-500/30';
     }
   };
 

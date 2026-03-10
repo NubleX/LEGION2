@@ -69,55 +69,82 @@ impl MasscanScanner {
     async fn build_masscan_command(&self, plan: &Plan) -> (Command, String) {
         let mut cmd = Command::new(&self.bin);
 
-        // Port specification (required for masscan)
+        // Port specification — default to full range for comprehensive discovery
         let ports = if plan.ports.is_empty() {
-            "1-1000"
+            "1-65535"
         } else {
             &plan.ports
         };
         cmd.arg("-p").arg(ports);
 
-        // Only show open ports
+        // Only report open ports
         cmd.arg("--open");
 
-        // Set rate
-        let rate = plan.rate.unwrap_or(1000);
+        // Rate — default 10 000 pps, reasonable for a LAN without saturating IDS
+        let rate = plan.rate.unwrap_or(10_000);
         cmd.arg("--rate").arg(rate.to_string());
 
-        // Output format for real-time parsing (list format for CLI streaming)
-        cmd.arg("--output-format").arg("list");
+        // Wait 3 s after last probe for late SYN-ACK responses
+        cmd.arg("--wait").arg("3");
 
-        // Ensure .scans directory exists
-        std::fs::create_dir_all(".scans").unwrap_or_else(|e| {
-            log::warn!("Failed to create .scans directory: {}", e);
+        // Use absolute path for XML output so the file is reliably found later
+        let xml_dir = std::env::temp_dir().join("legion2_scans");
+        std::fs::create_dir_all(&xml_dir).unwrap_or_else(|e| {
+            log::warn!("Failed to create scan output dir {:?}: {}", xml_dir, e);
         });
-
-        // Generate XML output file in .scans directory for comprehensive parsing
-        let xml_file = format!(
-            ".scans/masscan_{}_{}.xml",
-            plan.scan_id.to_string().replace("-", "_"),
-            chrono::Utc::now().timestamp()
-        );
+        let xml_file = xml_dir
+            .join(format!(
+                "masscan_{}_{}.xml",
+                plan.scan_id.to_string().replace('-', "_"),
+                chrono::Utc::now().timestamp()
+            ))
+            .to_string_lossy()
+            .to_string();
+        // -oX writes XML to file; do NOT also set --output-format (they conflict)
         cmd.arg("-oX").arg(&xml_file);
 
-        // Add any extra arguments
+        // Pass extra args (filter out anything that would conflict)
         for arg in &plan.extra {
-            cmd.arg(arg);
-        }
-
-        // Detect private 10.* targets and append interface if provided
-        let targets_private = plan
-            .targets
-            .split(|c| c == ' ' || c == ',' || c == '\n')
-            .any(|t| t.trim_start().starts_with("10."));
-        if targets_private {
-            if let Some(iface) = &plan.interface {
-                cmd.arg("-e").arg(iface);
+            if arg != "--quiet" && !arg.starts_with("--output-format") {
+                cmd.arg(arg);
             }
         }
 
-        // Target specification (must be last)
-        cmd.arg(&plan.targets);
+        // Interface — always required for raw sockets on multi-interface hosts
+        if let Some(iface) = &plan.interface {
+            cmd.arg("-e").arg(iface);
+        } else {
+            // Auto-detect: for any private range, find the local interface
+            let is_private = plan.targets
+                .split(|c: char| c == ' ' || c == ',' || c == '\n')
+                .any(|t| {
+                    let t = t.trim();
+                    t.starts_with("10.") || t.starts_with("192.168.") || t.starts_with("172.")
+                });
+            if is_private {
+                if let Ok(ifaces) = ::local_ip_address::list_afinet_netifas() {
+                    // Pick the first non-loopback IPv4 interface
+                    if let Some((name, _)) = ifaces.iter().find(|(name, ip)| {
+                        !ip.is_loopback() && ip.is_ipv4() && name != "lo"
+                            && !name.contains("wg") // skip VPN interfaces
+                            && !name.contains("tun")
+                            && !name.contains("docker")
+                    }) {
+                        log::info!("Masscan: auto-selected interface {}", name);
+                        cmd.arg("-e").arg(name);
+                    }
+                }
+            }
+        }
+
+        // Target specification must come last — pass each target as a separate argument.
+        // Passing the whole string as one arg causes masscan to fail with "invalid target".
+        for target in plan.targets.split(|c: char| c == ' ' || c == ',' || c == '\n') {
+            let t = target.trim();
+            if !t.is_empty() {
+                cmd.arg(t);
+            }
+        }
 
         log::info!("Masscan command: {:?}", cmd);
         (cmd, xml_file)
@@ -308,6 +335,12 @@ impl Source for MasscanScanner {
         log::info!("Executing masscan command: {:?}", cmd);
 
         let mut child = cmd.spawn()?;
+
+        // Register PID so cancel kills this process immediately
+        if let Some(pid) = child.id() {
+            engine_commands::register_child_pid(pid).await;
+        }
+
         let stdout = child
             .stdout
             .take()
@@ -315,23 +348,55 @@ impl Source for MasscanScanner {
         let reader = BufReader::new(stdout);
         let lines = reader.lines();
 
+        // Masscan writes rate/progress to stderr. Pipe it through a channel so the stream
+        // can emit those lines as progress observations visible in the UI terminal.
+        let (stderr_tx, stderr_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let mut stderr_lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = stderr_lines.next_line().await {
+                    log::debug!("[masscan stderr] {}", line);
+                    let _ = stderr_tx.send(line);
+                }
+            });
+        }
+
         let scan_id = plan.scan_id;
         let targets = plan.targets.clone();
         let discovered_count = 0u64;
         let start_time = Utc::now();
-        let mut unique_hosts = std::collections::HashSet::new();
+        let unique_hosts = std::collections::HashSet::new();
+        let masscan_pid = child.id();
 
         log::info!("Starting masscan stream processing");
 
         let stream = stream::unfold(
-            (lines, discovered_count, child, xml_file.clone(), false, Vec::new(), start_time, unique_hosts, targets.clone()),
-            move |(mut lines, mut count, mut child, xml_file, xml_parsed, mut xml_obs_queue, start_time, mut unique_hosts, targets)| async move {
-                // First, emit any queued XML observations
+            (lines, discovered_count, child, xml_file.clone(), false, Vec::new(), start_time, unique_hosts, targets.clone(), stderr_rx),
+            move |(mut lines, mut count, mut child, xml_file, xml_parsed, mut xml_obs_queue, start_time, mut unique_hosts, targets, mut stderr_rx)| async move {
+                // Emit queued XML observations first
                 if let Some(queued_obs) = xml_obs_queue.pop() {
-                    return Some((queued_obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone())));
+                    return Some((queued_obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone(), stderr_rx)));
                 }
 
-                match lines.next_line().await {
+                // Race between a masscan stderr progress line and the next stdout line.
+                // With -oX, masscan writes results to file (stdout has nothing); stderr has rate info.
+                tokio::select! {
+                    // Prefer stderr progress lines so the terminal stays alive during long scans
+                    biased;
+                    Some(stderr_line) = stderr_rx.recv() => {
+                        let mut fields = serde_json::Map::new();
+                        fields.insert("masscan_output".to_string(), stderr_line.clone().into());
+                        let obs = Observation {
+                            scan_id,
+                            kind: ObservationKind::Metric,
+                            fields,
+                            ts: Utc::now(),
+                            key: "masscan-progress".to_string(),
+                            raw: Some(stderr_line),
+                        };
+                        return Some((obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone(), stderr_rx)));
+                    }
+                    result = lines.next_line() => match result {
                     Ok(Some(line)) => {
                         if engine_commands::is_scan_cancelled() {
                             log::warn!("Masscan scan cancelled by user");
@@ -346,135 +411,111 @@ impl Source for MasscanScanner {
                                 key: "scan-status".to_string(),
                                 raw: None,
                             };
-                            return Some((cancel_obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone())));
+                            return Some((cancel_obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone(), stderr_rx)));
                         }
                         log::info!("Masscan output line: {}", line);
                         if let Some(obs) = parse_masscan_line(&line, scan_id) {
                             count += 1;
-                            
-                            // Track unique hosts
                             if let Some(ip_str) = obs.fields.get("ip").and_then(|v| v.as_str()) {
                                 unique_hosts.insert(ip_str.to_string());
                             }
-                            
-                            log::info!("Parsed masscan observation: {:?}", obs);
-
-                            // Create a progress observation every 10 discoveries or on first discovery
                             if count % 10 == 0 || count == 1 {
                                 let elapsed = (Utc::now() - start_time).num_seconds() as u64;
                                 let progress_obs = create_scan_progress_observation(
-                                    scan_id,
-                                    count,
-                                    unique_hosts.len() as u32,
-                                    elapsed,
-                                    &targets,
+                                    scan_id, count, unique_hosts.len() as u32, elapsed, &targets,
                                 );
-                                Some((progress_obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone())))
+                                Some((progress_obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone(), stderr_rx)))
                             } else {
-                                Some((obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone())))
+                                Some((obs, (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone(), stderr_rx)))
                             }
                         } else {
-                            log::debug!("Non-service masscan line: {}", line);
+                            let mut fields = serde_json::Map::new();
+                            fields.insert("masscan_output".to_string(), line.clone().into());
                             Some((
                                 Observation {
                                     scan_id,
                                     kind: ObservationKind::Metric,
-                                    fields: {
-                                        let mut fields = serde_json::Map::new();
-                                        fields.insert(
-                                            "masscan_output".to_string(),
-                                            line.clone().into(),
-                                        );
-                                        fields
-                                    },
+                                    fields,
                                     ts: Utc::now(),
                                     key: "masscan-output".to_string(),
                                     raw: Some(line),
                                 },
-                                (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone()),
+                                (lines, count, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, targets.clone(), stderr_rx),
                             ))
                         }
                     }
                     Ok(None) => {
-                        log::info!("Masscan stream ended - waiting for process to complete");
+                        log::info!("Masscan stdout closed — waiting for process to exit");
                         match child.wait().await {
                             Ok(status) => {
-                                log::info!("Masscan process completed with status: {}", status);
-
-                                // Delegate XML parsing to xml_parser module
+                                log::info!("Masscan process exited: {}", status);
+                                if let Some(pid) = masscan_pid {
+                                    engine_commands::unregister_child_pid(pid).await;
+                                }
                                 if !xml_parsed {
-                                    log::info!(
-                                        "Delegating XML parsing to xml_parser module: {}",
-                                        xml_file
-                                    );
                                     let xml_path = Path::new(&xml_file);
-
+                                    // Check file size first — masscan writes an empty/rootless XML
+                                    // when no open ports are found. Skip parsing to avoid error noise.
+                                    let xml_size = std::fs::metadata(xml_path)
+                                        .map(|m| m.len())
+                                        .unwrap_or(0);
+                                    if xml_path.exists() && xml_size < 100 {
+                                        log::info!("masscan: no open ports found (XML < 100 bytes), skipping parse");
+                                        let mut fields = serde_json::Map::new();
+                                        fields.insert("masscan_output".to_string(), "masscan: no open ports found".into());
+                                        return Some((
+                                            Observation {
+                                                scan_id,
+                                                kind: ObservationKind::Metric,
+                                                fields,
+                                                ts: chrono::Utc::now(),
+                                                key: "masscan-no-results".to_string(),
+                                                raw: None,
+                                            },
+                                            (lines, count, child, xml_file, true, xml_obs_queue, start_time, unique_hosts, targets.clone(), stderr_rx),
+                                        ));
+                                    }
                                     if xml_path.exists() {
                                         let xml_parser = XmlParser::new(scan_id);
                                         match xml_parser.parse_masscan_xml(xml_path) {
                                             Ok(mut xml_observations) => {
-                                                log::info!("XML parser generated {} comprehensive observations from masscan", xml_observations.len());
-
-                                                // Queue all XML observations (in reverse order so they emit in correct order with pop())
+                                                log::info!("masscan XML: {} observations", xml_observations.len());
                                                 xml_observations.reverse();
                                                 xml_obs_queue.extend(xml_observations);
-
-                                                // Create a completion observation indicating XML parsing is done
+                                                let mut fields = serde_json::Map::new();
+                                                fields.insert("scan_status".to_string(), "masscan_xml_parsing_complete".into());
+                                                fields.insert("xml_observations_count".to_string(), (xml_obs_queue.len() as i64).into());
                                                 let completion_obs = Observation {
                                                     scan_id,
                                                     kind: ObservationKind::Metric,
-                                                    fields: {
-                                                        let mut fields = serde_json::Map::new();
-                                                        fields.insert(
-                                                            "scan_status".to_string(),
-                                                            "masscan_xml_parsing_complete".into(),
-                                                        );
-                                                        fields.insert(
-                                                            "xml_file".to_string(),
-                                                            xml_file.clone().into(),
-                                                        );
-                                                        fields.insert(
-                                                            "xml_observations_count".to_string(),
-                                                            (xml_obs_queue.len() as i64).into(),
-                                                        );
-                                                        fields
-                                                    },
+                                                    fields,
                                                     ts: chrono::Utc::now(),
                                                     key: "masscan-xml-complete".to_string(),
                                                     raw: None,
                                                 };
-
-                                                // Emit completion observation, then queued XML observations will follow
-                                                log::info!("Queued {} XML observations for emission", xml_obs_queue.len());
                                                 return Some((
                                                     completion_obs,
-                                                    (lines, count, child, xml_file, true, xml_obs_queue, start_time, unique_hosts, targets.clone()),
+                                                    (lines, count, child, xml_file, true, xml_obs_queue, start_time, unique_hosts, targets.clone(), stderr_rx),
                                                 ));
                                             }
-                                            Err(e) => {
-                                                log::error!("Failed to parse masscan XML with xml_parser: {}", e);
-                                            }
+                                            Err(e) => log::error!("masscan XML parse error: {}", e),
                                         }
                                     } else {
-                                        log::warn!("Masscan XML file not found: {}", xml_file);
+                                        log::warn!("masscan XML file not found: {}", xml_file);
                                     }
-
-                                    // Keep XML file for queue processing (don't delete it)
-                                    log::info!("Masscan XML file {} retained in .scans/ directory for queue processing", xml_file);
                                 }
                             }
-                            Err(e) => {
-                                log::error!("Error waiting for masscan process: {}", e);
-                            }
+                            Err(e) => log::error!("Error waiting for masscan: {}", e),
                         }
                         None
                     }
                     Err(e) => {
-                        log::error!("Error reading masscan output: {}", e);
+                        log::error!("Error reading masscan stdout: {}", e);
                         let _ = child.kill().await;
                         None
                     }
-                }
+                    } // end select! stdout arm
+                } // end select!
             },
         );
 

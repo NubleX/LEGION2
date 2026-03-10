@@ -6,13 +6,11 @@
 
 use crate::core::registry::Registry;
 use crate::database::Db;
-use crate::plan::Plan;
 use anyhow::Result;
 use std::collections::{HashSet, HashMap};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
-use uuid::Uuid;
 use tauri::AppHandle;
 
 /// Manages recursive discovery - automatically triggers scans on new discoveries
@@ -114,55 +112,15 @@ impl DiscoveryManager {
         Ok(())
     }
 
-    /// Schedule comprehensive scans for a newly discovered host
-    async fn schedule_host_scans(&self, host_ip: &str) -> Result<()> {
-        let mut pending = self.pending_scans.lock().await;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        
-        // Add to pending scans if not already scheduled
-        if !pending.contains_key(host_ip) {
-            pending.insert(host_ip.to_string(), now);
-            log::info!("📅 Scheduled recursive scans for host: {}", host_ip);
-        }
-        
+    /// Schedule comprehensive scans for a newly discovered host.
+    /// Autonomous recursive scanning is disabled — all scanning is user-initiated only.
+    async fn schedule_host_scans(&self, _host_ip: &str) -> Result<()> {
         Ok(())
     }
 
-    /// Schedule deep scan for a specific service
-    async fn schedule_service_scan(&self, host_ip: &str, port: u16, service: &str) -> Result<()> {
-        // Create a focused scan plan for this service
-        let scan_id = Uuid::new_v4();
-        let targets = host_ip.to_string();
-        let service_name = service.to_string();
-        
-        // Use nmap for deep service scanning
-        let plan = Plan::nmap(
-            scan_id,
-            targets.clone(),
-            format!("{}", port), // Focus on this specific port
-            vec!["-sV".to_string(), "-sC".to_string()], // Service version and scripts
-        )
-        .with_modules(vec![
-            "ip_enrichment".to_string(),
-            "service_parsing".to_string(),
-            "mac_enrichment".to_string(),
-            "passive_os".to_string(),
-        ]);
-        
-        // Execute scan in background using engine
-        let registry = self.registry.clone();
-        let host_ip_clone = host_ip.to_string();
-        tokio::spawn(async move {
-            log::info!("🔬 Starting deep scan for {}:{} ({})", host_ip_clone, port, service_name);
-            let engine = crate::core::engine::Engine::new((*registry).clone());
-            if let Err(e) = engine.execute(plan).await {
-                log::warn!("Deep service scan failed for {}:{}: {}", host_ip_clone, port, e);
-            }
-        });
-        
+    /// Schedule deep scan for a specific service.
+    /// Autonomous scanning is disabled — all scanning is user-initiated only.
+    async fn schedule_service_scan(&self, _host_ip: &str, _port: u16, _service: &str) -> Result<()> {
         Ok(())
     }
 
@@ -208,66 +166,9 @@ impl DiscoveryManager {
         Ok(())
     }
 
-    /// Execute comprehensive recursive scans for a host
-    async fn execute_recursive_scans(&self, host_ip: &str) -> Result<()> {
-        log::info!("🚀 Executing recursive scans for host: {}", host_ip);
-        
-        let scan_id = Uuid::new_v4();
-        let targets = host_ip.to_string();
-        
-        // 1. Quick port scan with masscan (scan common ports)
-        let masscan_plan = Plan::masscan(
-            scan_id,
-            targets.clone(),
-            "1-65535".to_string(), // Scan all ports
-            Some(1000), // Rate limit
-        )
-        .with_modules(vec!["ip_enrichment".to_string()]);
-        
-        // 2. Deep service scan with nmap on discovered ports
-        let nmap_plan = Plan::nmap(
-            scan_id,
-            targets.clone(),
-            "-".to_string(), // Use ports discovered by masscan
-            vec!["-sV".to_string(), "-sC".to_string()], // Service version and default scripts
-        )
-        .with_modules(vec![
-            "ip_enrichment".to_string(),
-            "service_parsing".to_string(),
-            "mac_enrichment".to_string(),
-            "passive_os".to_string(),
-        ]);
-        
-        // Execute scans via engine
-        // Create engine instance and execute directly
-        let engine = crate::core::engine::Engine::new((*self.registry).clone());
-        
-        // Check if engine is ready (might need to reset if busy)
-        if !engine.is_ready().await {
-            log::debug!("Engine not ready, resetting for recursive scan on {}", host_ip);
-            let _ = engine.reset().await;
-        }
-        
-        // Execute masscan first (quick port discovery)
-        log::info!("📋 Starting masscan recursive scan for {}", host_ip);
-        if let Err(e) = engine.execute(masscan_plan.clone()).await {
-            log::warn!("Masscan recursive scan failed for {}: {}", host_ip, e);
-            // Reset engine if it failed
-            let _ = engine.reset().await;
-        }
-        
-        // Small delay before nmap to let masscan complete
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        
-        // Reset engine for next scan
-        let _ = engine.reset().await;
-        
-        // Execute nmap (deep service scan)
-        log::info!("📋 Starting nmap recursive scan for {}", host_ip);
-        if let Err(e) = engine.execute(nmap_plan).await {
-            log::warn!("Nmap recursive scan failed for {}: {}", host_ip, e);
-        }
-        
+    /// Execute comprehensive recursive scans for a host.
+    /// Autonomous recursive scanning is disabled — all scanning is user-initiated only.
+    async fn execute_recursive_scans(&self, _host_ip: &str) -> Result<()> {
         Ok(())
     }
 

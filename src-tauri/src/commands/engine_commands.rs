@@ -4,17 +4,52 @@
 use crate::core::{engine::Engine, registry::Registry};
 use crate::database::Db;
 use crate::plan::Plan;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 
+#[cfg(unix)]
+use libc;
+
 // Global scan cancellation flag
 static SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
 
-// Global engine instance to persist state between calls
+// Global registry of child scanner PIDs — killed immediately on cancel
 lazy_static::lazy_static! {
+    static ref CHILD_PIDS: Arc<Mutex<HashSet<u32>>> = Arc::new(Mutex::new(HashSet::new()));
     static ref GLOBAL_ENGINE: Arc<Mutex<Option<Engine>>> = Arc::new(Mutex::new(None));
+}
+
+/// Register a child scanner process PID so it can be killed on cancel
+pub async fn register_child_pid(pid: u32) {
+    CHILD_PIDS.lock().await.insert(pid);
+    log::debug!("Registered child scanner PID {}", pid);
+}
+
+/// Remove a PID when its process exits normally
+pub async fn unregister_child_pid(pid: u32) {
+    CHILD_PIDS.lock().await.remove(&pid);
+    log::debug!("Unregistered child scanner PID {}", pid);
+}
+
+/// Kill all registered child scanner processes immediately (SIGKILL)
+async fn kill_all_children() {
+    let pids: Vec<u32> = {
+        let mut guard = CHILD_PIDS.lock().await;
+        let pids: Vec<u32> = guard.iter().copied().collect();
+        guard.clear();
+        pids
+    };
+    for pid in pids {
+        log::info!("Killing scanner child PID {}", pid);
+        #[cfg(unix)]
+        // Safe: we only kill processes we ourselves spawned
+        unsafe { libc::kill(pid as i32, libc::SIGKILL); }
+        #[cfg(not(unix))]
+        log::warn!("Process kill not implemented on this platform (PID {})", pid);
+    }
 }
 
 /// One command to rule them all - unified engine execution
@@ -126,6 +161,8 @@ pub fn cancel_current_scan() {
 pub async fn engine_cancel_scan() -> Result<(), String> {
     log::info!("Engine scan cancellation requested");
     cancel_current_scan();
+    // Immediately SIGKILL all registered child scanner processes
+    kill_all_children().await;
     Ok(())
 }
 

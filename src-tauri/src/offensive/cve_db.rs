@@ -42,7 +42,7 @@ fn ensure_cve_schema(conn: &Connection) -> Result<()> {
             cvss_score          REAL,
             published_date      TEXT,
             last_modified_date  TEXT,
-            references          TEXT,  -- JSON array
+            cve_references      TEXT,  -- JSON array
             cwe                 TEXT,   -- JSON array
             created_at          TEXT NOT NULL,
             updated_at          TEXT NOT NULL
@@ -104,7 +104,7 @@ impl CveDb {
             conn.execute(
                 r#"INSERT INTO cves (
                     id, name, product, version, url, source, severity, exploit_id, exploit, exploit_url,
-                    description, cvss_score, published_date, last_modified_date, references, cwe,
+                    description, cvss_score, published_date, last_modified_date, cve_references, cwe,
                     created_at, updated_at
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17)
                 ON CONFLICT(name) DO UPDATE SET
@@ -120,7 +120,7 @@ impl CveDb {
                     cvss_score = excluded.cvss_score,
                     published_date = excluded.published_date,
                     last_modified_date = excluded.last_modified_date,
-                    references = excluded.references,
+                    cve_references = excluded.cve_references,
                     cwe = excluded.cwe,
                     updated_at = excluded.updated_at"#,
                 params![
@@ -156,7 +156,7 @@ impl CveDb {
             let conn = conn.lock();
             let mut stmt = conn.prepare(
                 r#"SELECT name, product, version, url, source, severity, exploit_id, exploit, exploit_url,
-                          description, cvss_score, published_date, last_modified_date, references, cwe
+                          description, cvss_score, published_date, last_modified_date, cve_references, cwe
                    FROM cves WHERE name = ?1"#,
             )?;
             
@@ -201,7 +201,7 @@ impl CveDb {
             let conn = conn.lock();
             let mut stmt = conn.prepare(
                 r#"SELECT name, product, version, url, source, severity, exploit_id, exploit, exploit_url,
-                          description, cvss_score, published_date, last_modified_date, references, cwe
+                          description, cvss_score, published_date, last_modified_date, cve_references, cwe
                    FROM cves WHERE LOWER(product) LIKE ?1"#,
             )?;
             

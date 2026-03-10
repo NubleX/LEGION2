@@ -1,6 +1,6 @@
 [package]
 name = "legion2"
-version = "0.3.2"
+version = "0.3.3-alpha"
 description = "LEGION2 - Network Penetration Testing Tool"
 authors = ["NubleX / Igor Dunaev"]
 license = "GPL-3.0"
@@ -13,7 +13,7 @@ tauri-build = { version = "2.3.1", features = [] }
 
 [dependencies]
 # App / Tauri
-tauri = { version = "2.7.0", features = [
+tauri = { version = "2.9.5", features = [
     "native-tls",
     "tray-icon",
     "image-png",

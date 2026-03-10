@@ -506,11 +506,13 @@ impl Sink for UiSink {
                     }
                 }
                 ObservationKind::Metric => {
-                    // Handle progress/metrics - check for nmap_output first, then message
+                    // Handle progress/metrics — check scanner-specific output fields first
                     let message = obs
                         .fields
                         .get("nmap_output")
                         .and_then(|v| v.as_str())
+                        .or_else(|| obs.fields.get("masscan_output").and_then(|v| v.as_str()))
+                        .or_else(|| obs.fields.get("masscan_progress").and_then(|v| v.as_str()))
                         .or_else(|| obs.fields.get("message").and_then(|v| v.as_str()))
                         .or_else(|| obs.raw.as_deref())
                         .unwrap_or("Progress update");

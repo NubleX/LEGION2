@@ -73,6 +73,7 @@ fn main() {
             commands::engine_commands::engine_reset,
             commands::engine_commands::engine_get_state,
             commands::host_commands::get_all_hosts,
+            commands::host_commands::get_hosts_in_range,
             commands::host_commands::get_host_details,
             commands::host_commands::get_host_by_ip,
             commands::host_commands::get_host_ports_detailed,
@@ -82,7 +83,6 @@ fn main() {
             commands::host_commands::delete_host,
             commands::host_commands::batch_import_hosts,
             commands::host_commands::update_host_os_detection,
-            commands::host_commands::get_host_by_ip,
             commands::analysis_commands::get_host_vulnerabilities,
             commands::netsniffer_commands::lookup_mac_vendor,
             commands::netsniffer_commands::log_network_artifact,
@@ -103,6 +103,8 @@ fn main() {
             commands::plan_commands::create_plan_with_modules,
             commands::plan_commands::create_massmap_plan,
             commands::plan_commands::create_netsniffer_plan,
+            commands::os_commands::check_scanner_capabilities,
+            commands::os_commands::set_scanner_capabilities,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

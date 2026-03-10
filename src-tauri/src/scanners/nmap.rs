@@ -84,9 +84,8 @@ impl NmapScanner {
         is_local_network || has_privileged_flags || plan.interface.is_some()
     }
 
-    /// Auto-detect the network interface for local 10.x networks
+    /// Auto-detect the network interface for local networks, skipping VPN/virtual interfaces.
     fn detect_local_interface() -> Result<String, String> {
-        // Try to find interface with 10.x IP address
         let output = std::process::Command::new("ip")
             .args(&["-o", "addr", "show"])
             .output()
@@ -94,36 +93,38 @@ impl NmapScanner {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
 
-        // Look for lines with "inet 10." to find the interface
         for line in stdout.lines() {
-            if line.contains("inet 10.") {
-                // Extract interface name (first field after index)
+            if line.contains("inet 10.") || line.contains("inet 192.168.") || line.contains("inet 172.") {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() > 1 {
-                    return Ok(parts[1].to_string());
+                    let iface = parts[1];
+                    // Skip VPN, tunnel, and virtual interfaces
+                    if iface != "lo"
+                        && !iface.contains("wg")
+                        && !iface.contains("tun")
+                        && !iface.contains("docker")
+                        && !iface.contains("virbr")
+                        && !iface.contains("veth")
+                    {
+                        return Ok(iface.to_string());
+                    }
                 }
             }
         }
 
-        Err("No interface with 10.x IP address found".to_string())
+        Err("No suitable local network interface found".to_string())
     }
 
     async fn build_nmap_command(&self, plan: &Plan) -> (Command, String) {
         let nmap_path = get_nmap_binary_path();
 
-        // Check if we need elevated privileges (network scanning typically does)
-        let needs_elevation = Self::needs_root_privileges(plan);
+        // Run nmap directly — privileged access is handled via cap_net_raw (set by Fix Permissions).
+        // If caps are not set and not running as root, nmap gracefully falls back to TCP connect scan.
+        if Self::needs_root_privileges(plan) && !Self::is_running_as_root() {
+            log::info!("nmap: running without root — cap_net_raw required for SYN/ARP scans. Use Fix Permissions if scanning fails.");
+        }
 
-        let mut cmd = if needs_elevation && !Self::is_running_as_root() {
-            // Use pkexec to elevate only nmap, not the entire app
-            log::info!("Elevating nmap privileges using pkexec");
-            let mut elevated_cmd = Command::new("pkexec");
-            elevated_cmd.arg("--disable-internal-agent"); // Don't show GUI prompt in some environments
-            elevated_cmd.arg(&nmap_path);
-            elevated_cmd
-        } else {
-            Command::new(&nmap_path)
-        };
+        let mut cmd = Command::new(&nmap_path);
 
         // Add extra arguments from plan first (these contain scan type flags like -T4, -F, etc.)
         for arg in &plan.extra {
@@ -172,8 +173,8 @@ impl NmapScanner {
             }
         }
 
-        // Don't need --privileged flag when using pkexec for elevation
-        // pkexec already runs nmap as root
+        // Skip reverse DNS resolution — prevents hangs on networks without reverse DNS
+        cmd.arg("-n");
 
         // Enable verbose output for parsing
         cmd.arg("-v");
@@ -200,30 +201,12 @@ impl NmapScanner {
             }
         }
 
-        // Use /tmp for XML output when running with pkexec (root can write there)
-        let scan_dir = if needs_elevation && !Self::is_running_as_root() {
-            // Running with pkexec - use /tmp which is writable by root
-            std::path::PathBuf::from("/tmp/legion2_scans")
-        } else {
-            // Running normally - use local .scans directory
-            std::path::PathBuf::from(".scans")
-        };
+        // Use /tmp for XML output — always writable regardless of user/root
+        let scan_dir = std::env::temp_dir().join("legion2_scans");
 
-        // Ensure scan directory exists and is writable
         std::fs::create_dir_all(&scan_dir).unwrap_or_else(|e| {
             log::warn!("Failed to create scan directory {:?}: {}", scan_dir, e);
         });
-
-        // Set directory permissions to 0777 so both root and user can write
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = std::fs::metadata(&scan_dir) {
-                let mut perms = metadata.permissions();
-                perms.set_mode(0o777);
-                let _ = std::fs::set_permissions(&scan_dir, perms);
-            }
-        }
 
         // Generate XML output file in scan directory
         let xml_file = scan_dir.join(format!(
@@ -235,8 +218,14 @@ impl NmapScanner {
 
         let xml_file_str = xml_file.to_string_lossy().to_string();
 
-        // Add target last
-        cmd.arg(&plan.targets);
+        // Add targets as separate arguments — passing the whole string as one arg causes
+        // nmap to treat it as a single unresolvable hostname and attempt DNS resolution.
+        for target in plan.targets.split(|c: char| c == ' ' || c == ',' || c == '\n') {
+            let t = target.trim();
+            if !t.is_empty() {
+                cmd.arg(t);
+            }
+        }
 
         // Log the full command for debugging
         log::info!("Nmap command: {:?}", cmd);
@@ -261,6 +250,11 @@ impl Source for NmapScanner {
             .stderr(std::process::Stdio::piped())
             .spawn()?;
 
+        // Register PID so cancel kills this process immediately
+        if let Some(pid) = child.id() {
+            engine_commands::register_child_pid(pid).await;
+        }
+
         use futures::stream;
         use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -271,18 +265,19 @@ impl Source for NmapScanner {
         let reader = BufReader::new(stdout);
         let lines = reader.lines();
 
-        // Capture stderr for error logging
+        // Pipe stderr through a channel so nmap progress lines appear in the UI terminal.
+        // nmap writes status lines like "Initiating SYN Stealth Scan at 06:49" to stderr.
         let stderr = child
             .stderr
             .take()
             .ok_or_else(|| anyhow!("Failed to get stderr"))?;
-        let stderr_reader = BufReader::new(stderr);
 
-        // Spawn task to log stderr
+        let (stderr_tx, stderr_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         tokio::spawn(async move {
-            let mut stderr_lines = stderr_reader.lines();
+            let mut stderr_lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = stderr_lines.next_line().await {
-                log::error!("[nmap stderr] {}", line);
+                log::debug!("[nmap stderr] {}", line);
+                let _ = stderr_tx.send(line);
             }
         });
 
@@ -291,20 +286,37 @@ impl Source for NmapScanner {
         let start_time = chrono::Utc::now();
         let mut unique_hosts = std::collections::HashSet::new();
         let mut ports_found = 0u64;
+        let nmap_pid = child.id();
 
         // Use stateful parser with Arc<Mutex<>> to allow sharing across async closure
         use std::sync::{Arc, Mutex};
         let parser = Arc::new(Mutex::new(NmapParser::new(scan_id)));
 
         let stream = stream::unfold(
-            (lines, parser, child, xml_file.clone(), false, Vec::new(), start_time, unique_hosts, ports_found, targets.clone()),
-            move |(mut lines, parser, mut child, xml_file, xml_parsed, mut xml_obs_queue, start_time, mut unique_hosts, mut ports_found, targets)| async move {
+            (lines, parser, child, xml_file.clone(), false, Vec::new(), start_time, unique_hosts, ports_found, targets.clone(), stderr_rx),
+            move |(mut lines, parser, mut child, xml_file, xml_parsed, mut xml_obs_queue, start_time, mut unique_hosts, mut ports_found, targets, mut stderr_rx)| async move {
                 // First, emit any queued XML observations
                 if let Some(queued_obs) = xml_obs_queue.pop() {
-                    return Some((queued_obs, (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone())));
+                    return Some((queued_obs, (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone(), stderr_rx)));
                 }
 
-                match lines.next_line().await {
+                tokio::select! {
+                    biased;
+                    // Emit nmap stderr progress lines (status updates) to the UI terminal
+                    Some(stderr_line) = stderr_rx.recv() => {
+                        let mut fields = serde_json::Map::new();
+                        fields.insert("nmap_output".to_string(), stderr_line.clone().into());
+                        let obs = Observation {
+                            scan_id,
+                            kind: ObservationKind::Metric,
+                            fields,
+                            ts: chrono::Utc::now(),
+                            key: "nmap-progress".to_string(),
+                            raw: Some(stderr_line),
+                        };
+                        return Some((obs, (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone(), stderr_rx)));
+                    }
+                    result = lines.next_line() => match result {
                     Ok(Some(line)) => {
                         if engine_commands::is_scan_cancelled() {
                             log::warn!("Nmap scan cancelled by user");
@@ -321,7 +333,7 @@ impl Source for NmapScanner {
                             };
                             return Some((
                                 cancel_obs,
-                                (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone()),
+                                (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone(), stderr_rx),
                             ));
                         }
                         log::info!("Nmap output line: {}", line);
@@ -357,9 +369,9 @@ impl Source for NmapScanner {
                                 );
                                 // Emit both the service observation and progress
                                 xml_obs_queue.push(observation);
-                                Some((progress_obs, (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone())))
+                                Some((progress_obs, (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone(), stderr_rx)))
                             } else {
-                                Some((observation, (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone())))
+                                Some((observation, (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone(), stderr_rx)))
                             }
                         } else {
                             // Even if no observation was created, continue parsing
@@ -378,7 +390,7 @@ impl Source for NmapScanner {
                                     key: "nmap-output".to_string(),
                                     raw: Some(line),
                                 },
-                                (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone()),
+                                (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone(), stderr_rx),
                             ))
                         }
                     }
@@ -388,6 +400,9 @@ impl Source for NmapScanner {
                         match child.wait().await {
                             Ok(status) => {
                                 log::info!("Nmap process completed with status: {}", status);
+                                if let Some(pid) = nmap_pid {
+                                    engine_commands::unregister_child_pid(pid).await;
+                                }
 
                                 // Delegate XML parsing to xml_parser module
                                 if !xml_parsed {
@@ -436,7 +451,7 @@ impl Source for NmapScanner {
                                                 log::info!("Queued {} XML observations for emission", xml_obs_queue.len());
                                                 return Some((
                                                     completion_obs,
-                                                    (lines, parser, child, xml_file, true, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone()),
+                                                    (lines, parser, child, xml_file, true, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone(), stderr_rx),
                                                 ));
                                             }
                                             Err(e) => {
@@ -462,11 +477,11 @@ impl Source for NmapScanner {
                     }
                     Err(e) => {
                         log::error!("Error reading nmap output: {}", e);
-                        // Kill the child process if there was an error
                         let _ = child.kill().await;
                         None
                     }
-                }
+                    } // end select! result arm match
+                } // end select!
             },
         );
 

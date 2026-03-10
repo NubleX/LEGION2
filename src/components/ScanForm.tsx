@@ -22,7 +22,7 @@ const ScanForm: React.FC<ScanFormProps> = ({ onStartScan, isScanning }) => {
     useNmap: true,
     useMasscan: true,
     extra: '',
-    rate: 1000,
+    rate: 100000,
     detectOS: true, // Enable OS detection by default
     detectVersions: false, // Disable by default - it's slow
     skipPing: false, // Let nmap do host discovery by default - much faster for /24 networks

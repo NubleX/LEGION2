@@ -2,9 +2,12 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 use crate::database::Db;
+use crate::network::network::parse_target_specification;
 use crate::shared::shared::Host;
 use crate::shared::ScanTypes::OSDetection;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::net::IpAddr;
 use std::sync::Arc;
 use tauri::State;
 
@@ -37,6 +40,33 @@ pub struct CveInfo {
     pub severity: String,
     pub cvss_score: Option<f32>,
     pub description: Option<String>,
+}
+
+/// Return only the IPs from the database that fall within the given target specification (CIDR, range, etc.)
+/// Used by massmap to build the nmap follow-up plan targeting only masscan-discovered hosts.
+#[tauri::command]
+pub async fn get_hosts_in_range(
+    targets: String,
+    db: State<'_, Arc<Db>>,
+) -> Result<Vec<String>, String> {
+    let target_ips: HashSet<IpAddr> = parse_target_specification(&targets)
+        .map_err(|e| format!("Failed to parse target specification: {}", e))?
+        .into_iter()
+        .collect();
+
+    let all_hosts = db.inner().get_all_hosts().await.map_err(|e| e.to_string())?;
+
+    let in_range: Vec<String> = all_hosts
+        .into_iter()
+        .filter_map(|h| {
+            h.ip.parse::<IpAddr>()
+                .ok()
+                .filter(|ip| target_ips.contains(ip))
+                .map(|_| h.ip)
+        })
+        .collect();
+
+    Ok(in_range)
 }
 
 #[tauri::command]

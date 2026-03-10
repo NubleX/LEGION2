@@ -2,7 +2,7 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 import { AlertTriangle, Network, Shield, Server } from 'lucide-react';
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import useHostStore, { Host } from '../stores/hostStore';
 import useServiceStore from '../stores/serviceStore';
 

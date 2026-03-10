@@ -173,6 +173,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
       
       const massmapResult = await invoke<{
         use_masscan: boolean;
+        discovery_plan: Plan | null;
         masscan_plan: Plan | null;
         nmap_plan: Plan;
       }>('create_massmap_plan', {
@@ -184,19 +185,25 @@ const useAppStore = create<AppState & AppActions>((set) => {
         detectOs: config.detectOS,
         detectVersions: config.detectVersions,
         skipPing: config.skipPing,
-        rate: config.rate || 1000,
+        rate: config.rate || 100000,
         interface: config.interface || null,
       });
 
-      // Build plans to execute sequentially
+      // IDs used to identify each phase after completion
+      const discoveryPlanId = massmapResult.discovery_plan?.scan_id;
+      const masscanPlanId = massmapResult.masscan_plan?.scan_id;
+
+      // Build 3-phase plan sequence:
+      //   Phase 1: discovery (nmap -sn) — finds alive hosts fast
+      //   Phase 2: masscan  — full port scan on alive hosts only
+      //   Phase 3: nmap     — service/OS detection
       const plans: Plan[] = [];
-      
-      // If masscan is needed, add it first
+      if (massmapResult.use_masscan && massmapResult.discovery_plan) {
+        plans.push(massmapResult.discovery_plan);
+      }
       if (massmapResult.use_masscan && massmapResult.masscan_plan) {
         plans.push(massmapResult.masscan_plan);
       }
-      
-      // Always add nmap plan for detailed scanning
       plans.push(massmapResult.nmap_plan);
 
       set((state) => ({
@@ -267,6 +274,52 @@ const useAppStore = create<AppState & AppActions>((set) => {
               set((state) => ({
                 liveOutput: [...state.liveOutput, `${plan.source_type} scan completed. Starting next phase...`]
               }));
+
+              // Phase handoff: after each phase, narrow the next phase's targets
+              if (i + 1 < plans.length) {
+                try {
+                  // Brief pause to let DbSink finish writing observations
+                  await new Promise(resolve => setTimeout(resolve, 800));
+
+                  if (plan.scan_id === discoveryPlanId) {
+                    // Phase 1 done: narrow masscan (Phase 2) to only alive hosts
+                    const aliveIps = await invoke<string[]>('get_hosts_in_range', { targets });
+                    if (aliveIps.length > 0) {
+                      set((state) => ({
+                        liveOutput: [...state.liveOutput, `Discovery found ${aliveIps.length} alive host(s). Running masscan on discovered hosts only...`]
+                      }));
+                      plans[i + 1].targets = aliveIps.join(' ');
+                    } else {
+                      set((state) => ({
+                        liveOutput: [...state.liveOutput, 'Discovery found no alive hosts. Verify you are on the correct network/interface.']
+                      }));
+                      // Keep original targets — masscan will confirm quickly and nmap will handle gracefully
+                    }
+
+                  } else if (plan.scan_id === masscanPlanId) {
+                    // Phase 2 done: narrow nmap (Phase 3) to alive hosts confirmed by Phase 1.
+                    // NOTE: get_hosts_in_range returns hosts from the DB (populated by Phase 1
+                    // discovery), NOT masscan port count. masscan finding 0 ports is normal when
+                    // all ports are filtered or cap_net_raw is not set — we still run nmap with
+                    // TCP connect (-sT) to get real open/closed/filtered results per host.
+                    const aliveIps = await invoke<string[]>('get_hosts_in_range', { targets });
+                    const nmapPlan = plans[i + 1];
+                    if (aliveIps.length > 0) {
+                      set((state) => ({
+                        liveOutput: [...state.liveOutput, `Running nmap service scan on ${aliveIps.length} alive host(s)...`]
+                      }));
+                      nmapPlan.targets = aliveIps.join(' ');
+                    }
+                    // Always add -Pn: hosts are confirmed alive by Phase 1 ARP scan,
+                    // no need to re-discover them in Phase 3.
+                    if (!nmapPlan.extra.includes('-Pn')) {
+                      nmapPlan.extra = [...nmapPlan.extra, '-Pn'];
+                    }
+                  }
+                } catch (err) {
+                  console.warn('Phase handoff failed, continuing with original targets:', err);
+                }
+              }
             } catch (error) {
               console.error(`Failed to wait for ${plan.source_type} completion:`, error);
               set((state) => ({

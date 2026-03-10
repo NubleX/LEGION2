@@ -240,10 +240,14 @@ pub fn create_netsniffer_plan(
     Ok(plan)
 }
 
-/// Massmap result indicating which plans to execute
+/// Massmap result indicating which plans to execute in order:
+///   Phase 1: discovery_plan  — nmap -sn, finds alive hosts fast (~5s for /24)
+///   Phase 2: masscan_plan    — masscan all 65535 ports on alive hosts only (fast, few hosts)
+///   Phase 3: nmap_plan       — nmap -sV service detection on alive hosts
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MassmapResult {
     pub use_masscan: bool,
+    pub discovery_plan: Option<Plan>,
     pub masscan_plan: Option<Plan>,
     pub nmap_plan: Plan,
 }
@@ -317,54 +321,105 @@ pub async fn create_massmap_plan(
         ip_count > 100 && !has_existing_hosts // For other scans, check existing hosts
     };
     
+    // Phase 1: Fast host discovery (nmap -sn with ARP on local nets) — finds alive IPs in seconds.
+    // The frontend narrows masscan's targets to only these IPs after Phase 1 completes.
+    let mut discovery_plan: Option<Plan> = None;
     let mut masscan_plan: Option<Plan> = None;
-    
+
     if use_masscan {
-        if scan_type == "quick" {
-            log::info!("Massmap: Using masscan for initial discovery ({} IPs, quick scan on large network)", ip_count);
-        } else {
-            log::info!("Massmap: Using masscan for initial discovery ({} IPs, no existing hosts in target range)", ip_count);
+        log::info!("Massmap: {} IPs — using 3-phase discovery → masscan → nmap", ip_count);
+
+        // Each phase gets its own UUID so the frontend can distinguish which phase just finished.
+        let discovery_scan_id = Uuid::new_v4();
+        let masscan_scan_id = Uuid::new_v4();
+
+        // Phase 1 plan: nmap -sn discovers alive hosts, targets overridden by frontend after it runs
+        let mut disc = Plan::discovery(discovery_scan_id, targets.clone());
+        if let Some(iface) = &interface {
+            disc = disc.with_interface(iface.clone());
         }
-        // Create masscan plan for fast discovery - use common ports for speed
-        let discovery_ports = if ports.is_empty() { "1-1000".to_string() } else { ports.clone() };
-        let mut plan = Plan::masscan(scan_id, targets.clone(), discovery_ports, rate);
+        discovery_plan = Some(disc);
+
+        // Phase 2 plan: masscan on alive hosts (targets narrowed by frontend after Phase 1).
+        // Quick scan uses a targeted top-28 port list for speed; comprehensive scans all 65535.
+        // Rate default 100 000 pps — safe for a LAN /24, completes in ~10s.
+        let masscan_rate = rate.or(Some(100_000));
+        let port_range = if scan_type == "quick" {
+            "21,22,23,25,53,80,110,111,135,139,143,161,443,445,993,995,\
+             1883,3306,3389,5353,5432,5900,6443,8080,8443,8883,9100,27017".to_string()
+        } else if ports.is_empty() {
+            "1-65535".to_string()
+        } else {
+            ports.clone()
+        };
+        let mut plan = Plan::masscan(masscan_scan_id, targets.clone(), port_range, masscan_rate);
         if let Some(iface) = &interface {
             plan = plan.with_interface(iface.clone());
         }
-        // Add quiet flag for masscan
-        plan = plan.with_extra_args(vec!["--quiet".to_string()]);
         masscan_plan = Some(plan);
     } else {
-        log::info!("Massmap: Skipping masscan ({} IPs, existing hosts in target range: {})", ip_count, has_existing_hosts);
+        log::info!("Massmap: {} IPs / has existing hosts — using nmap only", ip_count);
     }
-    
-    // Always create nmap plan for detailed scanning
-    // If masscan ran first, nmap will scan the discovered hosts from DB
-    // Otherwise, nmap scans the original targets
-    let nmap_ports = if ports.is_empty() && scan_type == "comprehensive" {
-        "-".to_string() // All ports
+
+    // Phase 3 (or sole phase): nmap service detection.
+    // When masscan ran, the frontend replaces nmap_ports with only the ports masscan found open
+    // (so nmap only scans confirmed-open ports — very fast).
+    // Until that override arrives, use a port spec consistent with the scan type.
+    let nmap_ports = if scan_type == "quick" {
+        // Same targeted list as masscan phase — frontend will narrow further to masscan-open ports
+        "21,22,23,25,53,80,110,111,135,139,143,161,443,445,993,995,\
+         1883,3306,3389,5353,5432,5900,6443,8080,8443,8883,9100,27017".to_string()
+    } else if ports.is_empty() && scan_type == "comprehensive" {
+        "-".to_string()
+    } else if use_masscan {
+        ports.clone() // frontend will narrow to masscan-open ports
     } else {
         ports
     };
-    
+
     let mut nmap_plan = match scan_type.as_str() {
         "quick" => {
-            let mut args = vec!["-T4".to_string()];
-            if detect_os { args.push("-O".to_string()); }
-            if skip_ping { args.push("-Pn".to_string()); }
+            // Network topology + device classification scan — fast, informative, <90s for /24.
+            // -sT: TCP connect scan — does NOT require cap_net_raw/root; always produces
+            //      open/closed/filtered per host rather than "all filtered" from SYN EPERM.
+            // -sV: service version detection for device type hints
+            // --version-intensity 2: fast probing (default is 7)
+            // --host-timeout 30s: cap per-host time so one slow host can't stall the scan
+            // -Pn: skip host discovery (masscan already confirmed alive hosts)
+            // No -O: OS detection is slow; MAC vendor from ARP covers topology needs
+            let args = vec![
+                "-sT".to_string(),
+                "-sV".to_string(),
+                "--version-intensity".to_string(), "2".to_string(),
+                "-T4".to_string(),
+                "--host-timeout".to_string(), "30s".to_string(),
+                "-Pn".to_string(),
+            ];
             Plan::nmap(scan_id, targets, nmap_ports, args)
+                .with_nse_scripts(vec![
+                    "banner".to_string(),
+                    "http-title".to_string(),
+                    "ssh-hostkey".to_string(),
+                ])
         }
         "comprehensive" => {
-            Plan::comprehensive(scan_id, targets, nmap_ports)
+            let mut plan = Plan::comprehensive(scan_id, targets, nmap_ports);
+            if use_masscan {
+                plan = plan.with_extra_args(vec!["-Pn".to_string()]);
+            }
+            plan
         }
         "stealth" => {
-            Plan::nmap(scan_id, targets, nmap_ports, vec!["-sS".to_string(), "-T2".to_string(), "-f".to_string(), "--randomize-hosts".to_string()])
+            Plan::nmap(scan_id, targets, nmap_ports, vec![
+                "-sS".to_string(), "-T2".to_string(), "-f".to_string(),
+                "--randomize-hosts".to_string(),
+            ])
         }
         _ => {
             let mut args = Vec::new();
             if detect_os { args.push("-O".to_string()); }
             if detect_versions { args.push("-sV".to_string()); }
-            if skip_ping { args.push("-Pn".to_string()); }
+            if skip_ping || use_masscan { args.push("-Pn".to_string()); }
             args.extend(extra_args);
             Plan::nmap(scan_id, targets, nmap_ports, args)
         }
@@ -376,6 +431,7 @@ pub async fn create_massmap_plan(
     
     Ok(MassmapResult {
         use_masscan,
+        discovery_plan,
         masscan_plan,
         nmap_plan,
     })

@@ -64,6 +64,29 @@ impl Plan {
         }
     }
 
+    /// Create a fast host-discovery plan using nmap -sn (ARP on local networks, ICMP elsewhere).
+    /// This is Phase 1 of Massmap: find which IPs are alive before masscan port-scans them.
+    pub fn discovery(scan_id: Uuid, targets: String) -> Self {
+        Self {
+            scan_id,
+            targets,
+            ports: String::new(),
+            rate: None,
+            extra: vec![
+                "-sn".to_string(),           // Host discovery only (no port scan)
+                "-n".to_string(),            // Skip reverse DNS
+                "-T5".to_string(),           // Fastest timing template
+                "--min-parallelism".to_string(), "256".to_string(),
+            ],
+            modules: vec![],
+            source_type: "nmap".to_string(), // NmapScanner handles this
+            sink_types: vec!["ui".to_string(), "db".to_string()],
+            interface: None,
+            nse_scripts: None,
+            nse_script_args: None,
+        }
+    }
+
     /// Add extra arguments
     pub fn with_extra_args(mut self, args: Vec<String>) -> Self {
         self.extra.extend(args);

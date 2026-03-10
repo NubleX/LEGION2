@@ -29,6 +29,8 @@ export interface Plan {
   source_type: string;
   sink_types: string[];
   interface?: string;
+  nse_scripts?: string[];
+  nse_script_args?: Record<string, string>;
 }
 
 export type ScanType =
