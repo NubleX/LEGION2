@@ -1,27 +1,35 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
+import { AlertTriangle, Download, Shield, Network, Server } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import useHostStore, { type Host } from '../stores/hostStore';
+import useServiceStore from '../stores/serviceStore';
+import ServiceTable from './ServiceTable';
 
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
+interface PortInfo {
+  number: number;
+  protocol: string;
+  state: string;
+  service?: string;
+  version?: string;
+  banner?: string;
+}
 
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
-
-import React, { useState, useMemo } from 'react';
-import { Shield, AlertTriangle, Download, Search } from 'lucide-react';
-import useScanStore from '../stores/scanStore';
-import { Host } from '../stores/hostStore'
+interface VulnerabilityInfo {
+  id: string;
+  host_ip: string;
+  name: string;
+  severity: string;
+  description: string;
+  cve_id?: string;
+  cvss_score?: number;
+  discovered_at: string;
+  last_seen: string;
+  references?: string[];
+}
 
 interface ResultViewerProps {
   selectedScanId?: string;
@@ -29,36 +37,184 @@ interface ResultViewerProps {
   className?: string;
 }
 
-const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
-  const { scanHistory, getScanById } = useScanStore();
+
+/**
+ * Compares two port arrays to determine if they are different.
+ * Returns true if ports have changed, false if identical.
+ */
+function portsChanged(oldPorts: PortInfo[], newPorts: PortInfo[]): boolean {
+  if (oldPorts.length !== newPorts.length) return true;
   
-  const [selectedTab, setSelectedTab] = useState<'ports' | 'vulnerabilities' | 'details'>('ports');
-  const [severityFilter, setSeverityFilter] = useState<string>('all');
-  const [searchTerm, setSearchTerm] = useState('');
-
-  const currentScan = selectedScanId ? getScanById(selectedScanId) : null;
-  const results = currentScan ? [currentScan] : scanHistory.filter(scan => scan.status === 'completed');
-
-  const allVulnerabilities = useMemo(() => {
-    const vulns = results.flatMap(scan => scan.vulnerabilities);
-    return vulns.filter(vuln => {
-      if (severityFilter !== 'all' && vuln.severity !== severityFilter) return false;
-      if (searchTerm && !vuln.name.toLowerCase().includes(searchTerm.toLowerCase())) return false;
+  // Create a map for quick comparison
+  const oldPortsMap = new Map(oldPorts.map(p => [`${p.number}/${p.protocol}`, p]));
+  
+  for (const newPort of newPorts) {
+    const key = `${newPort.number}/${newPort.protocol}`;
+    const oldPort = oldPortsMap.get(key);
+    
+    if (!oldPort) return true; // New port found
+    
+    // Compare critical fields
+    if (oldPort.state !== newPort.state ||
+        oldPort.service !== newPort.service ||
+        oldPort.version !== newPort.version ||
+        oldPort.banner !== newPort.banner) {
       return true;
-    });
-  }, [results, severityFilter, searchTerm]);
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * Compares two vulnerability arrays to determine if they are different.
+ * Returns true if vulnerabilities have changed, false if identical.
+ */
+function vulnerabilitiesChanged(oldVulns: VulnerabilityInfo[], newVulns: VulnerabilityInfo[]): boolean {
+  if (oldVulns.length !== newVulns.length) return true;
+  
+  // Create a map for quick comparison
+  const oldVulnsMap = new Map(oldVulns.map(v => [v.id || v.name, v]));
+  
+  for (const newVuln of newVulns) {
+    const key = newVuln.id || newVuln.name;
+    const oldVuln = oldVulnsMap.get(key);
+    
+    if (!oldVuln) return true; // New vulnerability found
+    
+    // Compare critical fields
+    if (oldVuln.severity !== newVuln.severity ||
+        oldVuln.cvss_score !== newVuln.cvss_score ||
+        oldVuln.last_seen !== newVuln.last_seen) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHost }) => {
+  // Only subscribe to hosts array, memoize the current host lookup
+  const hosts = useHostStore(state => state.hosts);
+  
+  const [selectedTab, setSelectedTab] = useState<'ports' | 'services' | 'vulnerabilities' | 'details'>('ports');
+  const loadServices = useServiceStore((state) => state.loadServices);
+  const [hostPorts, setHostPorts] = useState<PortInfo[]>([]);
+  const [loadingPorts, setLoadingPorts] = useState(false);
+  const [hostVulnerabilities, setHostVulnerabilities] = useState<VulnerabilityInfo[]>([]);
+  const [loadingVulnerabilities, setLoadingVulnerabilities] = useState(false);
+
+  // Get the host either from selectedHost prop or by selectedScanId (treating it as host ID)
+  // Memoize to avoid recalculating on every render
+  const currentHost = useMemo(() => {
+    return selectedHost || (selectedScanId ? hosts.find(h => h.id === selectedScanId) : null);
+  }, [selectedHost, selectedScanId, hosts]);
+
+  const loadPorts = useCallback((ip: string) => {
+    console.log('[ResultViewer] Loading ports for host:', ip);
+    setLoadingPorts(true);
+    invoke<PortInfo[]>('get_host_ports_detailed', { hostIp: ip })
+      .then(ports => {
+        console.log(`[ResultViewer] Successfully loaded ${ports.length} ports for host ${ip}:`, ports);
+        // Only update state if ports have actually changed
+        setHostPorts(prevPorts => {
+          if (!portsChanged(prevPorts, ports)) {
+            console.log('[ResultViewer] Ports unchanged, skipping state update');
+            return prevPorts;
+          }
+          return ports;
+        });
+        if (ports.length === 0) {
+          console.warn(`[ResultViewer] No ports found for host ${ip} - this may indicate a database issue or the host has no ports`);
+        }
+      })
+      .catch(err => {
+        console.error(`[ResultViewer] Failed to load ports for host ${ip}:`, err);
+        setHostPorts([]);
+      })
+      .finally(() => setLoadingPorts(false));
+  }, []);
+
+  // Load ports and services when host changes
+  useEffect(() => {
+    if (currentHost?.ip) {
+      loadPorts(currentHost.ip);
+      loadServices(currentHost.ip).catch(console.error);
+    } else {
+      setHostPorts([]);
+    }
+  }, [currentHost?.ip, loadServices]);
+
+  // Refresh ports when notified of updates for the selected host
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      unlisten = await listen<string>('refresh_host_ports', (event) => {
+        if (currentHost?.ip && event.payload === currentHost.ip) {
+          console.log('[ResultViewer] Received refresh_host_ports event for', currentHost.ip);
+          loadPorts(currentHost.ip);
+        }
+      });
+    })();
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, [currentHost?.ip]);
+
+  // Periodic refresh to fetch updated data from DB (every 27 seconds while a host is selected)
+  useEffect(() => {
+    if (!currentHost?.ip) {
+      return;
+    }
+
+    const hostIp = currentHost.ip;
+    console.log('[ResultViewer] Starting periodic refresh for host', hostIp);
+    const intervalId = setInterval(() => {
+      console.log('[ResultViewer] Periodic refresh: fetching ports for', hostIp);
+      loadPorts(hostIp);
+    }, 27000); // Refresh every 27 seconds
+
+    return () => {
+      console.log('[ResultViewer] Stopping periodic refresh for host', hostIp);
+      clearInterval(intervalId);
+    };
+  }, [currentHost?.ip, loadPorts]);
+
+  // Load vulnerabilities when host changes
+  useEffect(() => {
+    if (currentHost?.ip) {
+      console.log('Loading vulnerabilities for host:', currentHost.ip);
+      setLoadingVulnerabilities(true);
+      invoke<VulnerabilityInfo[]>('get_host_vulnerabilities', { hostIp: currentHost.ip })
+        .then(vulns => {
+          console.log('Loaded vulnerabilities:', vulns);
+          // Only update state if vulnerabilities have actually changed
+          setHostVulnerabilities(prevVulns => {
+            if (!vulnerabilitiesChanged(prevVulns, vulns)) {
+              console.log('[ResultViewer] Vulnerabilities unchanged, skipping state update');
+              return prevVulns;
+            }
+            return vulns;
+          });
+        })
+        .catch(err => {
+          console.error('Failed to load vulnerabilities:', err);
+          setHostVulnerabilities([]);
+        })
+        .finally(() => setLoadingVulnerabilities(false));
+    } else {
+      setHostVulnerabilities([]);
+    }
+  }, [currentHost?.ip]);
+
+  const allVulnerabilities = hostVulnerabilities;
 
   const allPorts = useMemo(() => {
-    const ports = results.flatMap(scan => scan.open_ports);
-    return ports.filter(port => {
-      if (searchTerm) {
-        const searchLower = searchTerm.toLowerCase();
-        return port.service?.toLowerCase().includes(searchLower) || 
-               port.number.toString().includes(searchTerm);
-      }
-      return true;
-    });
-  }, [results, searchTerm]);
+    if (!hostPorts) return [];
+    return hostPorts;
+  }, [hostPorts]);
 
   const getSeverityColor = (severity: string) => {
     switch (severity) {
@@ -70,23 +226,15 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
     }
   };
 
-  const getPortStateColor = (state: string) => {
-    switch (state) {
-      case 'open': return 'text-green-400';
-      case 'closed': return 'text-red-400';
-      case 'filtered': return 'text-yellow-400';
-      default: return 'text-gray-400';
-    }
-  };
 
   const exportResults = () => {
     const data = {
-      scan_results: results,
+      host: currentHost,
       vulnerabilities: allVulnerabilities,
       ports: allPorts,
       export_time: new Date().toISOString()
     };
-    
+
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -96,12 +244,12 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
     URL.revokeObjectURL(url);
   };
 
-  if (results.length === 0) {
+  if (!currentHost) {
     return (
       <div className="bg-gray-900 p-6 rounded-lg border border-gray-700">
         <div className="text-center py-8 text-gray-400">
           <Shield className="w-12 h-12 mx-auto mb-2 opacity-50" />
-          <p>No scan results available. Complete a scan to see results here.</p>
+          <p>No host selected. Select a host to see results here.</p>
         </div>
       </div>
     );
@@ -109,13 +257,25 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
 
   return (
     <div className="bg-gray-900 rounded-lg border border-gray-700">
-      {/* Header */}
-      <div className="p-6 border-b border-gray-700">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold text-white flex items-center gap-2">
-            <Shield className="w-5 h-5 text-yellow-400" />
-            Scan Results
-          </h2>
+      {/* Compact Header with Tabs and Export */}
+      <div className="p-4 border-b border-gray-700">
+        <div className="flex items-center justify-between">
+          {/* Tabs */}
+          <div className="flex space-x-1 bg-gray-800 rounded-lg p-1">
+            {(['ports', 'services', 'vulnerabilities', 'details'] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setSelectedTab(tab)}
+                className={`px-4 py-2 rounded transition-colors capitalize ${selectedTab === tab
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-400 hover:text-white hover:bg-gray-700'
+                  }`}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+          
           <button
             onClick={exportResults}
             className="flex items-center gap-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors"
@@ -124,70 +284,32 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
             Export
           </button>
         </div>
-
-        {/* Tabs */}
-        <div className="flex space-x-1 bg-gray-800 rounded-lg p-1">
-          {(['ports', 'vulnerabilities', 'details'] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setSelectedTab(tab)}
-              className={`px-4 py-2 rounded transition-colors capitalize ${
-                selectedTab === tab
-                  ? 'bg-blue-600 text-white'
-                  : 'text-gray-400 hover:text-white hover:bg-gray-700'
-              }`}
-            >
-              {tab}
-            </button>
-          ))}
-        </div>
       </div>
 
       {/* Content */}
       <div className="p-6">
-        {/* Search and Filter */}
-        <div className="flex gap-4 mb-6">
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              type="text"
-              placeholder={`Search ${selectedTab}...`}
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 bg-gray-800 border border-gray-600 rounded text-white focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
 
-          {selectedTab === 'vulnerabilities' && (
-            <select
-              value={severityFilter}
-              onChange={(e) => setSeverityFilter(e.target.value)}
-              className="px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="all">All Severities</option>
-              <option value="critical">Critical</option>
-              <option value="high">High</option>
-              <option value="medium">Medium</option>
-              <option value="low">Low</option>
-            </select>
-          )}
-        </div>
 
         {/* Tab Content */}
         {selectedTab === 'ports' && (
           <div className="space-y-4">
-            {allPorts.length === 0 ? (
-              <p className="text-gray-400 text-center py-8">No open ports found.</p>
+            {loadingPorts ? (
+              <p className="text-gray-400 text-center py-8">Loading ports...</p>
+            ) : allPorts.length === 0 ? (
+              <p className="text-gray-400 text-center py-8">No ports found.</p>
             ) : (
               <div className="grid gap-4">
-                {allPorts.map((port, index) => (
+                {allPorts.map((port: PortInfo, index: number) => (
                   <div key={`${port.number}-${port.protocol}-${index}`} className="bg-gray-800 p-4 rounded border border-gray-600">
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-3">
                         <span className="text-lg font-mono text-white">
                           {port.number}/{port.protocol}
                         </span>
-                        <span className={`font-medium ${getPortStateColor(port.state)}`}>
+                        <span className={`px-2 py-1 text-white text-xs rounded font-medium ${
+                          port.state === 'open' ? 'bg-green-600' : 
+                          port.state === 'closed' ? 'bg-red-600' : 'bg-gray-600'
+                        }`}>
                           {port.state}
                         </span>
                         {port.service && (
@@ -196,24 +318,22 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
                           </span>
                         )}
                       </div>
-                      {port.confidence && (
-                        <span className="text-sm text-gray-400">
-                          {port.confidence}% confidence
-                        </span>
-                      )}
+                      <Network className="w-4 h-4 text-blue-400" />
                     </div>
 
-                    {port.version && (
-                      <div className="text-sm text-gray-300 mb-2">
-                        Version: {port.version}
-                      </div>
-                    )}
-
-                    {port.banner && (
-                      <div className="bg-gray-900 p-2 rounded font-mono text-xs text-gray-300">
-                        {port.banner}
-                      </div>
-                    )}
+                    <div className="space-y-2">
+                      {port.service && (
+                        <div className="text-sm text-gray-300">
+                          <span className="text-gray-400">Service:</span> {port.service}
+                          {port.version && <span className="text-gray-400"> v{port.version}</span>}
+                        </div>
+                      )}
+                      {port.banner && (
+                        <div className="text-sm text-gray-300">
+                          <span className="text-gray-400">Banner:</span> <code className="bg-gray-900 px-1 rounded">{port.banner}</code>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -221,13 +341,30 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
           </div>
         )}
 
+        {selectedTab === 'services' && (
+          <div className="space-y-4">
+            {currentHost?.ip ? (
+              <ServiceTable
+                hostIp={currentHost.ip}
+                onServiceSelect={(service) => {
+                  console.log('Service selected:', service);
+                }}
+              />
+            ) : (
+              <p className="text-gray-400 text-center py-8">No host selected.</p>
+            )}
+          </div>
+        )}
+
         {selectedTab === 'vulnerabilities' && (
           <div className="space-y-4">
-            {allVulnerabilities.length === 0 ? (
+            {loadingVulnerabilities ? (
+              <p className="text-gray-400 text-center py-8">Loading vulnerabilities...</p>
+            ) : allVulnerabilities.length === 0 ? (
               <p className="text-gray-400 text-center py-8">No vulnerabilities found.</p>
             ) : (
               <div className="grid gap-4">
-                {allVulnerabilities.map((vuln, index) => (
+                {allVulnerabilities.map((vuln: VulnerabilityInfo, index: number) => (
                   <div key={`${vuln.name}-${index}`} className={`p-4 rounded border ${getSeverityColor(vuln.severity)}`}>
                     <div className="flex items-start justify-between mb-3">
                       <div>
@@ -241,6 +378,11 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
                               CVSS: {vuln.cvss_score}
                             </span>
                           )}
+                          {vuln.cve_id && (
+                            <span className="text-sm text-blue-400">
+                              {vuln.cve_id}
+                            </span>
+                          )}
                         </div>
                       </div>
                       <AlertTriangle className="w-5 h-5 text-yellow-400" />
@@ -251,7 +393,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
                     {vuln.references && vuln.references.length > 0 && (
                       <div className="space-y-1">
                         <span className="text-xs font-medium text-gray-400">References:</span>
-                        {vuln.references.map((ref, refIndex) => (
+                        {vuln.references.map((ref: string, refIndex: number) => (
                           <div key={refIndex} className="text-xs text-blue-400 hover:text-blue-300">
                             <a href={ref} target="_blank" rel="noopener noreferrer">
                               {ref}
@@ -268,63 +410,90 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId }) => {
         )}
 
         {selectedTab === 'details' && (
-          <div className="space-y-6">
-            {results.map((scan) => (
-              <div key={scan.id} className="bg-gray-800 p-4 rounded border border-gray-600">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-white">
-                    {scan.scan_type.toUpperCase()} Scan
+          <div className="space-y-4">
+            {currentHost ? (
+              <div className="bg-gray-800 p-6 rounded border border-gray-600">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-lg font-semibold text-white flex items-center">
+                    <Server className="w-5 h-5 mr-2 text-blue-400" />
+                    Host Summary
                   </h3>
                   <span className="text-sm text-gray-400">
-                    {scan.end_time && new Date(scan.end_time).toLocaleString()}
+                    Last seen: {currentHost.last_seen ? new Date(currentHost.last_seen).toLocaleString() : 'Unknown'}
                   </span>
                 </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                  <div className="bg-gray-900 p-3 rounded">
-                    <div className="text-sm text-gray-400">Target</div>
-                    <div className="font-mono text-white">{scan.target_id}</div>
+                <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">IP Address</span>
+                    <span className="font-mono text-white">{currentHost.ip}</span>
                   </div>
-                  <div className="bg-gray-900 p-3 rounded">
-                    <div className="text-sm text-gray-400">Duration</div>
-                    <div className="text-white">
-                      {scan.end_time ? 
-                        `${Math.round((new Date(scan.end_time).getTime() - new Date(scan.start_time).getTime()) / 1000)}s` :
-                        'In progress'
-                      }
-                    </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">Hostname</span>
+                    <span className="text-white">{currentHost.hostname || 'Unknown'}</span>
                   </div>
-                  <div className="bg-gray-900 p-3 rounded">
-                    <div className="text-sm text-gray-400">Open Ports</div>
-                    <div className="text-green-400 font-semibold">{scan.open_ports.length}</div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">Vendor</span>
+                    <span className="text-white">{currentHost.vendor || 'Unknown'}</span>
                   </div>
-                  <div className="bg-gray-900 p-3 rounded">
-                    <div className="text-sm text-gray-400">Vulnerabilities</div>
-                    <div className="text-red-400 font-semibold">{scan.vulnerabilities.length}</div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">Status</span>
+                    <span className={`font-semibold ${currentHost.status === 'up' ? 'text-green-400' : currentHost.status === 'down' ? 'text-red-400' : 'text-yellow-400'}`}>
+                      {currentHost.status ? currentHost.status.toUpperCase() : 'UNKNOWN'}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">MAC Address</span>
+                    <span className="font-mono text-white">{currentHost.mac_address || 'Unknown'}</span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">OS Name</span>
+                    <span className="text-white">{currentHost.os_name || 'Unknown'}</span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">OS Family</span>
+                    <span className="text-white">{currentHost.os_family || 'Unknown'}</span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">OS Accuracy</span>
+                    <span className="text-white">
+                      {currentHost.os_accuracy ? `${currentHost.os_accuracy}%` : 'Unknown'}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">Total Ports</span>
+                    <span className="text-white font-semibold">{currentHost.port_count ?? hostPorts.length}</span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">Open Ports</span>
+                    <span className="text-green-400 font-semibold">{hostPorts.filter(p => p.state === 'open').length}</span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">Services</span>
+                    <span className="text-blue-400 font-semibold">{hostPorts.filter(p => p.service).length}</span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-b border-gray-700">
+                    <span className="text-gray-400">Vulnerabilities</span>
+                    <span className="text-red-400 font-semibold">{currentHost.vulnerability_count ?? allVulnerabilities.length}</span>
                   </div>
                 </div>
-
-                {scan.error_message && (
-                  <div className="bg-red-900/20 border border-red-500/30 p-3 rounded mb-4">
-                    <div className="flex items-center gap-2 text-red-400">
-                      <AlertTriangle className="w-4 h-4" />
-                      <span className="text-sm">{scan.error_message}</span>
-                    </div>
-                  </div>
-                )}
-
-                {scan.raw_output && (
-                  <details className="mt-4">
-                    <summary className="cursor-pointer text-sm text-gray-400 hover:text-white">
-                      Show Raw Output
-                    </summary>
-                    <div className="mt-2 bg-gray-900 p-3 rounded font-mono text-xs text-gray-300 overflow-x-auto">
-                      <pre>{scan.raw_output}</pre>
-                    </div>
-                  </details>
-                )}
               </div>
-            ))}
+            ) : (
+              <div className="text-gray-400 text-center py-8">
+                No target selected for details view.
+              </div>
+            )}
           </div>
         )}
       </div>

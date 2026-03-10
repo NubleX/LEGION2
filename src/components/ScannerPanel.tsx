@@ -1,145 +1,149 @@
-// LEGION2 - A free and open-source penetration testing tool.
-// Copyright (c) 2025 NubleX / Igor Dunaev
+/* LEGION2 - A free and open-source penetration testing tool.
+   Copyright (c) 2025 NubleX / Igor Dunaev */
 
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
 
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
-
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { useLegionStore } from '../stores/legionStore';
-import useHostStore, { Host } from '../stores/hostStore';
-import ScanForm from './ScanForm';
-import ToolOutput from './ToolOutput';
-import NetworkMap from './NetworkMap';
-import HostTable from './HostTable';
-import ResultViewer from './ResultViewer';
-import ScanProgress from './ScanProgress';
-import { 
-  Shield, 
-  Activity, 
-  Clock, 
-  Database,
-  Zap,
-  Server,
+import { invoke } from '@tauri-apps/api/core';
+import {
+  Activity,
   AlertTriangle,
   CheckCircle,
+  Clock,
+  Database,
+  Network,
+  Server,
+  Shield,
+  Target,
   Wifi,
-  Target
+  Wrench,
+  Zap
 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import useAppStore from '../stores/appStore';
+import useHostStore, { type Host } from '../stores/hostStore';
+import HostTable from './HostTable';
+import NetworkMap from './NetworkMap';
+import ResultViewer from './ResultViewer';
+import ScanForm from './ScanForm';
+
+interface CapabilityStatus {
+  masscan_ok: boolean;
+  nmap_ok: boolean;
+  status: string;
+  platform: string;
+}
 
 const EnhancedScannerPanel = () => {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'hosts-results'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'scanner' | 'topology' | 'hosts-results'>('scanner');
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
   const [scanDuration, setScanDuration] = useState(0);
-  const [liveOutput, setLiveOutput] = useState<string[]>([]);
-  const [scanStats, setScanStats] = useState({
-    hostsDiscovered: 0,
-    portsFound: 0,
-    vulnerabilities: 0
-  });
-  
+  const [capStatus, setCapStatus] = useState<CapabilityStatus | null>(null);
+  const [capFixing, setCapFixing] = useState(false);
+  const [capDismissed, setCapDismissed] = useState(false);
+  const { hosts, setHosts } = useHostStore();
+  const terminalRef = useRef<HTMLDivElement>(null);
+
+
   const {
-    currentScan,
-    isScanning,
-    startScan
-  } = useLegionStore();
+    scanInProgress,
+    liveOutput,
+    metrics,
+    startScan,
+    resetScan,
+    startNetsniffer,
+  } = useAppStore();
 
-  const { hosts, loadHosts } = useHostStore();
-  
-  const scanTimeRef = useRef<number>(0);
+  // Load existing hosts from database on mount
+  useEffect(() => {
+    const loadExistingHosts = async () => {
+      try {
+        console.log('Loading existing hosts from database...');
+        const existingHosts = await invoke<Host[]>('get_all_hosts');
+        console.log('Loaded existing hosts:', existingHosts);
+        if (existingHosts && existingHosts.length > 0) {
+          setHosts(existingHosts);
+          console.log('Host store updated with', existingHosts.length, 'hosts');
+        }
+      } catch (error) {
+        console.error('Failed to load existing hosts:', error);
+      }
+    };
 
-  // Enhanced scan duration tracking
+    loadExistingHosts();
+  }, []);
+
+  // Check scanner capabilities on mount (Linux only — no-op on other platforms)
+  useEffect(() => {
+    invoke<CapabilityStatus>('check_scanner_capabilities')
+      .then(setCapStatus)
+      .catch(() => {}); // Non-fatal — silently skip if unavailable
+  }, []);
+
+  const handleFixCapabilities = async () => {
+    setCapFixing(true);
+    try {
+      await invoke('set_scanner_capabilities');
+      // Re-check after fix
+      const updated = await invoke<CapabilityStatus>('check_scanner_capabilities');
+      setCapStatus(updated);
+    } catch (err) {
+      console.error('Failed to set capabilities:', err);
+    } finally {
+      setCapFixing(false);
+    }
+  };
+
+  // Simple scan duration tracking
   useEffect(() => {
     let interval: NodeJS.Timeout;
-    if (isScanning && currentScan) {
-      scanTimeRef.current = Date.now();
+    let startTime = Date.now();
+
+    if (scanInProgress) {
       interval = setInterval(() => {
-        setScanDuration(Math.floor((Date.now() - scanTimeRef.current) / 1000));
+        setScanDuration(Math.floor((Date.now() - startTime) / 1000));
       }, 1000);
     } else {
       setScanDuration(0);
     }
+
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [isScanning, currentScan]);
+  }, [scanInProgress]);
 
-  // Calculate real-time statistics
+  // Auto-scroll terminal to bottom when new output arrives
   useEffect(() => {
-    setScanStats({
-      hostsDiscovered: hosts?.length || 0,
-      portsFound: hosts?.reduce((total, host) => total + (host.port_count || 0), 0) || 0,
-      vulnerabilities: hosts?.reduce((total, host) => total + (host.vulnerability_count || 0), 0) || 0
-    });
-  }, [hosts]);
-
-  // Set up direct scan output listener
-  useEffect(() => {
-    console.log('ScannerPanel useEffect: Setting up scan output listener');
-    let unlisten: (() => void) | null = null;
-
-    const setupListener = async () => {
-      try {
-        const { scanAPI } = await import('../services/tauriApi');
-        console.log('ScannerPanel: About to call listenToScanEvents');
-        unlisten = await scanAPI.listenToScanEvents((event) => {
-          if (event.event_type === 'ScanOutput' && event.data?.content) {
-            console.log('ScannerPanel: Received scan output event:', event.data.content);
-            setLiveOutput(prev => [...prev, event.data.content]);
-          }
-        });
-        console.log('ScannerPanel: Event listener setup complete');
-      } catch (error) {
-        console.error('Failed to setup scan output listener:', error);
-      }
-    };
-
-    setupListener();
-
-    return () => {
-      console.log('ScannerPanel useEffect cleanup: Removing listener');
-      if (unlisten) {
-        unlisten();
-      }
-    };
-  }, []);
-
-  // Clear live output when starting new scan
-  useEffect(() => {
-    if (isScanning && currentScan) {
-      setLiveOutput([`Starting scan for ${currentScan.targetIp}...`]);
+    if (terminalRef.current) {
+      // Use requestAnimationFrame to ensure DOM updates are complete
+      requestAnimationFrame(() => {
+        if (terminalRef.current) {
+          terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+        }
+      });
     }
-  }, [isScanning, currentScan]);
+  }, [liveOutput]);
+
+  // Also scroll when switching to scanner tab during an active scan
+  useEffect(() => {
+    if (activeTab === 'scanner' && terminalRef.current) {
+      requestAnimationFrame(() => {
+        if (terminalRef.current) {
+          terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+        }
+      });
+    }
+  }, [activeTab]);
+
+  // Hosts are provided by the host store via obs:host events
 
   // For Live Output, we'll use a simple terminal-like display instead of ToolOutput
 
   const handleStartScan = useCallback(async (config: any) => {
-    console.log('handleStartScan called with config:', config);
     try {
-      console.log('Calling startScan from store...');
       await startScan(config);
-      console.log('startScan completed successfully');
-      // Refresh hosts after scan starts
-      if (loadHosts) {
-        await loadHosts();
-      }
     } catch (error) {
       console.error('Failed to start scan:', error);
     }
-  }, [startScan, loadHosts]);
+  }, [startScan]);
 
   const handleHostSelect = useCallback((host: Host) => {
     setSelectedHost(host);
@@ -152,42 +156,75 @@ const EnhancedScannerPanel = () => {
   };
 
   const getScanStatusIcon = () => {
-    if (isScanning) return <Activity className="w-5 h-5 text-yellow-400 animate-pulse" />;
-    if (currentScan) return <CheckCircle className="w-5 h-5 text-green-400" />;
+    if (scanInProgress) return <Activity className="w-5 h-5 text-yellow-400 animate-pulse" />;
+    if (hosts.length > 0) return <CheckCircle className="w-5 h-5 text-green-400" />;
     return <Shield className="w-5 h-5 text-blue-400" />;
   };
 
   const getScanStatusText = () => {
-    if (isScanning) return 'Scanning...';
-    if (currentScan) return 'Scan Complete';
-    return 'Ready';
+    if (scanInProgress) return 'Scanning...';
+    if (hosts.length > 0) return 'Scan Complete - Ready for New Scan';
+    return 'Ready to Start';
   };
 
   return (
     <div className="h-screen w-screen bg-gray-950 flex flex-col">
-      {/* Enhanced Header with Real-time Stats */}
+      {/* Compact Header with All Statistics */}
       <div className="flex-shrink-0 bg-gray-800 border-b border-gray-700">
-        <div className="p-4">
-          <div className="flex items-center justify-between mb-4">
+        <div className="px-4 py-2">
+          <div className="flex items-center justify-between">
+            {/* Logo and Title */}
             <div className="flex items-center space-x-3">
-              <Shield className="w-8 h-8 text-blue-400" />
-              <div>
-                <h1 className="text-xl font-bold text-white">LEGION2</h1>
-                <p className="text-sm text-gray-400">Advanced Network Scanner</p>
-              </div>
+              <Shield className="w-6 h-6 text-blue-400" />
+              <h1 className="text-lg font-bold text-white">LEGION2</h1>
             </div>
-            
-            <div className="flex items-center space-x-6">
-              {/* Real-time Status */}
+
+            {/* Comprehensive Statistics */}
+            <div className="flex items-center space-x-4">
+              <div className="flex items-center space-x-2">
+                <Server className="w-4 h-4 text-green-400" />
+                <span className="text-sm text-white font-medium">{hosts.length}</span>
+                <span className="text-xs text-gray-400">hosts</span>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <Wifi className="w-4 h-4 text-blue-400" />
+                <span className="text-sm text-white font-medium">{metrics.services_discovered}</span>
+                <span className="text-xs text-gray-400">services</span>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <Network className="w-4 h-4 text-purple-400" />
+                <span className="text-sm text-white font-medium">
+                  {hosts.reduce((total, host) => total + (host.port_count || 0), 0)}
+                </span>
+                <span className="text-xs text-gray-400">ports</span>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <AlertTriangle className="w-4 h-4 text-orange-400" />
+                <span className="text-sm text-white font-medium">
+                  {hosts.reduce((total, host) => total + (host.vulnerability_count || 0), 0)}
+                </span>
+                <span className="text-xs text-gray-400">vulns</span>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <Activity className="w-4 h-4 text-blue-400" />
+                <span className="text-sm text-white font-medium">{metrics.processing_rate.toFixed(1)}/s</span>
+                <span className="text-xs text-gray-400">rate</span>
+              </div>
+
+              {/* Status */}
               <div className="flex items-center space-x-2">
                 {getScanStatusIcon()}
                 <span className="text-sm font-medium text-white">
                   {getScanStatusText()}
                 </span>
               </div>
-              
-              {/* Scan Duration */}
-              {isScanning && (
+
+              {/* Duration */}
+              {scanInProgress && (
                 <div className="flex items-center space-x-2">
                   <Clock className="w-4 h-4 text-blue-400" />
                   <span className="text-sm text-white font-mono">
@@ -195,119 +232,158 @@ const EnhancedScannerPanel = () => {
                   </span>
                 </div>
               )}
+
+              {/* Ready for New Scan Button */}
+              {!scanInProgress && hosts.length > 0 && (
+                <button
+                  onClick={() => {
+                    setActiveTab('scanner');
+                    resetScan();
+                  }}
+                  className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-sm rounded transition-colors flex items-center gap-1"
+                >
+                  <Target className="w-3 h-3" />
+                  Ready for New Scan
+                </button>
+              )}
             </div>
           </div>
 
-          {/* Real-time Statistics Bar */}
-          <div className="grid grid-cols-3 gap-4 mb-4">
-            <div className="bg-gray-700 rounded-lg p-3 flex items-center space-x-3">
-              <Server className="w-5 h-5 text-green-400" />
-              <div>
-                <div className="text-lg font-bold text-white">{scanStats.hostsDiscovered}</div>
-                <div className="text-xs text-gray-400">Hosts Discovered</div>
+          {/* Progress Bar (when scanning) */}
+          {scanInProgress && (
+            <div className="mt-2">
+              <div className="bg-gray-700 rounded-full h-1">
+                <div className="bg-blue-500 h-1 rounded-full animate-pulse" style={{ width: '100%' }} />
               </div>
             </div>
-            <div className="bg-gray-700 rounded-lg p-3 flex items-center space-x-3">
-              <Wifi className="w-5 h-5 text-blue-400" />
-              <div>
-                <div className="text-lg font-bold text-white">{scanStats.portsFound}</div>
-                <div className="text-xs text-gray-400">Open Ports</div>
-              </div>
-            </div>
-            <div className="bg-gray-700 rounded-lg p-3 flex items-center space-x-3">
-              <AlertTriangle className="w-5 h-5 text-red-400" />
-              <div>
-                <div className="text-lg font-bold text-white">{scanStats.vulnerabilities}</div>
-                <div className="text-xs text-gray-400">Vulnerabilities</div>
-              </div>
-            </div>
-          </div>
+          )}
+        </div>
+      </div>
 
-          {/* Tab Navigation */}
-          <div className="flex space-x-1 bg-gray-900 rounded-lg p-1">
+      {/* Capability Warning Banner */}
+      {capStatus && capStatus.platform === 'linux' && (!capStatus.masscan_ok || !capStatus.nmap_ok) && !capDismissed && (
+        <div className="flex-shrink-0 bg-amber-900 border-b border-amber-700 px-4 py-2 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-amber-200 text-sm">
+            <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+            <span>
+              Raw socket capabilities missing —{' '}
+              <span className="font-mono text-amber-100">
+                {!capStatus.masscan_ok && 'masscan'}
+                {!capStatus.masscan_ok && !capStatus.nmap_ok && ' & '}
+                {!capStatus.nmap_ok && 'nmap'}
+              </span>{' '}
+              may require root or elevated permissions to scan.
+            </span>
+          </div>
+          <div className="flex items-center gap-2 ml-4 flex-shrink-0">
             <button
-              onClick={() => setActiveTab('dashboard')}
-              className={`px-4 py-2 rounded-md transition-all duration-200 flex items-center space-x-2 ${
-                activeTab === 'dashboard'
-                  ? 'bg-blue-600 text-white shadow-lg'
-                  : 'text-gray-400 hover:text-white hover:bg-gray-700'
-              }`}
+              onClick={handleFixCapabilities}
+              disabled={capFixing}
+              className="flex items-center gap-1 px-3 py-1 bg-amber-600 hover:bg-amber-500 disabled:bg-amber-800 text-white text-sm rounded transition-colors"
             >
-              <Zap className="w-4 h-4" />
-              <span>Scanner Dashboard</span>
+              <Wrench className="w-3 h-3" />
+              {capFixing ? 'Fixing...' : 'Fix Permissions'}
             </button>
             <button
-              onClick={() => setActiveTab('hosts-results')}
-              className={`px-4 py-2 rounded-md transition-all duration-200 flex items-center space-x-2 ${
-                activeTab === 'hosts-results'
-                  ? 'bg-blue-600 text-white shadow-lg'
-                  : 'text-gray-400 hover:text-white hover:bg-gray-700'
-              }`}
+              onClick={() => setCapDismissed(true)}
+              className="px-2 py-1 text-amber-400 hover:text-amber-200 text-sm"
             >
-              <Database className="w-4 h-4" />
-              <span>Hosts & Results</span>
-              {hosts && hosts.length > 0 && (
-                <span className="bg-blue-500 text-white text-xs px-2 py-0.5 rounded-full">
-                  {hosts.length}
-                </span>
-              )}
+              ✕
             </button>
           </div>
         </div>
+      )}
 
-        {/* Enhanced Progress Bar (when scanning) */}
-        {currentScan && isScanning && (
-          <div className="px-4 pb-4">
-            <ScanProgress showDetails={true} />
-          </div>
-        )}
+      {/* Capability OK Banner (briefly shown after fix) */}
+      {capStatus && capStatus.platform === 'linux' && capStatus.masscan_ok && capStatus.nmap_ok && capFixing === false && !capDismissed && (
+        <div className="flex-shrink-0 bg-green-900 border-b border-green-700 px-4 py-1 flex items-center gap-2 text-green-300 text-sm">
+          <CheckCircle className="w-4 h-4 text-green-400" />
+          <span>Scanner capabilities verified — masscan &amp; nmap have raw socket access.</span>
+          <button onClick={() => setCapDismissed(true)} className="ml-auto px-2 py-0.5 text-green-500 hover:text-green-300 text-sm">✕</button>
+        </div>
+      )}
+
+      {/* Tab Navigation */}
+      <div className="flex-shrink-0 bg-gray-900 border-b border-gray-700">
+        <div className="flex space-x-1 p-2">
+          <button
+            onClick={() => setActiveTab('scanner')}
+            className={`px-4 py-2 rounded-md transition-all duration-200 flex items-center space-x-2 ${activeTab === 'scanner'
+              ? 'bg-blue-600 text-white shadow-lg'
+              : 'text-gray-400 hover:text-white hover:bg-gray-700'
+              }`}
+          >
+            <Zap className="w-4 h-4" />
+            <span>Scanner</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('topology')}
+            className={`px-4 py-2 rounded-md transition-all duration-200 flex items-center space-x-2 ${activeTab === 'topology'
+              ? 'bg-blue-600 text-white shadow-lg'
+              : 'text-gray-400 hover:text-white hover:bg-gray-700'
+              }`}
+          >
+            <Wifi className="w-4 h-4" />
+            <span>Network Topology</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('hosts-results')}
+            className={`px-4 py-2 rounded-md transition-all duration-200 flex items-center space-x-2 ${activeTab === 'hosts-results'
+              ? 'bg-blue-600 text-white shadow-lg'
+              : 'text-gray-400 hover:text-white hover:bg-gray-700'
+              }`}
+          >
+            <Database className="w-4 h-4" />
+            <span>Hosts & Results</span>
+            {hosts && hosts.length > 0 && (
+              <span className="bg-blue-500 text-white text-xs px-2 py-0.5 rounded-full">
+                {hosts.length}
+              </span>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Main Content Area */}
       <div className="flex-1 flex overflow-hidden min-h-0">
-        {activeTab === 'dashboard' ? (
-          /* Enhanced Dashboard Layout */
+        {activeTab === 'scanner' ? (
+          /* Scanner Tab Layout */
           <div className="flex-1 flex">
             {/* Left Panel - Enhanced Scan Controls */}
-            <div className="w-1/3 min-w-0 border-r border-gray-700 flex flex-col bg-gray-800">
+            <div className="w-1/2 min-w-0 border-r border-gray-700 flex flex-col bg-gray-800">
               <div className="p-4 border-b border-gray-700">
                 <h2 className="text-lg font-semibold text-white flex items-center">
                   <Target className="w-5 h-5 mr-2 text-blue-400" />
                   Scan Configuration
                 </h2>
               </div>
-              <div className="flex-1 p-4 overflow-y-auto">
-                <ScanForm 
+              <div className="flex-1 p-4 overflow-y-auto flex flex-col gap-4">
+                <ScanForm
                   onStartScan={handleStartScan}
-                  isScanning={isScanning}
+                  isScanning={scanInProgress}
                   className="h-full"
                 />
-              </div>
-            </div>
-
-            {/* Center Panel - Enhanced Network Map */}
-            <div className="w-1/3 min-w-0 border-r border-gray-700 flex flex-col bg-gray-900">
-              <div className="p-4 border-b border-gray-700">
-                <h2 className="text-lg font-semibold text-white flex items-center">
-                  <Wifi className="w-5 h-5 mr-2 text-green-400" />
-                  Network Topology
-                </h2>
-                <p className="text-sm text-gray-400 mt-1">
-                  {scanStats.hostsDiscovered} hosts discovered
-                </p>
-              </div>
-              <div className="flex-1 p-4 overflow-hidden">
-                <NetworkMap 
-                  hosts={hosts || []}
-                  onHostSelect={handleHostSelect}
-                  selectedHostId={selectedHost?.id}
-                  className="h-full w-full"
-                />
+                
+                {/* Netsniffer Button */}
+                <div className="mt-4 pt-4 border-t border-gray-700">
+                  <button
+                    onClick={() => startNetsniffer('default')}
+                    disabled={hosts.length === 0 || scanInProgress}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded transition-colors"
+                    title={hosts.length === 0 ? 'Start a scan first to discover hosts' : scanInProgress ? 'Wait for current scan to complete' : 'Start passive network monitoring'}
+                  >
+                    <Wifi className="w-4 h-4" />
+                    {hosts.length === 0 ? 'Start Network Sniffer (requires hosts)' : 'Start Network Sniffer'}
+                  </button>
+                  <p className="mt-2 text-xs text-gray-400 text-center">
+                    Monitor network traffic and enrich discovered hosts with MAC addresses, vendors, and OS information
+                  </p>
+                </div>
               </div>
             </div>
 
             {/* Right Panel - Enhanced Terminal Output */}
-            <div className="w-1/3 min-w-0 flex flex-col bg-black">
+            <div className="w-1/2 min-w-0 flex flex-col bg-black">
               <div className="p-4 border-b border-gray-700 bg-gray-900">
                 <h2 className="text-lg font-semibold text-white flex items-center">
                   <Activity className="w-5 h-5 mr-2 text-green-400" />
@@ -319,7 +395,7 @@ const EnhancedScannerPanel = () => {
               </div>
               <div className="flex-1 overflow-hidden">
                 {/* Terminal-like Live Output */}
-                <div className="h-full bg-black p-4 font-mono text-sm overflow-y-auto">
+                <div ref={terminalRef} className="h-full bg-black p-4 font-mono text-sm overflow-y-auto scroll-smooth">
                   {liveOutput.length === 0 ? (
                     <div className="text-gray-500 text-center mt-8">
                       No scan output yet. Start a scan to see live results.
@@ -331,7 +407,7 @@ const EnhancedScannerPanel = () => {
                           {line}
                         </div>
                       ))}
-                      {isScanning && (
+                      {scanInProgress && (
                         <div className="text-yellow-400 animate-pulse">
                           <span className="inline-block w-2 h-4 bg-yellow-400 ml-1"></span>
                         </div>
@@ -340,6 +416,18 @@ const EnhancedScannerPanel = () => {
                   )}
                 </div>
               </div>
+            </div>
+          </div>
+        ) : activeTab === 'topology' ? (
+          /* Network Topology Tab - Full Screen */
+          <div className="flex-1 flex flex-col bg-gray-900">
+            <div className="flex-1 overflow-hidden">
+              <NetworkMap
+                hosts={hosts}
+                onHostSelect={handleHostSelect}
+                selectedHostIp={selectedHost?.ip}
+                className="h-full w-full"
+              />
             </div>
           </div>
         ) : (
@@ -355,7 +443,7 @@ const EnhancedScannerPanel = () => {
                   </h2>
                   <div className="flex items-center space-x-4">
                     <span className="text-sm text-gray-400">
-                      {hosts?.length || 0} hosts
+                      {hosts.length} hosts
                     </span>
                     {selectedHost && (
                       <span className="text-xs bg-blue-600 px-2 py-1 rounded text-white">
@@ -366,11 +454,7 @@ const EnhancedScannerPanel = () => {
                 </div>
               </div>
               <div className="flex-1 overflow-y-auto">
-                <HostTable 
-                  onHostSelect={handleHostSelect}
-                  showActions={true}
-                  selectedHostId={selectedHost?.id}
-                />
+                <HostTable onHostSelect={handleHostSelect} />
               </div>
             </div>
 
@@ -379,16 +463,15 @@ const EnhancedScannerPanel = () => {
               <div className="p-4 border-b border-gray-700">
                 <h2 className="text-lg font-semibold text-white flex items-center">
                   <Database className="w-5 h-5 mr-2 text-green-400" />
-                  {selectedHost ? `Results for ${selectedHost.ip}` : 'Host Details'}
+                  {selectedHost ? `Target Information - ${selectedHost.ip}` : 'Target Information'}
                 </h2>
                 {selectedHost && (
                   <div className="flex items-center space-x-4 mt-2">
                     <span className="text-sm text-gray-400">
                       {selectedHost.hostname || 'No hostname'}
                     </span>
-                    <span className={`text-xs px-2 py-1 rounded ${
-                      selectedHost.status === 'up' ? 'bg-green-600' : 'bg-red-600'
-                    } text-white`}>
+                    <span className={`text-xs px-2 py-1 rounded ${selectedHost.status === 'up' ? 'bg-green-600' : 'bg-red-600'
+                      } text-white`}>
                       {selectedHost.status?.toUpperCase()}
                     </span>
                   </div>
@@ -396,10 +479,7 @@ const EnhancedScannerPanel = () => {
               </div>
               <div className="flex-1 overflow-y-auto">
                 {selectedHost ? (
-                  <ResultViewer 
-                    selectedScanId={selectedHost.id}
-                    selectedHost={selectedHost}
-                  />
+                  <ResultViewer selectedHost={selectedHost} />
                 ) : (
                   <div className="flex items-center justify-center h-full text-gray-400">
                     <div className="text-center">

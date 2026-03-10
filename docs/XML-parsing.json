@@ -1,0 +1,156 @@
+{
+  "parentUuid": "2801fc24-6311-4182-8107-38a7bd71fcea",
+  "plan": {
+    "architecture_flow": "Scanner → XML Parser → Raw Observations → Transforms → Enriched Observations → Analysis → Sinks",
+    "overview": "Redesign the scanning pipeline so that each scanner handles its own XML output parsing, with proper data flow through transforms → analysis → sinks. Both nmap and masscan will output XML (`-oX` flag) that gets parsed into comprehensive observations.",
+    "sections": {
+      "1_XML_Storage_Queue_Management": {
+        "Cleanup": "Remove XML files after successful processing",
+        "Queue_System": "Filesystem-based queue for scan results awaiting processing",
+        "XML_Files": "Store in src-tauri/.scans/ directory with UUID names"
+      },
+      "2_Scanner_Streams": {
+        "utils/masscan_stream.rs": [
+          "Use masscan with -oX output.xml + real-time JSON output",
+          "Parse XML for detailed service/banner information",
+          "Create Service observations with enhanced data"
+        ],
+        "utils/nmap_stream.rs": [
+          "Use nmap with -oX output.xml + verbose stdout for progress",
+          "Parse XML using Host.rs, Service.rs, Port.rs, Session.rs",
+          "Emit Host/Service/Port observations with all fields",
+          "Handle nmap scripts and vulnerability detection"
+        ]
+      },
+      "3_Enhanced_Transforms": {
+        "IpEnrichmentTransform": [
+          "Extract IPs, MACs, vendors from host observations",
+          "Add geolocation and network classification"
+        ],
+        "PortAnalysisTransform": [
+          "Risk scoring using Port.rs utilities",
+          "Common port classification",
+          "Service fingerprinting"
+        ],
+        "ScriptAnalysisTransform": [
+          "Process nmap script results using Script.rs",
+          "Parse Vulners/Shodan output for CVEs",
+          "Extract vulnerability indicators"
+        ],
+        "ServiceParsingTransform": [
+          "Parse service banners using Service.rs patterns",
+          "Extract CPE identifiers and versions",
+          "Map services to vulnerability databases"
+        ]
+      },
+      "4_Analysis_Pipeline": {
+        "cve_engine.rs": [
+          "CVE database management and querying",
+          "ExploitDB integration for PoC lookups",
+          "Automated vulnerability correlation"
+        ],
+        "vulnerability.rs": [
+          "Integrate CVE.rs for vulnerability queries",
+          "Use ExploitDb.rs for exploit matching",
+          "Cross-reference services with vulnerabilities",
+          "CVSS scoring and risk assessment"
+        ]
+      },
+      "5_Enhanced_Sinks": {
+        "DbSink": [
+          "Store host data (MAC, vendor, OS, uptime, distance)",
+          "Enhanced service storage with banners, CPE, confidence",
+          "Vulnerability storage with CVE details and exploits",
+          "Script result storage"
+        ],
+        "UiSink": [
+          "Emit host events with all parsed fields",
+          "Rich service events with version/banner info",
+          "Vulnerability events with severity and exploit data",
+          "Progress events with scan statistics"
+        ]
+      },
+      "6_Data_Models_Integration": {
+        "CVE.rs_ExploitDb.rs": [
+          "CVE database integration",
+          "Exploit correlation and scoring",
+          "Vulnerability assessment and reporting"
+        ],
+        "Host.rs": [
+          "Comprehensive host info (MAC, vendor, hostname, OS, uptime, distance)",
+          "Host classification and risk scoring"
+        ],
+        "Port.rs": [
+          "Port state analysis and classification",
+          "Service-to-port mapping",
+          "Script result parsing"
+        ],
+        "Service.rs": [
+          "Service fingerprinting and version detection",
+          "CPE extraction and vulnerability indicators",
+          "Service risk scoring and categorization"
+        ]
+      },
+      "7_Implementation_Steps": {
+        "Phase_1_XML_Parser_Integration": [
+          "Create utils/xml_parsers.rs with Host, Service, Port, Session structs",
+          "Implement comprehensive XML parsing methods",
+          "Update scanners to output XML + progress"
+        ],
+        "Phase_2_Transform_Enhancement": [
+          "Expand transforms for rich data",
+          "Add script analysis and vulnerability parsing",
+          "Implement service fingerprinting and CPE extraction"
+        ],
+        "Phase_3_Analysis_Engine": [
+          "Integrate CVE database and ExploitDB",
+          "Implement vulnerability correlation",
+          "Add risk scoring and assessment"
+        ],
+        "Phase_4_Sink_Improvements": [
+          "Enhance DB schema for comprehensive data",
+          "Update UI events with rich info",
+          "Add vulnerability and exploit reporting"
+        ],
+        "Phase_5_Testing_Integration": [
+          "End-to-end testing of XML → observations → UI",
+          "Verify all host fields display properly",
+          "Test vulnerability detection and exploit correlation"
+        ]
+      },
+      "Benefits": [
+        "Separation of Concerns: each scanner handles XML parsing",
+        "Rich Data Flow: host/service/vulnerability info",
+        "Extensibility: easy to add new scanners/modules",
+        "Performance: efficient batch processing and DB ops",
+        "Completeness: no more 'unknown' fields"
+      ]
+    },
+    "title": "LEGION2 XML Pipeline Architecture Redesign"
+  },
+  "sessionId": "77712937-7736-4d9d-a1f5-6f05e0893407",
+  "timestamp": "2025-08-18T08:31:22.698Z",
+  "toolCalls": {
+    "id": "msg_01LCTTBc1Er7bNQByYVkWvnV",
+    "model": "claude-sonnet-4-20250514",
+    "role": "assistant",
+    "stop_reason": "tool_use",
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 102510
+      },
+      "cache_creation_input_tokens": 102510,
+      "cache_read_input_tokens": 14740,
+      "input_tokens": 6,
+      "output_tokens": 1268,
+      "service_tier": "standard"
+    }
+  },
+  "type": "assistant",
+  "userType": "external",
+  "uuid": "4200851e-0ff4-47c5-805a-5f33c71b14e8",
+  "version": "1.0.83"
+}

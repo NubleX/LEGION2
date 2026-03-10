@@ -1,0 +1,15 @@
+# This file contains NDJSON formatted network scan data
+# Each line represents a single scan result in JSON format
+# This is in example
+
+{
+  "ts": "2025-04-05T14:30:00Z",
+  "src_ip": "192.168.1.42",
+  "dst_ip": "192.168.1.1",
+  "src_mac": "00:1A:2B:3C:4D:5E",
+  "vendor": "Samsung Electronics",
+  "device_type": "Smart TV",
+  "protocol": "SSDP",
+  "payload": "M-SEARCH * HTTP/1.1...",
+  "scan_id": "scan_12345"
+}

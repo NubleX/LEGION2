@@ -1,25 +1,95 @@
 [package]
 name = "legion2"
-version = "0.2.3-alpha"
+version = "0.3.3-alpha"
 description = "LEGION2 - Network Penetration Testing Tool"
-authors = ["Igor Dunaev"]
+authors = ["NubleX / Igor Dunaev"]
+license = "GPL-3.0"
+repository = "https://github.com/NubleX/LEGION2"
 edition = "2021"
+exclude = ["src/scanners/probes/", "src/scanners/probes/**/*"]
 
 [build-dependencies]
-tauri-build = { version = "2.3.0", features = [] }
+tauri-build = { version = "2.3.1", features = [] }
 
 [dependencies]
-tauri = { version = "2.3.0", features = [] }
+# App / Tauri
+tauri = { version = "2.9.5", features = [
+    "native-tls",
+    "tray-icon",
+    "image-png",
+] }
 tauri-plugin-shell = "2.3.0"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["full"] }
-uuid = { version = "1.8", features = ["v4"] }
-regex = "1.10"
+# Core
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+env_logger = "0.11"
+futures = "0.3"
+hex = "0.4"
 ipnet = "2.8"
-anyhow = "1.0"
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid"] }
-chrono = { version = "0.4", features = ["serde"] }
+ipnetwork = "0.21"
+lazy_static = "1.4"
 log = "0.4"
-env_logger = "0.10"
-quick-xml = { version = "0.29", features = ["serialize"] }
+once_cell = "1.19"
+quick-xml = { version = "0.38.1", features = ["serialize"] }
+rand = "0.9"
+regex = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.142"
+sha2 = "0.10"
+thiserror = "2.0.17"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1.18.0", features = ["v4"] }
+local-ip-address = "0.6"
+parking_lot = "0.12"
+dirs = "6.0.0"
+aes-gcm = { version = "0.10", features = ["std"] }
+roxmltree = "0.21.1"
+pcap = "2.3.0"
+etherparse = "0.19.0"
+zstd = "0.13"
+reqwest = "0.12.23"
+tracing = "0.1"
+
+# Database (single, small; statically linked SQLite)
+rusqlite = { version = "0.37.0", features = ["bundled", "chrono"] }
+tokio-stream = "0.1.17"
+
+# IoT Protocol Libraries
+dns-parser = "0.8"  # DNS/mDNS packet parsing
+# coap-lite = "0.10"  # Can be added later for full CoAP support
+# snmp-parser = "0.7"  # Can be added later for full SNMP support
+
+# Platform-specifics
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winnt", "processthreadsapi"] }
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.175"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+cli = []
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux doesn't need special dependencies - WebKitGTK is handled by Tauri
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS doesn't need special dependencies - WKWebView is native
+
+
+# Build optimizations
+[profile.release]
+opt-level = "z"   # Optimize for size
+lto = true        # Link-time optimization
+codegen-units = 1 # Single codegen unit for better optimization
+strip = true      # Strip symbols for smaller binary
+panic = "abort"   # Smaller panic handler
