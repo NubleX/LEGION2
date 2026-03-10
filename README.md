@@ -1,7 +1,7 @@
 <div align="center">
-  <img src="images/legion2/logo2v0.3.3.png" alt="LEGION2 Logo" width="300"/>
+  <img src="images/legion2/logo2v0.3.3.png" alt="LEGION2 Logo" width="520"/>
 
-# LEGION2 - Advanced Network Security Scanner
+# Advanced Network Security Scanner
 
 ![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)
 ![Version](https://img.shields.io/badge/version-0.3.3--alpha-red.svg)
@@ -342,3 +342,4 @@ LEGION2 is licensed under the GNU General Public License v3.0, ensuring it remai
 ---
 
 *LEGION2 - Modern network security scanning for the next generation of cybersecurity professionals.*
+
