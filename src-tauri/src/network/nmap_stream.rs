@@ -193,7 +193,10 @@ fn parse_nmap_host_line(line: &str) -> Option<NmapHostEvent> {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 3 {
             let port_proto = parts[0]; // "22/tcp"
-            let state = parts[1]; // "open"
+            let state = parts[1]; // "open", "closed", etc.
+            if state != "open" {
+                return None;
+            }
             let service = if parts.len() > 2 {
                 Some(parts[2])
             } else {
@@ -201,16 +204,18 @@ fn parse_nmap_host_line(line: &str) -> Option<NmapHostEvent> {
             };
 
             if let Some((port_str, proto)) = port_proto.split_once('/') {
-                if let Ok(port) = port_str.parse::<u16>() {
-                    return Some(NmapHostEvent {
-                        ts: Utc::now().to_rfc3339(),
-                        ip: "".to_string(), // IP would need to be tracked from previous lines
-                        port,
-                        proto: proto.to_string(),
-                        state: state.to_string(),
-                        service: service.map(|s| s.to_string()),
-                        reason: None,
-                    });
+                if port_str.chars().all(|c| c.is_ascii_digit()) {
+                    if let Ok(port) = port_str.parse::<u16>() {
+                        return Some(NmapHostEvent {
+                            ts: Utc::now().to_rfc3339(),
+                            ip: "".to_string(), // IP would need to be tracked from previous lines
+                            port,
+                            proto: proto.to_string(),
+                            state: state.to_string(),
+                            service: service.map(|s| s.to_string()),
+                            reason: None,
+                        });
+                    }
                 }
             }
         }

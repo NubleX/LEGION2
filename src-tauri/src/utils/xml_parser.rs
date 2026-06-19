@@ -3,7 +3,7 @@
 
 use crate::shared::shared::{Observation, ObservationKind};
 use anyhow::Result;
-use roxmltree::Document;
+use roxmltree::{Document, ParsingOptions};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::Path;
@@ -72,6 +72,14 @@ pub struct XmlSession {
     pub num_services: u32,
 }
 
+/// Parse XML from trusted local scan output (nmap/masscan).
+/// Nmap includes a DOCTYPE; roxmltree rejects DTDs unless explicitly allowed.
+fn parse_scan_xml(text: &str) -> Result<Document<'_>> {
+    let mut options = ParsingOptions::default();
+    options.allow_dtd = true;
+    Document::parse_with_options(text, options).map_err(Into::into)
+}
+
 impl XmlParser {
     pub fn new(scan_id: Uuid) -> Self {
         Self { scan_id }
@@ -80,7 +88,7 @@ impl XmlParser {
     /// Parse nmap XML file and return comprehensive observations
     pub fn parse_nmap_xml(&self, xml_path: &Path) -> Result<Vec<Observation>> {
         let xml_content = std::fs::read_to_string(xml_path)?;
-        let doc = Document::parse(&xml_content)?;
+        let doc = parse_scan_xml(&xml_content)?;
         let mut observations = Vec::new();
 
         // Parse session information first
@@ -115,7 +123,14 @@ impl XmlParser {
             
             for port_node in ports_to_parse {
                 let port_obs = self.create_service_observation(&host_node, &port_node)?;
-                observations.push(port_obs);
+                let is_open = port_obs
+                    .fields
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    == Some("open");
+                if is_open {
+                    observations.push(port_obs);
+                }
             }
 
             // Parse host scripts
@@ -134,7 +149,7 @@ impl XmlParser {
     /// Parse masscan XML file (simpler format)
     pub fn parse_masscan_xml(&self, xml_path: &Path) -> Result<Vec<Observation>> {
         let xml_content = std::fs::read_to_string(xml_path)?;
-        let doc = Document::parse(&xml_content)?;
+        let doc = parse_scan_xml(&xml_content)?;
         let mut observations = Vec::new();
 
         // Masscan XML format is different - just hosts and open ports
@@ -312,7 +327,8 @@ impl XmlParser {
         // Get port information
         let port = port_node.attribute("portid").unwrap_or("0");
         let protocol = port_node.attribute("protocol").unwrap_or("tcp");
-        fields.insert("port".to_string(), port.into());
+        let port_num = port.parse::<u64>().unwrap_or(0);
+        fields.insert("port".to_string(), port_num.into());
         fields.insert("protocol".to_string(), protocol.into());
 
         // Get state information - REQUIRED for port to be stored

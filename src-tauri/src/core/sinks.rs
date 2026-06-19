@@ -355,12 +355,14 @@ impl Sink for UiSink {
                         .get("protocol")
                         .and_then(|v| v.as_str())
                         .unwrap_or("tcp");
-                    let _reason = obs
+                    let state = obs
                         .fields
-                        .get("reason")
+                        .get("state")
                         .and_then(|v| v.as_str())
-                        .or_else(|| obs.fields.get("state").and_then(|v| v.as_str()))
-                        .unwrap_or("open");
+                        .unwrap_or("unknown");
+                    if state != "open" {
+                        continue;
+                    }
 
                     // Get service name and version for enhanced display
                     let service = obs
@@ -386,13 +388,11 @@ impl Sink for UiSink {
                     // Emit host first if new
                     self.emit_host_if_new(ip, None, false).await?;
 
-                    // Use emit_service method to emit service event
                     let reason = obs
                         .fields
                         .get("reason")
                         .and_then(|v| v.as_str())
-                        .or_else(|| obs.fields.get("state").and_then(|v| v.as_str()))
-                        .unwrap_or("open");
+                        .unwrap_or("syn-ack");
                     self.emit_service(ip, port, protocol, reason).await?;
 
                     // Also emit as progress to show in live output
@@ -404,7 +404,7 @@ impl Sink for UiSink {
                     
                     // Trigger analysis for newly discovered service
                     if let Some(engine) = &self.analysis_engine {
-                        if reason == "open" && !service.is_empty() {
+                        if !service.is_empty() {
                             if let Err(e) = engine.on_service_discovered(ip, port, service).await {
                                 log::warn!("Failed to trigger analysis for service {}:{}: {}", ip, port, e);
                             }
@@ -413,7 +413,7 @@ impl Sink for UiSink {
                     
                     // Trigger recursive discovery for new service
                     if let Some(discovery) = &self.discovery_manager {
-                        if reason == "open" && !service.is_empty() {
+                        if !service.is_empty() {
                             if let Err(e) = discovery.on_service_discovered(ip, port, service).await {
                                 log::warn!("Failed to trigger recursive discovery for service {}:{}: {}", ip, port, e);
                             }
@@ -1345,7 +1345,14 @@ impl Sink for DbSink {
                                             continue;
                                         }
                                         
-                                        let state = observation.fields.get("state").and_then(|v| v.as_str()).unwrap_or("open");
+                                        let state = observation
+                                            .fields
+                                            .get("state")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("unknown");
+                                        if state != "open" {
+                                            continue;
+                                        }
                                         let service = observation.fields.get("service").and_then(|v| v.as_str()).map(|s| s.to_string());
                                         let product = observation.fields.get("product").and_then(|v| v.as_str()).map(|s| s.to_string());
                                         let version = observation.fields.get("version").and_then(|v| v.as_str()).map(|s| s.to_string());

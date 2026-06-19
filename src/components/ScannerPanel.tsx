@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import useAppStore from '../stores/appStore';
-import useHostStore, { type Host, selectVisibleHostsCached } from '../stores/hostStore';
+import useHostStore, { type Host, selectVisibleHosts } from '../stores/hostStore';
 import HostTable from './HostTable';
 import NetworkMap from './NetworkMap';
 import ResultViewer from './ResultViewer';
@@ -40,7 +40,7 @@ const EnhancedScannerPanel = () => {
   const [capFixing, setCapFixing] = useState(false);
   const [capDismissed, setCapDismissed] = useState(false);
   const { setHosts, clearHosts } = useHostStore();
-  const hosts = useHostStore(selectVisibleHostsCached);
+  const hosts = useHostStore(selectVisibleHosts);
   const terminalRef = useRef<HTMLDivElement>(null);
   const scanStartTimeRef = useRef<number>(0);
 
@@ -379,7 +379,8 @@ const EnhancedScannerPanel = () => {
 
       {/* Tab Navigation */}
       <div className="flex-shrink-0 bg-gray-900 border-b border-gray-700">
-        <div className="flex space-x-1 p-2">
+        <div className="flex items-center space-x-1 p-2">
+          <div className="flex space-x-1 flex-1">
           <button
             onClick={() => setActiveTab('scanner')}
             className={`px-4 py-2 rounded-md transition-all duration-200 flex items-center space-x-2 ${activeTab === 'scanner'
@@ -415,6 +416,16 @@ const EnhancedScannerPanel = () => {
               </span>
             )}
           </button>
+          </div>
+          <button
+            onClick={() => startNetsniffer('default')}
+            disabled={hosts.length === 0}
+            className="flex items-center gap-2 px-3 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed text-white text-sm font-medium rounded transition-colors"
+            title={hosts.length === 0 ? 'Discover hosts with a scan first' : 'Start passive network monitoring'}
+          >
+            <Wifi className="w-4 h-4" />
+            Network Sniffer
+          </button>
         </div>
       </div>
 
@@ -442,9 +453,9 @@ const EnhancedScannerPanel = () => {
                 <div className="mt-4 pt-4 border-t border-gray-700">
                   <button
                     onClick={() => startNetsniffer('default')}
-                    disabled={hosts.length === 0 || scanInProgress}
+                    disabled={hosts.length === 0}
                     className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded transition-colors"
-                    title={hosts.length === 0 ? 'Start a scan first to discover hosts' : scanInProgress ? 'Wait for current scan to complete' : 'Start passive network monitoring'}
+                    title={hosts.length === 0 ? 'Start a scan first to discover hosts' : 'Start passive network monitoring'}
                   >
                     <Wifi className="w-4 h-4" />
                     {hosts.length === 0 ? 'Start Network Sniffer (requires hosts)' : 'Start Network Sniffer'}
