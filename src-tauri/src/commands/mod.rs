@@ -1,5 +1,7 @@
-pub mod scanner_commands;
+pub mod analysis_commands;
+pub mod cve_commands;
 pub mod engine_commands;
-pub mod operations;
 pub mod host_commands;
-// pub mod simple_db_ops;
+pub mod netsniffer_commands;
+pub mod os_commands;
+pub mod plan_commands;

@@ -1,124 +1,143 @@
+// Backup of original main.rs
 // LEGION2 - A free and open-source penetration testing tool.
-// Copyright (c) 2025 NubleX / Igor Dunaev
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-// This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-// License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-// version.
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-// warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//details.
-// You should have received a copy of the GNU General Public License along with this program.
-// If not, see <http://www.gnu.org/licenses/>.
 
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
 
-use crate::database::{DatabaseOperations, Db};
-use crate::scanning::coordinator::ScanCoordinator;
-use crate::shared::EventStreamer;
+use crate::database::Db;
+use crate::analysis::AnalysisEngine;
 use anyhow::Result;
-use rusqlite;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tauri::{Manager, RunEvent};
 
 mod analysis;
 mod commands;
 mod core;
 mod database;
 mod modules;
+mod network;
+mod offensive;
+mod os;
 mod plan;
-mod scanning;
+mod scanners;
+mod session_state;
 mod shared;
 mod utils;
 
 fn app_data_dir() -> std::path::PathBuf {
-    std::env::current_dir().unwrap().join("data")
+    // Use app-local data directory for encrypted database
+    // Store in a hidden subdirectory within the app
+    std::env::current_exe()
+        .unwrap_or_else(|_| std::env::current_dir().unwrap().join("legion2"))
+        .parent()
+        .unwrap()
+        .join(".legion2_data")
 }
 
 fn open_db() -> Result<Db> {
-    let db_dir = app_data_dir().join("LEGION2");
+    let db_dir = app_data_dir();
     std::fs::create_dir_all(&db_dir)?;
     let db_path = db_dir.join("network.db");
-    let db = Db::open(db_path.to_str().unwrap())?;
+    let db = Db::open(db_path)?;
     Ok(db)
 }
 
 // engine_execute is now handled in commands::engine_commands
 
-#[tokio::main]
-async fn main() {
-    // Initialize logging
+fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     println!("LEGION2 starting up...");
 
     // Initialize database
     let db = Arc::new(open_db().expect("Failed to open database"));
-
-    // Initialize event handling
-    let (event_tx, mut event_rx) = mpsc::channel::<crate::shared::ScanEvent>(1000);
-    let event_streamer = Arc::new(EventStreamer::new());
-
-    // Initialize database operations for scanning
-    use crate::database::DatabaseOperations;
-    // ...
-    let db_path = app_data_dir().join("LEGION2").join("network.db");
-    let database_ops = Arc::new(
-        DatabaseOperations::open(db_path.to_str().unwrap())
-            .await
-            .expect("Failed to open database operations"),
-    );
-    // Initialize scanner coordinator
-    let coordinator = Arc::new(ScanCoordinator::borrow(
-        database_ops.clone(),
-        event_tx.clone(),
-    ));
-
-    // Bridge events to streamer
-    let streamer_clone = event_streamer.clone();
-    tokio::spawn(async move {
-        log::info!("Event bridge task started");
-        while let Some(event) = event_rx.recv().await {
-            log::info!("Bridging event: {:?}", event.event_type);
-            streamer_clone.send_event(event).await;
-        }
-        log::error!("Event bridge task ended - this should not happen");
-    });
+    let db_for_setup = db.clone();
 
     tauri::Builder::default()
+        .setup(move |app| {
+            let analysis_engine = AnalysisEngine::with_ui(db_for_setup.clone(), app.handle().clone());
+            app.manage(analysis_engine);
+
+            // Start periodic background task to refresh all hosts every 27 seconds
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(27));
+                loop {
+                    interval.tick().await;
+                    log::debug!("Emitting refresh_all_hosts event");
+                    if let Err(e) = tauri::Emitter::emit(&app_handle, "refresh_all_hosts", ()) {
+                        log::warn!("Failed to emit refresh_all_hosts event: {}", e);
+                    }
+                }
+            });
+            Ok(())
+        })
         .manage(db.clone())
-        .manage(coordinator)
-        .manage(event_streamer)
-        .manage(database_ops.clone())
         .invoke_handler(tauri::generate_handler![
             commands::engine_commands::engine_execute,
-            commands::engine_commands::start_scan_with_config,
-            commands::engine_commands::start_advanced_scan,
-            commands::engine_commands::start_os_detection_scan,
+            commands::engine_commands::engine_cancel_scan,
+            commands::engine_commands::engine_reset,
+            commands::engine_commands::engine_clear_active_targets,
+            commands::engine_commands::engine_get_state,
             commands::host_commands::get_all_hosts,
+            commands::host_commands::get_hosts_in_range,
             commands::host_commands::get_host_details,
+            commands::host_commands::get_host_by_ip,
+            commands::host_commands::get_host_ports_detailed,
+            commands::host_commands::get_host_services,
+            commands::host_commands::get_service_cves,
+            commands::host_commands::enrich_service_osint,
             commands::host_commands::delete_host,
+            commands::host_commands::clear_all_hosts,
             commands::host_commands::batch_import_hosts,
             commands::host_commands::update_host_os_detection,
-            commands::host_commands::get_host_by_ip,
-            commands::scanner_commands::start_scan,
-            commands::scanner_commands::cancel_scan,
-            commands::scanner_commands::get_active_scans,
-            commands::scanner_commands::get_scan_status,
-            commands::scanner_commands::get_scan_results,
-            commands::scanner_commands::get_scan_statistics,
-            commands::scanner_commands::get_scan_progress,
-            commands::scanner_commands::get_scanner_status,
-            commands::operations::db_batch_upsert_hosts,
-            commands::operations::db_search_hosts,
-            commands::operations::db_update_host_tags,
-            commands::operations::db_update_host_notes,
-            commands::operations::db_get_host_by_ip,
+            commands::analysis_commands::analyze_host,
+            commands::analysis_commands::analyze_network,
+            commands::analysis_commands::get_active_analyses,
+            commands::analysis_commands::get_host_vulnerabilities,
+            commands::analysis_commands::get_all_vulnerabilities,
+            commands::analysis_commands::analyze_host_vulnerabilities,
+            commands::analysis_commands::get_vulnerability_stats,
+            commands::analysis_commands::get_service_statistics,
+            commands::analysis_commands::import_nmap_xml,
+            commands::analysis_commands::parse_scan_session,
+            commands::analysis_commands::get_latest_session_analytics,
+            commands::cve_commands::search_cves_by_product,
+            commands::cve_commands::fetch_cve,
+            commands::cve_commands::get_all_cves,
+            commands::cve_commands::get_cve_risk_assessment,
+            commands::cve_commands::search_and_store_cves,
+            commands::netsniffer_commands::lookup_mac_vendor,
+            commands::netsniffer_commands::log_network_artifact,
+            commands::netsniffer_commands::start_network_monitoring,
+            commands::netsniffer_commands::stop_network_monitoring,
+            commands::netsniffer_commands::get_vendor_statistics,
+            commands::netsniffer_commands::parse_xml_for_mac_enrichment,
+            commands::plan_commands::create_masscan_plan,
+            commands::plan_commands::create_nmap_plan,
+            commands::plan_commands::create_comprehensive_plan,
+            commands::plan_commands::create_os_detection_plan,
+            commands::plan_commands::plan_with_os_detection,
+            commands::plan_commands::plan_with_extra_args,
+            commands::plan_commands::plan_with_modules,
+            commands::plan_commands::plan_with_rate,
+            commands::plan_commands::plan_with_sink,
+            commands::plan_commands::get_available_modules,
+            commands::plan_commands::create_plan_with_modules,
+            commands::plan_commands::create_massmap_plan,
+            commands::plan_commands::create_netsniffer_plan,
+            commands::os_commands::check_scanner_capabilities,
+            commands::os_commands::set_scanner_capabilities,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if let RunEvent::ExitRequested { .. } = event {
+                log::info!("App exit requested — killing scanner child processes");
+                tauri::async_runtime::block_on(async {
+                    commands::engine_commands::shutdown_kill_children().await;
+                });
+            }
+        });
 }

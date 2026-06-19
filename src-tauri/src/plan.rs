@@ -1,23 +1,8 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::str::FromStr;
-use std::fmt;
-use anyhow;
 use uuid::Uuid;
 
 /// Plan defines what the engine should execute - moved from core/types.rs
@@ -31,6 +16,9 @@ pub struct Plan {
     pub modules: Vec<String>,
     pub source_type: String,
     pub sink_types: Vec<String>,
+    pub interface: Option<String>,
+    pub nse_scripts: Option<Vec<String>>,
+    pub nse_script_args: Option<HashMap<String, String>>,
 }
 
 impl Plan {
@@ -44,7 +32,14 @@ impl Plan {
             extra: vec![],
             modules: vec![],
             source_type: "masscan".to_string(),
-            sink_types: vec!["ui".to_string(), "db".to_string()],
+            sink_types: vec![
+                "ui".to_string(),
+                "db".to_string(),
+                "vulnerability".to_string(),
+            ],
+            interface: None,
+            nse_scripts: None,
+            nse_script_args: None,
         }
     }
 
@@ -58,7 +53,37 @@ impl Plan {
             extra: extra_args,
             modules: vec![],
             source_type: "nmap".to_string(),
+            sink_types: vec![
+                "ui".to_string(),
+                "db".to_string(),
+                "vulnerability".to_string(),
+            ],
+            interface: None,
+            nse_scripts: None,
+            nse_script_args: None,
+        }
+    }
+
+    /// Create a fast host-discovery plan using nmap -sn (ARP on local networks, ICMP elsewhere).
+    /// This is Phase 1 of Massmap: find which IPs are alive before masscan port-scans them.
+    pub fn discovery(scan_id: Uuid, targets: String) -> Self {
+        Self {
+            scan_id,
+            targets,
+            ports: String::new(),
+            rate: None,
+            extra: vec![
+                "-sn".to_string(),           // Host discovery only (no port scan)
+                "-n".to_string(),            // Skip reverse DNS
+                "-T5".to_string(),           // Fastest timing template
+                "--min-parallelism".to_string(), "256".to_string(),
+            ],
+            modules: vec![],
+            source_type: "nmap".to_string(), // NmapScanner handles this
             sink_types: vec!["ui".to_string(), "db".to_string()],
+            interface: None,
+            nse_scripts: None,
+            nse_script_args: None,
         }
     }
 
@@ -105,10 +130,23 @@ impl Plan {
             targets,
             ports,
             rate: None,
-            extra: vec!["-sS".to_string(), "-sV".to_string(), "-O".to_string(), "-A".to_string(), "-T4".to_string()],
+            extra: vec![
+                "-sS".to_string(),
+                "-sV".to_string(),
+                "-O".to_string(),
+                "-A".to_string(),
+                "-T4".to_string(),
+            ],
             modules: vec![],
             source_type: "nmap".to_string(),
-            sink_types: vec!["ui".to_string(), "db".to_string()],
+            sink_types: vec![
+                "ui".to_string(),
+                "db".to_string(),
+                "vulnerability".to_string(),
+            ],
+            interface: None,
+            nse_scripts: None,
+            nse_script_args: None,
         }
     }
 
@@ -119,116 +157,144 @@ impl Plan {
             targets,
             ports: "1-1000".to_string(), // Common ports for OS detection
             rate: None,
-            extra: vec!["-O".to_string(), "-sS".to_string(), "-T4".to_string()],
+            extra: vec![
+                "-O".to_string(),
+                "-sS".to_string(),
+                "-T4".to_string(),
+                "-PS80,443,22".to_string(), // TCP SYN ping to common ports
+                "-PA80,443,22".to_string(), // TCP ACK ping to common ports
+                "--max-rtt-timeout".to_string(),
+                "2s".to_string(), // Reasonable timeout
+                "--initial-rtt-timeout".to_string(),
+                "500ms".to_string(),
+            ],
             modules: vec![],
             source_type: "nmap".to_string(),
-            sink_types: vec!["ui".to_string(), "db".to_string()],
+            sink_types: vec![
+                "ui".to_string(),
+                "db".to_string(),
+                "vulnerability".to_string(),
+            ],
+            interface: None,
+            nse_scripts: None,
+            nse_script_args: None,
         }
     }
-}
 
-// Useful types consolidated from models.rs and shared/models.rs
+    /// Set network interface for scanners
+    pub fn with_interface(mut self, interface: String) -> Self {
+        self.interface = Some(interface);
+        self
+    }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum ScanType {
-    Discovery,
-    PortScan,
-    ServiceDetection,
-    Vulnerability,
-    Comprehensive,
-    Quick,
-    Stealth,
-    Custom { options: String },
-}
-
-impl fmt::Display for ScanType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            ScanType::Discovery => write!(f, "Discovery"),
-            ScanType::PortScan => write!(f, "PortScan"),
-            ScanType::ServiceDetection => write!(f, "ServiceDetection"),
-            ScanType::Vulnerability => write!(f, "Vulnerability"),
-            ScanType::Comprehensive => write!(f, "Comprehensive"),
-            ScanType::Quick => write!(f, "Quick"),
-            ScanType::Stealth => write!(f, "Stealth"),
-            ScanType::Custom { options } => write!(f, "Custom ({})", options),
+    /// Create a netsniffer plan for passive network monitoring
+    /// Captures packets on the specified interface for OS fingerprinting and MAC enrichment
+    pub fn netsniffer(scan_id: Uuid, interface: String) -> Self {
+        Self {
+            scan_id,
+            targets: String::new(), // No active targets for passive monitoring
+            ports: String::new(),   // Captures all ports
+            rate: None,
+            extra: vec![],
+            modules: vec![
+                "mac_enrichment".to_string(),
+                "passive_os".to_string(),
+                "service_parsing".to_string(),
+                "cve_enrichment".to_string(),
+                "port_service_cve".to_string(),
+            ],
+            source_type: "netsniffer".to_string(),
+            sink_types: vec![
+                "ui".to_string(),
+                "db".to_string(),
+            ],
+            interface: Some(interface),
+            nse_scripts: None,
+            nse_script_args: None,
         }
     }
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ScanTiming {
-    Paranoid,  // T0
-    Sneaky,    // T1
-    Polite,    // T2
-    Normal,    // T3
-    Aggressive, // T4
-    Insane,    // T5
-}
+    /// Create a hybrid scan plan: masscan for fast port discovery + nmap for detailed analysis
+    /// This is the "unity" pattern - combining speed with depth
+    pub fn hybrid(
+        scan_id: Uuid,
+        targets: String,
+        ports: String,
+        masscan_rate: u64,
+    ) -> Vec<Self> {
+        vec![
+            // Phase 1: Fast port discovery with masscan
+            Self::masscan(scan_id, targets.clone(), ports.clone(), Some(masscan_rate))
+                .with_modules(vec!["ip_enrichment".to_string()]),
+            // Phase 2: Detailed service/OS detection with nmap
+            // Note: In practice, this would use discovered hosts/ports from phase 1
+            Self::nmap(
+                scan_id,
+                targets,
+                ports,
+                vec!["-sV".to_string(), "-O".to_string(), "-sC".to_string()],
+            )
+            .with_modules(vec![
+                "service_parsing".to_string(),
+                "vulnerability".to_string(),
+            ]),
+        ]
+    }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PortRange {
-    pub start: u16,
-    pub end: u16,
-    pub top_ports: Option<u16>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Protocol {
-    Tcp,
-    Udp,
-}
-
-impl Protocol {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Protocol::Tcp => "tcp",
-            Protocol::Udp => "udp",
+    /// Create an IoT spider scan plan
+    /// Sends lightweight discovery probes (SSDP, mDNS, WSDD, SNMP, CoAP, MQTT) 
+    /// to discover IoT devices on the network
+    pub fn iot_spider(scan_id: Uuid, targets: String, protocols: Vec<String>) -> Self {
+        Self {
+            scan_id,
+            targets,
+            ports: String::new(), // IoT protocols use specific ports
+            rate: None,
+            extra: protocols, // Store protocol list in extra for now
+            modules: vec![
+                "ip_enrichment".to_string(),
+                "service_parsing".to_string(),
+            ],
+            source_type: "iot_probe".to_string(),
+            sink_types: vec![
+                "ui".to_string(),
+                "db".to_string(),
+                "vulnerability".to_string(),
+            ],
+            interface: None,
+            nse_scripts: None,
+            nse_script_args: None,
         }
     }
-}
 
-impl FromStr for Protocol {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "tcp" => Ok(Protocol::Tcp),
-            "udp" => Ok(Protocol::Udp),
-            _ => Err(anyhow::anyhow!("Invalid Protocol: {}", s)),
-        }
+    /// Filter which IoT protocols to use
+    pub fn with_iot_protocols(mut self, protocols: Vec<String>) -> Self {
+        self.extra = protocols;
+        self
     }
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum PortState {
-    Open,
-    Closed,
-    Filtered,
-    Unknown,
-}
-
-impl PortState {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            PortState::Open => "open",
-            PortState::Closed => "closed",
-            PortState::Filtered => "filtered",
-            PortState::Unknown => "unknown",
-        }
+    /// Add NSE scripts to execute during nmap scan
+    pub fn with_nse_scripts(mut self, scripts: Vec<String>) -> Self {
+        self.nse_scripts = Some(scripts);
+        self
     }
-}
 
-impl FromStr for PortState {
-    type Err = anyhow::Error;
+    /// Add NSE script arguments
+    /// Format: HashMap with keys like "script1.arg1" -> "value1"
+    pub fn with_nse_script_args(mut self, args: HashMap<String, String>) -> Self {
+        self.nse_script_args = Some(args);
+        self
+    }
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "open" => Ok(PortState::Open),
-            "closed" => Ok(PortState::Closed),
-            "filtered" => Ok(PortState::Filtered),
-            "unknown" => Ok(PortState::Unknown),
-            _ => Err(anyhow::anyhow!("Invalid PortState: {}", s)),
-        }
+    /// Create a continuous monitoring plan: netsniffer + periodic nmap
+    /// Passive monitoring combined with periodic active scanning
+    pub fn continuous_monitor(scan_id: Uuid, targets: String, interface: String) -> Vec<Self> {
+        vec![
+            // Continuous passive monitoring
+            Self::netsniffer(scan_id, interface),
+            // Periodic active OS detection
+            Self::os_detection(scan_id, targets)
+                .with_modules(vec!["passive_os".to_string(), "mac_enrichment".to_string()]),
+        ]
     }
 }

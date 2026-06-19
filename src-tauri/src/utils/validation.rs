@@ -1,22 +1,9 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use std::net::IpAddr;
 use std::str::FromStr;
-use crate::core::registry::Registry;
 
 pub struct InputValidator;
 
@@ -27,37 +14,35 @@ impl InputValidator {
             if parts.len() != 2 {
                 return Err(anyhow!("Invalid CIDR format"));
             }
-            
+
             // Validate IP part
-            IpAddr::from_str(parts[0])
-                .map_err(|_| anyhow!("Invalid IP address in CIDR"))?;
-            
+            IpAddr::from_str(parts[0]).map_err(|_| anyhow!("Invalid IP address in CIDR"))?;
+
             // Validate prefix length
-            let prefix: u8 = parts[1].parse()
+            let prefix: u8 = parts[1]
+                .parse()
                 .map_err(|_| anyhow!("Invalid prefix length"))?;
-            
+
             if prefix > 32 {
                 return Err(anyhow!("Invalid prefix length (max 32)"));
             }
         } else {
             // Single IP address
-            IpAddr::from_str(cidr)
-                .map_err(|_| anyhow!("Invalid IP address"))?;
+            IpAddr::from_str(cidr).map_err(|_| anyhow!("Invalid IP address"))?;
         }
-        
+
         Ok(())
     }
 
     pub fn validate_scan_type(scan_type: &str) -> Result<()> {
         match scan_type {
             "quick" | "comprehensive" | "stealth" => Ok(()),
-            _ => Err(anyhow!("Invalid scan type: {}", scan_type))
+            _ => Err(anyhow!("Invalid scan type: {}", scan_type)),
         }
     }
 
     pub fn validate_ip_address(ip: &str) -> Result<IpAddr> {
-        IpAddr::from_str(ip)
-            .map_err(|_| anyhow!("Invalid IP address format"))
+        IpAddr::from_str(ip).map_err(|_| anyhow!("Invalid IP address format"))
     }
 
     pub fn validate_port(port: u16) -> Result<()> {
@@ -73,25 +58,24 @@ impl InputValidator {
             if parts.len() != 2 {
                 return Err(anyhow!("Invalid port range format"));
             }
-            
-            let start: u16 = parts[0].parse()
+
+            let start: u16 = parts[0]
+                .parse()
                 .map_err(|_| anyhow!("Invalid start port"))?;
-            let end: u16 = parts[1].parse()
-                .map_err(|_| anyhow!("Invalid end port"))?;
-            
+            let end: u16 = parts[1].parse().map_err(|_| anyhow!("Invalid end port"))?;
+
             if start > end {
                 return Err(anyhow!("Start port cannot be greater than end port"));
             }
-            
+
             Self::validate_port(start)?;
             Self::validate_port(end)?;
         } else {
             // Single port
-            let port: u16 = range.parse()
-                .map_err(|_| anyhow!("Invalid port number"))?;
+            let port: u16 = range.parse().map_err(|_| anyhow!("Invalid port number"))?;
             Self::validate_port(port)?;
         }
-        
+
         Ok(())
     }
 }

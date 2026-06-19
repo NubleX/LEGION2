@@ -1,13 +1,20 @@
 {
+  "$schema": "https://schema.tauri.app/config/2",
   "app": {
+    "security": {
+      "csp": null,
+      "capabilities": ["default"]
+    },
     "windows": [
       {
-        "fullscreen": false,
-        "height": 800,
+        "decorations": true,
         "label": "main",
+        "maximized": true,
+        "minHeight": 600,
+        "minWidth": 800,
         "resizable": true,
         "title": "LEGION2",
-        "width": 1200
+        "visible": true
       }
     ]
   },
@@ -20,22 +27,28 @@
   "bundle": {
     "active": true,
     "category": "DeveloperTool",
-    "copyright": "Copyright (c) 2025 NubleX",
+    "copyright": "Copyright (c) 2025 Igor Dunaev / NubleX",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
-      "icons/icon.icns",
+      "icons/icon.png",
       "icons/icon.ico"
     ],
-    "targets": "all"
-  },
-  "identifier": "com.legion2.app",
-  "plugins": {
-    "shell": {
-      "open": true
+    "targets": "all",
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "wix": {
+        "dialogImagePath": "icons/icon.png"
+      }
     }
   },
+  "identifier": "com.nublex.legion2",
   "productName": "LEGION2",
-  "version": "0.3.0"
+  "version": "0.3.3-alpha"
 }

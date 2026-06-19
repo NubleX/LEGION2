@@ -1,5 +1,0 @@
-root
-sysop
-admin
-admnistrator
-superuser

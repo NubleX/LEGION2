@@ -1,25 +1,83 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
 
 use crate::core::{engine::Engine, registry::Registry};
-use crate::plan::Plan;
+use crate::core::sinks::{DoneEvent, ErrorEvent};
 use crate::database::Db;
+use crate::plan::Plan;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use uuid::Uuid;
-use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
+use tokio::sync::Mutex;
+
+#[cfg(unix)]
+use libc;
+
+// Global scan cancellation flag
+static SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+// Global registry of child scanner PIDs — killed immediately on cancel
+lazy_static::lazy_static! {
+    static ref CHILD_PIDS: Arc<Mutex<HashSet<u32>>> = Arc::new(Mutex::new(HashSet::new()));
+    static ref GLOBAL_ENGINE: Arc<Mutex<Option<Engine>>> = Arc::new(Mutex::new(None));
+    static ref ACTIVE_SCAN_TARGETS: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+}
+
+/// Register a child scanner process PID so it can be killed on cancel
+pub async fn register_child_pid(pid: u32) {
+    CHILD_PIDS.lock().await.insert(pid);
+    log::debug!("Registered child scanner PID {}", pid);
+}
+
+/// Remove a PID when its process exits normally
+pub async fn unregister_child_pid(pid: u32) {
+    CHILD_PIDS.lock().await.remove(&pid);
+    log::debug!("Unregistered child scanner PID {}", pid);
+}
+
+/// Kill all registered child scanner processes immediately (SIGKILL)
+async fn kill_all_children() {
+    let pids: Vec<u32> = {
+        let mut guard = CHILD_PIDS.lock().await;
+        let pids: Vec<u32> = guard.iter().copied().collect();
+        guard.clear();
+        pids
+    };
+    for pid in pids {
+        log::info!("Killing scanner child PID {}", pid);
+        #[cfg(unix)]
+        kill_process_tree(pid);
+        #[cfg(not(unix))]
+        log::warn!("Process kill not implemented on this platform (PID {})", pid);
+    }
+}
+
+#[cfg(unix)]
+fn kill_process_tree(pid: u32) {
+    // Negative PID kills the process group when spawned with process_group(0)
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+}
+
+/// Set active scan target range for scoped background analysis
+pub async fn set_active_scan_targets(targets: Option<String>) {
+    *ACTIVE_SCAN_TARGETS.lock().await = targets;
+}
+
+/// Get active scan target range (if any)
+pub async fn get_active_scan_targets() -> Option<String> {
+    ACTIVE_SCAN_TARGETS.lock().await.clone()
+}
+
+/// Kill all scanner children on app shutdown or cancel
+pub async fn shutdown_kill_children() {
+    cancel_current_scan();
+    kill_all_children().await;
+    set_active_scan_targets(None).await;
+}
 
 /// One command to rule them all - unified engine execution
 #[tauri::command]
@@ -30,14 +88,81 @@ pub async fn engine_execute(
 ) -> Result<(), String> {
     log::info!("Engine execute called with plan: {:?}", plan);
 
-    // Get database reference
-    let db = state_db.inner().clone();
+    // Clone app handle upfront - make_registry may consume the original
+    let app_handle = app.clone();
 
-    // Create registry
-    let registry = Registry::new(db, app);
+    // Reset cancellation flag for new scan
+    reset_scan_cancellation();
 
-    // Build engine from plan
-    let engine = Engine { registry };
+    // Get or create engine instance
+    let mut engine_guard = GLOBAL_ENGINE.lock().await;
+    let engine = match engine_guard.as_ref() {
+        Some(existing_engine) => {
+            // Check if engine is ready for new scan
+            if existing_engine.is_ready().await {
+                log::info!("Using existing engine in ready state");
+                existing_engine.clone()
+            } else {
+                log::info!("Engine not ready, resetting and preparing for new scan");
+                existing_engine.reset().await.map_err(|e| e.to_string())?;
+                existing_engine.clone()
+            }
+        }
+        None => {
+            log::info!("Creating new engine instance");
+
+            // Build engine from registry, wire Arc<Db> into DbSink
+            // Use make_registry bootstrap function for consistent initialization
+            let registry = crate::core::bootstrap::make_registry(state_db.inner().clone(), app)
+                .map_err(|e| format!("Failed to create registry: {}", e))?;
+
+            // Initialize all standard components in registry
+            if let Err(e) = registry.initialize_standard_components().await {
+                log::error!("Failed to initialize registry components: {}", e);
+                return Err(format!("Registry initialization failed: {}", e));
+            }
+
+            // Start continuous discovery manager for recursive discovery
+            let discovery_manager = registry.get_discovery_manager();
+            if let Err(e) = discovery_manager.start_continuous_discovery().await {
+                log::warn!("Failed to start continuous discovery manager: {}", e);
+            } else {
+                log::info!("🔍 Continuous recursive discovery manager started");
+            }
+
+            // Log available components
+            let (sources, sinks, transforms) = registry.list_components();
+            log::info!("Available sources: {:?}", sources);
+            log::info!("Available sinks: {:?}", sinks);
+            log::info!("Available transforms: {:?}", transforms);
+
+            // Build engine from plan
+            let new_engine = Engine::new(registry);
+            *engine_guard = Some(new_engine.clone());
+            new_engine
+        }
+    };
+
+    // Release the lock before spawning background task
+    drop(engine_guard);
+
+    // Check if engine is ready before spawning (double-check after lock release)
+    if !engine.is_ready().await {
+        let current_state = engine.get_state().await;
+        return Err(format!(
+            "A scan is already in progress (engine state: {:?}). \
+             Wait for it to finish or click Cancel before starting another scan.",
+            current_state
+        ));
+    }
+
+    // Track active scan targets for scoped background analysis (skip netsniffer / empty targets)
+    if !plan.targets.trim().is_empty() {
+        set_active_scan_targets(Some(plan.targets.clone())).await;
+    }
+
+    // Capture scan_id for error-path event emission (app_handle already cloned at top)
+    let scan_id = plan.scan_id.to_string();
 
     // Execute in background task - return immediately while streaming
     tokio::spawn(async move {
@@ -49,201 +174,77 @@ pub async fn engine_execute(
             }
             Err(e) => {
                 log::error!("Engine execution failed: {}", e);
+
+                // Emit obs:error so the UI shows an error message
+                let _ = app_handle.emit("obs:error", &ErrorEvent {
+                    message: format!("Scan failed: {}", e),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                });
+
+                // Emit obs:done so the frontend unblocks scanInProgress
+                let _ = app_handle.emit("obs:done", &DoneEvent { scan_id: scan_id.clone() });
             }
         }
     });
     Ok(())
 }
 
-/// High-level scan configuration from frontend
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ScanConfig {
-    pub targets: String,
-    pub scan_type: String,
-    pub ports: Option<String>, 
-    pub use_masscan: bool,
-    pub masscan_rate: Option<u64>,
-    pub nmap_options: Option<Vec<String>>,
-    pub modules: Option<Vec<String>>,
-    pub enable_os_detection: Option<bool>,
-    pub enable_service_detection: Option<bool>,
+/// Check if scan has been cancelled
+pub fn is_scan_cancelled() -> bool {
+    SCAN_CANCELLED.load(Ordering::Relaxed)
 }
 
-/// Start scan using Plan builders - this is the new preferred way
+/// Reset cancellation flag for new scans
+pub fn reset_scan_cancellation() {
+    SCAN_CANCELLED.store(false, Ordering::Relaxed);
+}
+
+/// Set scan cancellation flag
+pub fn cancel_current_scan() {
+    SCAN_CANCELLED.store(true, Ordering::Relaxed);
+}
+
+/// Simple cancel scan command for the unified engine
 #[tauri::command]
-pub async fn start_scan_with_config(
-    config: ScanConfig,
-    state_db: State<'_, Arc<Db>>,
-    app: AppHandle,
-) -> Result<String, String> {
-    log::info!("Starting scan with config: {:?}", config);
-    
-    let scan_id = Uuid::new_v4();
-    let targets: Vec<&str> = config.targets
-        .split(&[',', '\n'][..])
-        .map(|t| t.trim())
-        .filter(|t| !t.is_empty())
-        .collect();
-    
-    if targets.is_empty() {
-        return Err("No valid targets specified".to_string());
-    }
-    
-    let target = targets[0].to_string(); // Use first target for now
-    let ports = config.ports.unwrap_or_else(|| "1-1000".to_string());
-    
-    // Use Plan builders based on scanner type and scan configuration
-    let mut plan = match config.scan_type.as_str() {
-        "comprehensive" => Plan::comprehensive(scan_id, target, ports),
-        "os_detection" => Plan::os_detection(scan_id, target),
-        _ => {
-            if config.use_masscan {
-                Plan::masscan(scan_id, target, ports, config.masscan_rate)
-            } else {
-                let extra_args = config.nmap_options.unwrap_or_default();
-                Plan::nmap(scan_id, target, ports, extra_args)
-            }
-        }
-    };
-    
-    // Add OS detection if requested
-    if config.enable_os_detection.unwrap_or(false) {
-        plan = plan.with_os_detection();
-    }
-    
-    // Add service detection if requested
-    if config.enable_service_detection.unwrap_or(false) && !config.use_masscan {
-        plan = plan.with_extra_args(vec!["-sV".to_string()]);
-    }
-    
-    // Add modules if specified
-    if let Some(modules) = config.modules {
-        plan = plan.with_modules(modules);
-    }
-    
-    // Could add more builder methods here:
-    // plan = plan.with_sink("json-export".to_string());
-    
-    log::info!("Created plan using builders: {:?}", plan);
-    
-    // Get database reference
-    let db = state_db.inner().clone();
-    
-    // Create registry
-    let registry = Registry::new(db, app);
-    
-    // Build engine from plan
-    let engine = Engine { registry };
-    
-    // Execute in background task - return scan ID immediately 
-    tokio::spawn(async move {
-        log::info!("Starting engine execution in background");
-        
-        match engine.execute(plan).await {
-            Ok(_) => {
-                log::info!("Engine execution completed successfully");
-            }
-            Err(e) => {
-                log::error!("Engine execution failed: {}", e);
-            }
-        }
-    });
-    
-    Ok(scan_id.to_string())
+pub async fn engine_cancel_scan() -> Result<(), String> {
+    log::info!("Engine scan cancellation requested");
+    shutdown_kill_children().await;
+    Ok(())
 }
 
-/// Start OS detection scan for specific targets
+/// Reset the engine to allow new scans
 #[tauri::command]
-pub async fn start_os_detection_scan(
-    targets: String,
-    state_db: State<'_, Arc<Db>>,
-    app: AppHandle,
-) -> Result<String, String> {
-    log::info!("Starting OS detection scan for targets: {}", targets);
-    
-    let scan_id = Uuid::new_v4();
-    let plan = Plan::os_detection(scan_id, targets);
-    
-    log::info!("Created OS detection plan: {:?}", plan);
-    
-    // Get database reference
-    let db = state_db.inner().clone();
-    
-    // Create registry
-    let registry = Registry::new(db, app);
-    
-    // Build engine from plan
-    let engine = Engine { registry };
-    
-    // Execute in background task - return scan ID immediately 
-    tokio::spawn(async move {
-        log::info!("Starting OS detection engine execution in background");
-        
-        match engine.execute(plan).await {
-            Ok(_) => {
-                log::info!("OS detection execution completed successfully");
-            }
-            Err(e) => {
-                log::error!("OS detection execution failed: {}", e);
-            }
-        }
-    });
-    
-    Ok(scan_id.to_string())
-}
+pub async fn engine_reset() -> Result<(), String> {
+    log::info!("Engine reset requested");
 
-/// Advanced scan configuration with module pipeline support
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AdvancedScanConfig {
-    pub targets: String,
-    pub ports: String,
-    pub scanner_type: String, // "masscan" or "nmap"
-    pub rate: Option<u64>,
-    pub nmap_args: Option<Vec<String>>,
-    pub modules: Vec<String>, // e.g., ["port-classifier", "vuln-mapper"]
-    pub extra_sinks: Option<Vec<String>>, // e.g., ["json-export", "xml-export"]
-}
+    // Reset cancellation flag
+    reset_scan_cancellation();
 
-/// Example of advanced scan using full Plan builder capabilities
-#[tauri::command]
-pub async fn start_advanced_scan(
-    config: AdvancedScanConfig,
-    state_db: State<'_, Arc<Db>>,
-    app: AppHandle,
-) -> Result<String, String> {
-    log::info!("Starting advanced scan with config: {:?}", config);
-    
-    let scan_id = Uuid::new_v4();
-    
-    // Demonstrate the full builder pattern
-    let plan = match config.scanner_type.as_str() {
-        "masscan" => {
-            Plan::masscan(scan_id, config.targets, config.ports, config.rate)
-                .with_modules(config.modules)
-        }
-        "nmap" => {
-            Plan::nmap(scan_id, config.targets, config.ports, config.nmap_args.unwrap_or_default())
-                .with_modules(config.modules)
-                .with_rate(config.rate.unwrap_or(1000))  // Set rate even for nmap
-        }
-        _ => return Err(format!("Unknown scanner type: {}", config.scanner_type))
+    let engine_guard = GLOBAL_ENGINE.lock().await;
+    if let Some(engine) = engine_guard.as_ref() {
+        engine.reset().await.map_err(|e| e.to_string())?;
+        log::info!("Engine reset completed");
+    } else {
+        log::info!("No engine instance to reset");
     }
-    // Add extra sinks if specified
-    .with_sink("xml-export".to_string())  // Example: always add XML export for advanced scans
-    .with_extra_args(vec!["--verbose".to_string()]); // Example: always be verbose
-    
-    log::info!("Created advanced plan with full builder chain: {:?}", plan);
-    
-    // Rest is the same...
-    let db = state_db.inner().clone();
-    let registry = Registry::new(db, app);
-    let engine = Engine { registry };
-    
-    tokio::spawn(async move {
-        if let Err(e) = engine.execute(plan).await {
-            log::error!("Advanced scan execution failed: {}", e);
-        }
-    });
-    
-    Ok(scan_id.to_string())
+
+    Ok(())
+}
+
+/// Clear active scan target range (called when all scan phases complete)
+#[tauri::command]
+pub async fn engine_clear_active_targets() {
+    set_active_scan_targets(None).await;
+}
+
+/// Get current engine state
+#[tauri::command]
+pub async fn engine_get_state() -> Result<String, String> {
+    let engine_guard = GLOBAL_ENGINE.lock().await;
+    if let Some(engine) = engine_guard.as_ref() {
+        let state = engine.get_state().await;
+        Ok(format!("{:?}", state))
+    } else {
+        Ok("NoEngine".to_string())
+    }
 }

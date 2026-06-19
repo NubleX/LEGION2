@@ -1,0 +1,27 @@
+{
+    "compilerOptions": {
+        "allowImportingTsExtensions": false,
+        "allowSyntheticDefaultImports": true,
+        "composite": true,
+        "isolatedModules": true,
+        "lib": [
+            "ES2022"
+        ],
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "noEmit": false,
+        "emitDeclarationOnly": true,
+        "resolveJsonModule": true,
+        "skipLibCheck": true,
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+            "node"
+        ]
+    },
+    "include": [
+        "vite.config.ts",
+        "tailwind.config.ts",
+        "postcss.config.ts"
+    ]
+}

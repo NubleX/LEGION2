@@ -1,0 +1,3 @@
+[build]
+# Exclude NASL probes from compilation
+exclude = ["src/scanners/probes"]

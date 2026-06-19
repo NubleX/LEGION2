@@ -1,44 +1,15 @@
 {
-  "$schema": "../gen/schemas/desktop-schema.json",
+  "$schema": "https://schema.tauri.app/config/2",
   "identifier": "default",
-  "description": "Default permissions for LEGION2",
+  "description": "Default capabilities for LEGION2",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "core:event:allow-listen",
     "core:event:allow-emit",
-    "shell:allow-execute",
-    "shell:allow-spawn",
-    "shell:allow-open",
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        {
-          "name": "nmap",
-          "cmd": "nmap",
-          "args": true
-        },
-        {
-          "name": "masscan",
-          "cmd": "masscan", 
-          "args": true
-        },
-        {
-          "name": "pkexec",
-          "cmd": "pkexec",
-          "args": true
-        },
-        {
-          "name": "legion2-nmap",
-          "cmd": "legion2-nmap",
-          "args": true
-        },
-        {
-          "name": "legion2-masscan",
-          "cmd": "legion2-masscan",
-          "args": true
-        }
-      ]
-    }
+    "core:event:allow-emit-to",
+    "core:window:default",
+    "core:app:default",
+    "core:path:default"
   ]
 }

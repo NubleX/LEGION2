@@ -1,171 +1,342 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
-// Forked from an earlier version of LEGION, which was originally created by Gotham Security.
-// It was archived in 2024.
-
-// LEGION (https://gotham-security.com)
-// Copyright (c) 2023 Gotham Security
-
-//     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
-//     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
-//     version.
-
-//     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
-//     warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-//     details.
-
-//     You should have received a copy of the GNU General Public License along with this program.
-//     If not, see <http://www.gnu.org/licenses/>.
-
+import { emit, listen } from '@tauri-apps/api/event';
 import { create } from 'zustand';
-import { invoke } from '@tauri-apps/api/core';
+import { isIpInTargetRange } from '../utils/targetRange';
 
 export interface Host {
   id: string;
   ip: string;
   hostname?: string;
   mac_address?: string;
+  vendor?: string;
   os_name?: string;
   os_family?: string;
   os_accuracy?: number;
-  status: 'up' | 'down' | 'unknown' | 'scanning';
+  status: string;
   last_seen: string;
   created_at: string;
   updated_at: string;
   port_count: number;
   vulnerability_count: number;
+  notes?: string;
+  tags: string[];
+  scan_progress?: number;
+  // Legacy compatibility fields
+  timestamp?: string;
 }
 
-export interface HostFilter {
-  status?: 'up' | 'down' | 'unknown' | 'scanning';
-  os_family?: string;
-  has_vulnerabilities?: boolean;
-  port_range?: { min: number; max: number };
-  severity_min?: 'low' | 'medium' | 'high' | 'critical';
-  search_term?: string;
-}
-
-interface HostStore {
+export interface HostStoreState {
   hosts: Host[];
-  filteredHosts: Host[];
-  currentFilter: HostFilter;
-  isLoading: boolean;
-  lastError: string | null;
-  
-  loadHosts: () => Promise<void>;
-  setFilter: (filter: HostFilter) => void;
-  clearFilter: () => void;
-  searchHosts: (term: string) => void;
-  deleteHost: (hostId: string) => Promise<void>;
-  loadHostDetails: (hostId: string) => Promise<void>;
-  exportHosts: (format: 'json' | 'csv' | 'xml') => Promise<string>;
-  deleteMultipleHosts: (hostIds: string[]) => Promise<void>;
-  refreshHost: (hostId: string) => Promise<void>;
-  getHostsByStatus: (status: 'up' | 'down' | 'unknown' | 'scanning') => Host[];
-  getHostsBySeverity: (severity: 'critical' | 'high') => Host[];
-  updateStatistics: () => void;
+  ports: Record<string, Set<number>>;
+  activeTargetRange: string | null;
+  getHosts: () => Host[];
+  getVisibleHosts: () => Host[];
+  getHost: (ip: string) => Host | undefined;
+  setHosts: (hosts: Host[]) => void;
+  setActiveTargetRange: (targets: string | null) => void;
+  clearHosts: () => void;
+  addHost: (host: Host) => void;
 }
 
-const useHostStore = create<HostStore>((set, get) => ({
-  hosts: [],
-  filteredHosts: [],
-  currentFilter: {},
-  isLoading: false,
-  lastError: null,
+/**
+ * Compares critical host fields to determine if an update is needed.
+ * Treats undefined/null/empty new values as "no change" (preserves existing).
+ * Returns true if there are actual changes, false if values are identical.
+ */
+function hasHostDataChanged(existing: Host, incoming: Partial<Host>): boolean {
+  // Compare critical fields
+  const fieldsToCompare: (keyof Host)[] = [
+    'hostname',
+    'vendor',
+    'os_name',
+    'os_family',
+    'mac_address',
+    'status'
+  ];
 
-  loadHosts: async () => {
-    set({ isLoading: true, lastError: null });
-    
+  for (const field of fieldsToCompare) {
+    const existingValue = existing[field];
+    const incomingValue = incoming[field];
+
+    // If incoming value is undefined/null/empty, treat as no change
+    if (incomingValue === undefined || incomingValue === null || incomingValue === '') {
+      continue;
+    }
+
+    // If values are different, we have a change
+    if (existingValue !== incomingValue) {
+      return true;
+    }
+  }
+
+  // No meaningful changes detected
+  return false;
+}
+
+const useHostStore = create<HostStoreState>((set, get) => {
+  // Listen for host events from the backend and update the store
+  listen('obs:host', (event: any) => {
+    const hostEvent = event.payload;
+    console.log('Received obs:host event:', hostEvent);
+
+    // Convert basic HostEvent to partial Host object
+    const partialHost: Partial<Host> = {
+      ip: hostEvent.ip,
+      hostname: hostEvent.hostname,
+      mac_address: hostEvent.mac, // Backend emits 'mac', we store as 'mac_address'
+      vendor: hostEvent.vendor,
+      os_name: hostEvent.os, // Backend emits 'os', we store as 'os_name'
+      status: hostEvent.status,
+      id: hostEvent.ip, // Use IP as temporary ID
+      created_at: hostEvent.timestamp,
+      updated_at: hostEvent.timestamp,
+      last_seen: hostEvent.timestamp,
+      port_count: 0,
+      vulnerability_count: 0,
+      tags: []
+    };
+
+    set(state => {
+      const idx = state.hosts.findIndex(h => h.ip === hostEvent.ip);
+      if (idx !== -1) {
+        const existing = state.hosts[idx];
+        
+        // Check if data has actually changed before updating
+        if (!hasHostDataChanged(existing, partialHost)) {
+          console.log('No changes detected for host', hostEvent.ip, '- skipping update');
+          return state; // No changes, skip update entirely
+        }
+        
+        const updated = [...state.hosts];
+        // Merge: preserve existing hostname/vendor/OS when new values are undefined
+        // This prevents overwriting existing good data with undefined
+        // Only update fields that are actually provided (not undefined)
+        updated[idx] = {
+          ...existing,
+          // Update provided fields, but preserve existing values for critical fields when undefined
+          ...(partialHost.ip && { ip: partialHost.ip }),
+          ...(partialHost.status !== undefined && { status: partialHost.status }),
+          ...(partialHost.id !== undefined && { id: partialHost.id }),
+          ...(partialHost.created_at !== undefined && { created_at: partialHost.created_at }),
+          ...(partialHost.updated_at !== undefined && { updated_at: partialHost.updated_at }),
+          ...(partialHost.last_seen !== undefined && { last_seen: partialHost.last_seen }),
+          ...(partialHost.tags !== undefined && { tags: partialHost.tags }),
+          // Smart merge for critical fields: preserve existing if new value is undefined
+          hostname: partialHost.hostname !== undefined ? partialHost.hostname : existing.hostname,
+          vendor: partialHost.vendor !== undefined ? partialHost.vendor : existing.vendor,
+          os_name: partialHost.os_name !== undefined ? partialHost.os_name : existing.os_name,
+          mac_address: partialHost.mac_address !== undefined ? partialHost.mac_address : existing.mac_address,
+          // Preserve port_count and vulnerability_count - these come from DB, not host events
+          port_count: existing.port_count,
+          vulnerability_count: existing.vulnerability_count,
+        };
+        console.log('Updated existing host:', updated[idx]);
+        return { hosts: updated };
+      }
+      console.log('Adding new host:', partialHost);
+      return { hosts: [...state.hosts, partialHost as Host] };
+    });
+  }).catch(console.error);
+
+
+  // When a service is observed, notify listeners to refresh that host's ports
+  listen('obs:service', (event: any) => {
+    const serviceEvent = event.payload;
+    if (serviceEvent?.ip) {
+      console.log('Received obs:service event for', serviceEvent.ip);
+      emit('refresh_host_ports', serviceEvent.ip).catch(console.error);
+    }
+  }).catch(console.error);
+
+  // Listen for refresh signals and fetch detailed host data
+  listen('refresh_host_data', async (event: any) => {
+    const ip = event.payload as string;
+    console.log('Received refresh_host_data event for IP:', ip);
+
+    // Add delay to allow database batch to be flushed (5 second batch interval)
+    await new Promise(resolve => setTimeout(resolve, 6000));
+
     try {
-      const hosts = await invoke('get_all_hosts') as Host[];
-      
-      set({ 
-        hosts: hosts,
-        filteredHosts: hosts,
-        isLoading: false 
+      const { invoke } = await import('@tauri-apps/api/core');
+      const detailedHost = await invoke<Host>('get_host_by_ip', { ip });
+      console.log('Fetched detailed host data:', detailedHost);
+
+      set(state => {
+        const idx = state.hosts.findIndex(h => h.ip === ip);
+        if (idx !== -1) {
+          const existing = state.hosts[idx];
+          
+          // Check if critical host data has changed before updating
+          if (!hasHostDataChanged(existing, detailedHost)) {
+            // Even if critical fields haven't changed, we might need to update port_count/vulnerability_count
+            // Check if these counts have changed
+            if (existing.port_count === detailedHost.port_count && 
+                existing.vulnerability_count === detailedHost.vulnerability_count) {
+              console.log('No changes detected for host', ip, '- skipping update');
+              return state; // No changes, skip update entirely
+            }
+          }
+          
+          const updated = [...state.hosts];
+          // Smart merge: only update fields that are non-null in detailedHost
+          // This prevents overwriting good live data with stale null values from DB
+          updated[idx] = {
+            ...existing,
+            // Only update if new value is not null/undefined
+            hostname: detailedHost.hostname ?? existing.hostname,
+            mac_address: detailedHost.mac_address ?? existing.mac_address,
+            vendor: detailedHost.vendor ?? existing.vendor,
+            os_name: detailedHost.os_name ?? existing.os_name,
+            os_family: detailedHost.os_family ?? existing.os_family,
+            os_accuracy: detailedHost.os_accuracy ?? existing.os_accuracy,
+            // Always update these from DB (they should be most current)
+            // EXCEPT status - trust live events over DB for status (DB may have stale data)
+            status: existing.status === 'up' ? existing.status : detailedHost.status,
+            port_count: detailedHost.port_count,
+            vulnerability_count: detailedHost.vulnerability_count,
+            last_seen: detailedHost.last_seen,
+            updated_at: detailedHost.updated_at,
+            notes: detailedHost.notes ?? existing.notes,
+            tags: detailedHost.tags.length > 0 ? detailedHost.tags : existing.tags,
+            scan_progress: detailedHost.scan_progress ?? existing.scan_progress,
+          };
+          console.log('Updated host with detailed data:', updated[idx]);
+          return { hosts: updated };
+        }
+        console.log('Adding new detailed host:', detailedHost);
+        return { hosts: [...state.hosts, detailedHost] };
       });
     } catch (error) {
-      console.error('Failed to load hosts:', error);
-      // Fall back to empty array instead of mock data
-      set({ 
-        hosts: [],
-        filteredHosts: [],
-        lastError: `Failed to load hosts: ${error}`,
-        isLoading: false 
-      });
+      console.error('Failed to fetch detailed host data for', ip, ':', error);
     }
-  },
+  }).catch(console.error);
 
-  setFilter: (filter: HostFilter) => {
-    const hosts = get().hosts;
-    let filtered = hosts;
-
-    if (filter.status) {
-      filtered = filtered.filter(h => h.status === filter.status);
+  // Listen for periodic refresh of all hosts from backend
+  listen('refresh_all_hosts', async () => {
+    console.log('[hostStore] Received refresh_all_hosts event - fetching all hosts from database');
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const allHosts = await invoke<Host[]>('get_all_hosts');
+      if (allHosts) {
+        set(state => {
+          // Create a map of existing hosts by IP for quick lookup
+          const existingHostsMap = new Map(state.hosts.map(h => [h.ip, h]));
+          
+          // Merge DB hosts with existing live data
+          const mergedHosts = allHosts.map(dbHost => {
+            const existing = existingHostsMap.get(dbHost.ip);
+            
+            if (!existing) {
+              // New host from DB, use as-is
+              return dbHost;
+            }
+            
+            // Check if critical host data has changed
+            const hasChanges = hasHostDataChanged(existing, dbHost);
+            const countsChanged = existing.port_count !== dbHost.port_count || 
+                                 existing.vulnerability_count !== dbHost.vulnerability_count;
+            
+            // If no changes detected, preserve existing host
+            if (!hasChanges && !countsChanged && 
+                existing.last_seen === dbHost.last_seen &&
+                existing.updated_at === dbHost.updated_at) {
+              return existing;
+            }
+            
+            // Merge: preserve existing hostname/vendor/OS when DB has null/undefined/empty
+            // Prefer DB values when they exist and are non-empty
+            return {
+              ...existing,
+              ...dbHost,
+              // Preserve hostname/vendor/OS if DB values are null/undefined/empty
+              hostname: dbHost.hostname || existing.hostname,
+              vendor: dbHost.vendor || existing.vendor,
+              os_name: dbHost.os_name || existing.os_name,
+              os_family: dbHost.os_family || existing.os_family,
+              os_accuracy: dbHost.os_accuracy ?? existing.os_accuracy,
+              mac_address: dbHost.mac_address || existing.mac_address,
+              // For status, prefer 'up' from live events over DB
+              status: existing.status === 'up' ? existing.status : dbHost.status,
+              // Always update these from DB (they should be most current)
+              port_count: dbHost.port_count,
+              vulnerability_count: dbHost.vulnerability_count,
+              last_seen: dbHost.last_seen,
+              updated_at: dbHost.updated_at,
+              // Preserve notes and tags if DB has empty/null
+              notes: dbHost.notes ?? existing.notes,
+              tags: dbHost.tags && dbHost.tags.length > 0 ? dbHost.tags : existing.tags,
+              scan_progress: dbHost.scan_progress ?? existing.scan_progress,
+            };
+          });
+          
+          // Add any existing hosts that aren't in DB (shouldn't happen, but preserve them)
+          const dbHostsIps = new Set(allHosts.map(h => h.ip));
+          const missingHosts = state.hosts.filter(h => !dbHostsIps.has(h.ip));
+          
+          console.log(`[hostStore] Periodic refresh: merged ${allHosts.length} hosts from DB, preserved ${missingHosts.length} existing hosts`);
+          return { hosts: [...mergedHosts, ...missingHosts] };
+        });
+      }
+    } catch (error) {
+      console.error('[hostStore] Failed to refresh all hosts:', error);
     }
-    if (filter.search_term) {
-      const term = filter.search_term.toLowerCase();
-      filtered = filtered.filter(h => 
-        h.ip.includes(term) || 
-        h.hostname?.toLowerCase().includes(term) ||
-        h.os_name?.toLowerCase().includes(term)
-      );
-    }
-    if (filter.has_vulnerabilities) {
-      filtered = filtered.filter(h => h.vulnerability_count > 0);
-    }
+  }).catch(console.error);
 
-    set({ currentFilter: filter, filteredHosts: filtered });
-  },
-
-  clearFilter: () => {
-    set({ 
-      currentFilter: {},
-      filteredHosts: get().hosts 
-    });
-  },
-
-  searchHosts: (term: string) => {
-    get().setFilter({ ...get().currentFilter, search_term: term });
-  },
-
-  deleteHost: async (hostId: string) => {
-    const hosts = get().hosts.filter(h => h.id !== hostId);
-    set({ hosts, filteredHosts: hosts });
-  },
-
-  loadHostDetails: async (hostId: string) => {
-    console.log('Loading details for host:', hostId);
-  },
-
-  exportHosts: async () => {
-    return JSON.stringify(get().filteredHosts, null, 2);
-  },
-
-  deleteMultipleHosts: async (hostIds: string[]) => {
-    const hosts = get().hosts.filter(h => !hostIds.includes(h.id));
-    set({ hosts, filteredHosts: hosts });
-  },
-
-  refreshHost: async (hostId: string) => {
-    console.log('Refreshing host:', hostId);
-  },
-
-  getHostsByStatus: (status: 'up' | 'down' | 'unknown' | 'scanning') => {
-    return get().hosts.filter(h => h.status === status);
-  },
-
-  getHostsBySeverity: (severity: 'critical' | 'high') => {
-    if (severity === 'critical') {
-      return get().hosts.filter(h => h.vulnerability_count >= 10);
-    }
-    return get().hosts.filter(h => h.vulnerability_count >= 5);
-  },
-
-  updateStatistics: () => {
-    // Update stats logic here
-  }
-}));
+  return {
+    hosts: [],
+    ports: {},
+    activeTargetRange: null,
+    getHosts: () => get().hosts,
+    getVisibleHosts: () => {
+      const { hosts, activeTargetRange } = get();
+      if (!activeTargetRange) {
+        return hosts;
+      }
+      return hosts.filter((host) => isIpInTargetRange(host.ip, activeTargetRange));
+    },
+    getHost: (ip: string) => get().hosts.find(h => h.ip === ip),
+    setHosts: (hosts: Host[]) => set({ hosts }),
+    setActiveTargetRange: (targets: string | null) => set({ activeTargetRange: targets }),
+    clearHosts: () => set({ hosts: [], activeTargetRange: null }),
+    addHost: (host: Host) => set(state => ({
+      hosts: [...state.hosts.filter(h => h.ip !== host.ip), host]
+    })),
+  };
+});
 
 export default useHostStore;
+
+export const selectVisibleHosts = (state: HostStoreState): Host[] => {
+  if (!state.activeTargetRange) {
+    return state.hosts;
+  }
+  // Create a stable filtered array reference using useMemo
+  // This will be properly memoized when used with useShallow or similar
+  const filtered = state.hosts.filter((host) => isIpInTargetRange(host.ip, state.activeTargetRange!));
+  return filtered;
+};
+
+// Alternative: use a hook-based selector for better caching
+let lastHosts: Host[] | null = null;
+let lastRange: string | null = null;
+let cachedResult: Host[] | null = null;
+
+export const selectVisibleHostsCached = (state: HostStoreState): Host[] => {
+  // Return cached result if inputs haven't changed
+  if (lastHosts === state.hosts && lastRange === state.activeTargetRange && cachedResult) {
+    return cachedResult;
+  }
+  
+  lastHosts = state.hosts;
+  lastRange = state.activeTargetRange;
+  
+  if (!state.activeTargetRange) {
+    cachedResult = state.hosts;
+  } else {
+    cachedResult = state.hosts.filter((host) => isIpInTargetRange(host.ip, state.activeTargetRange!));
+  }
+  
+  return cachedResult;
+};

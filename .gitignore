@@ -23,8 +23,12 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
+
 node_modules/
+CLAUDE.*
+CLAUDE.md
+src-tauri/.claude
+AGENTS.md
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -146,4 +150,21 @@ legion2.db
 
 target/*
 src-tauri/target/*
+
 # Cargo
+
+# claude
+CLAUDE.*
+CLAUDE.md
+.cursor/*
+.cursor
+
+
+src-tauri/.claude
+AGENTS.md
+
+src-tauri/.claude/*
+src-tauri/.logs/*
+src-tauri/gen/schemas/*
+src-tauri/claude/*
+src-tauri/.scans/*
