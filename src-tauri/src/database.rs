@@ -246,7 +246,8 @@ impl Db {
             conn.execute(
                 r#"INSERT INTO hosts(id, ip_encrypted, hostname, mac_address, vendor, os_name, os_family, os_accuracy, status, first_seen, last_seen, created_at, updated_at, port_count, vulnerability_count)
                    VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10, ?10, 0, 0)
-                   ON CONFLICT(ip_encrypted) DO UPDATE SET
+                   ON CONFLICT(id) DO UPDATE SET
+                       ip_encrypted = COALESCE(hosts.ip_encrypted, excluded.ip_encrypted),
                        hostname = COALESCE(excluded.hostname, hosts.hostname),
                        mac_address = COALESCE(excluded.mac_address, hosts.mac_address),
                        vendor = COALESCE(excluded.vendor, hosts.vendor),
@@ -665,6 +666,18 @@ impl Db {
             conn.execute("DELETE FROM hosts WHERE id = ?", [host_id])?;
             Ok(())
         }).await?
+    }
+
+    /// Delete all hosts (ports and vulnerabilities cascade via FK)
+    pub async fn clear_all_hosts(&self) -> Result<u64> {
+        let conn = self.conn.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock();
+            let deleted = conn.execute("DELETE FROM hosts", [])?;
+            Ok(deleted as u64)
+        })
+        .await?
     }
 
     pub async fn update_host_tags(&self, host_id: &str, tags: &[String]) -> Result<()> {

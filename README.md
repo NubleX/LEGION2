@@ -71,7 +71,7 @@ LEGION2 is built on a modern technology stack:
 
 **Pipeline:**
 
-```
+```md
 Source (nmap / masscan / netsniffer / iot_probe)
   ↓ ObsStream
 Transform Pipeline (MAC enrichment → OS fingerprint → service parse → CVE lookup)
@@ -86,6 +86,7 @@ Broadcast Channel
 
 ## Screenshots
 
+```xml
 <div align="center">
   <img src="images/legion2/Legion2-v0.3.3-dashboard.png" alt="LEGION2 Scanner Dashboard" width="1300"/>
   <p><em>Scanner Dashboard with Real-time Live Output</em></p>
@@ -100,6 +101,7 @@ Broadcast Channel
   <img src="images/legion2/Legion2-v0.3.3-topology.png" alt="LEGION2 Network Topology" width="1300"/>
   <p><em>Network Topology Visualization</em></p>
 </div>
+```
 
 ---
 
@@ -140,7 +142,7 @@ Broadcast Channel
 LEGION2 runs on Debian-based Linux distributions:
 
 | Distribution | Minimum Version | Status |
-|---|---|---|
+| --- | --- | --- |
 | Kali Linux | 2022.1+ | ✅ Primary target |
 | Ubuntu | 22.04 LTS+ | ✅ Supported |
 | ParrotOS | 5.0+ | ✅ Supported |
@@ -335,8 +337,8 @@ LEGION2 is licensed under the GNU General Public License v3.0, ensuring it remai
 
 ## Support and Community
 
-- **GitHub Repository**: https://github.com/NubleX/LEGION2
-- **Issue Tracker**: https://github.com/NubleX/LEGION2/issues
+- **GitHub Repository**: hxtps://github.com/NubleX/LEGION2
+- **Issue Tracker**: hxtps://github.com/NubleX/LEGION2/issues
 - **Documentation**: `docs/` directory in the repository
 
 ---

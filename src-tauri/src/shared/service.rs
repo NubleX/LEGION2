@@ -1,8 +1,5 @@
-use anyhow::Result;
 use roxmltree::Node;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use tracing::debug;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Service {

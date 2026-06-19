@@ -7,8 +7,10 @@
 )]
 
 use crate::database::Db;
+use crate::analysis::AnalysisEngine;
 use anyhow::Result;
 use std::sync::Arc;
+use tauri::{Manager, RunEvent};
 
 mod analysis;
 mod commands;
@@ -20,6 +22,7 @@ mod offensive;
 mod os;
 mod plan;
 mod scanners;
+mod session_state;
 mod shared;
 mod utils;
 
@@ -49,9 +52,13 @@ fn main() {
 
     // Initialize database
     let db = Arc::new(open_db().expect("Failed to open database"));
+    let db_for_setup = db.clone();
 
     tauri::Builder::default()
-        .setup(|app| {
+        .setup(move |app| {
+            let analysis_engine = AnalysisEngine::with_ui(db_for_setup.clone(), app.handle().clone());
+            app.manage(analysis_engine);
+
             // Start periodic background task to refresh all hosts every 27 seconds
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -71,6 +78,7 @@ fn main() {
             commands::engine_commands::engine_execute,
             commands::engine_commands::engine_cancel_scan,
             commands::engine_commands::engine_reset,
+            commands::engine_commands::engine_clear_active_targets,
             commands::engine_commands::engine_get_state,
             commands::host_commands::get_all_hosts,
             commands::host_commands::get_hosts_in_range,
@@ -81,9 +89,25 @@ fn main() {
             commands::host_commands::get_service_cves,
             commands::host_commands::enrich_service_osint,
             commands::host_commands::delete_host,
+            commands::host_commands::clear_all_hosts,
             commands::host_commands::batch_import_hosts,
             commands::host_commands::update_host_os_detection,
+            commands::analysis_commands::analyze_host,
+            commands::analysis_commands::analyze_network,
+            commands::analysis_commands::get_active_analyses,
             commands::analysis_commands::get_host_vulnerabilities,
+            commands::analysis_commands::get_all_vulnerabilities,
+            commands::analysis_commands::analyze_host_vulnerabilities,
+            commands::analysis_commands::get_vulnerability_stats,
+            commands::analysis_commands::get_service_statistics,
+            commands::analysis_commands::import_nmap_xml,
+            commands::analysis_commands::parse_scan_session,
+            commands::analysis_commands::get_latest_session_analytics,
+            commands::cve_commands::search_cves_by_product,
+            commands::cve_commands::fetch_cve,
+            commands::cve_commands::get_all_cves,
+            commands::cve_commands::get_cve_risk_assessment,
+            commands::cve_commands::search_and_store_cves,
             commands::netsniffer_commands::lookup_mac_vendor,
             commands::netsniffer_commands::log_network_artifact,
             commands::netsniffer_commands::start_network_monitoring,
@@ -106,6 +130,14 @@ fn main() {
             commands::os_commands::check_scanner_capabilities,
             commands::os_commands::set_scanner_capabilities,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if let RunEvent::ExitRequested { .. } = event {
+                log::info!("App exit requested — killing scanner child processes");
+                tauri::async_runtime::block_on(async {
+                    commands::engine_commands::shutdown_kill_children().await;
+                });
+            }
+        });
 }

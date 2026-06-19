@@ -2,7 +2,7 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 use crate::plan::Plan;
-use crate::shared::ScanTypes::PortRange;
+use crate::shared::scan_types::PortRange;
 use crate::shared::shared::{PortState, Protocol};
 use crate::network::network::parse_target_specification;
 use crate::database::Db;

@@ -52,6 +52,11 @@ pub struct ErrorEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoneEvent {
+    pub scan_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricsEvent {
     pub observations_processed: u64,
     pub hosts_discovered: u64,
@@ -126,6 +131,7 @@ impl SinkMetrics {
 #[derive(Clone)]
 pub struct UiSink {
     pub app: AppHandle,
+    scan_id: String,
     host_cache: Arc<Mutex<HashMap<String, bool>>>,
     metrics: SinkMetrics,
     analysis_engine: Option<Arc<crate::analysis::AnalysisEngine>>,
@@ -133,9 +139,10 @@ pub struct UiSink {
 }
 
 impl UiSink {
-    pub fn new(app: AppHandle) -> Self {
+    pub fn new(app: AppHandle, scan_id: uuid::Uuid) -> Self {
         Self {
             app,
+            scan_id: scan_id.to_string(),
             host_cache: Arc::new(Mutex::new(HashMap::new())),
             metrics: SinkMetrics::new(),
             analysis_engine: None,
@@ -280,7 +287,10 @@ impl UiSink {
             log::error!("Failed to emit obs:metrics event: {}", e);
         }
 
-        if let Err(e) = self.app.emit("obs:done", ()) {
+        let done_event = DoneEvent {
+            scan_id: self.scan_id.clone(),
+        };
+        if let Err(e) = self.app.emit("obs:done", &done_event) {
             log::error!("Failed to emit obs:done event: {}", e);
         }
         Ok(())

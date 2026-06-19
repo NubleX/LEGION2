@@ -605,10 +605,13 @@ fn oui_vendor_map() -> HashMap<[u8; 3], &'static str> {
     map
 }
 
+// Use lazy static for OUI lookup to avoid recreating HashMap on every call
+use std::sync::LazyLock;
+static OUI_MAP: LazyLock<std::collections::HashMap<[u8; 3], &'static str>> = LazyLock::new(oui_vendor_map);
+
 pub fn oui_lookup_vendor(mac: [u8; 6]) -> Option<String> {
-    let oui_map = oui_vendor_map();
     let oui = [mac[0], mac[1], mac[2]];
-    oui_map.get(&oui).map(|vendor| vendor.to_string())
+    OUI_MAP.get(&oui).map(|vendor| vendor.to_string())
 }
 
 fn hash_opts_kinds(kinds: &[u8]) -> u64 {
@@ -638,14 +641,7 @@ fn main() -> Result<()> {
     let vantage = std::env::var("VANTAGE").unwrap_or_else(|_| "gw1".into());
 
     // Open capture
-    let dev = if iface_name == "default" {
-        Device::lookup()?.ok_or_else(|| anyhow!("no default capture device"))
-    } else {
-        Device::list()?
-            .into_iter()
-            .find(|d| d.name == iface_name)
-            .ok_or_else(|| anyhow!("interface {} not found", iface_name))
-    }?;
+    let dev = NetSnifferSource::resolve_capture_device(&iface_name)?;
 
     let mut cap: Capture<Active> = Capture::from_device(dev)?
         .promisc(true)
@@ -913,13 +909,17 @@ fn probe_ssdp(interface_v4: Option<Ipv4Addr>) -> Result<()> {
 // NDJSON Logger
 
 pub fn log_artifact(data: serde_json::Value) {
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("./.scans/netsniffer.ndjson")
-        .unwrap();
-
-    writeln!(file, "{}", serde_json::to_string(&data).unwrap()).unwrap();
+    if let Err(e) = (|| -> Result<()> {
+        std::fs::create_dir_all("./.scans")?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("./.scans/netsniffer.ndjson")?;
+        writeln!(file, "{}", serde_json::to_string(&data)?)?;
+        Ok(())
+    })() {
+        log::warn!("Failed to write netsniffer artifact: {}", e);
+    }
 }
 
 // =====================================================================
@@ -975,21 +975,37 @@ impl NetSnifferSource {
         self
     }
 
-    /// Get local IP address from interface
-    fn get_local_ip(interface: &str) -> Option<Ipv4Addr> {
-        use pcap::Device;
-        if let Ok(devices) = Device::list() {
-            if let Some(dev) = devices.iter().find(|d| d.name == interface) {
-                for addr in &dev.addresses {
-                    if let std::net::IpAddr::V4(ipv4) = addr.addr {
-                        if !ipv4.is_loopback() && !ipv4.is_unspecified() {
-                            return Some(ipv4);
-                        }
-                    }
-                }
-            }
+    /// Resolve capture device from interface name ("default" uses libpcap lookup)
+    fn resolve_capture_device(interface: &str) -> Result<Device> {
+        if interface == "default" || interface.is_empty() {
+            Device::lookup()?.ok_or_else(|| anyhow!("no default capture device"))
+        } else {
+            Device::list()?
+                .into_iter()
+                .find(|d| d.name == interface)
+                .ok_or_else(|| anyhow!("interface {} not found", interface))
         }
-        None
+    }
+
+    fn ipv4_from_device(dev: &Device) -> Option<Ipv4Addr> {
+        dev.addresses.iter().find_map(|addr| {
+            if let std::net::IpAddr::V4(ip) = addr.addr {
+                if !ip.is_loopback() && !ip.is_unspecified() {
+                    Some(ip)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Get local IP address from interface (resolves "default" via libpcap)
+    fn get_local_ip(interface: &str) -> Option<Ipv4Addr> {
+        Self::resolve_capture_device(interface)
+            .ok()
+            .and_then(|dev| Self::ipv4_from_device(&dev))
     }
 
     /// Send SSDP M-SEARCH probe (multicast)
@@ -1363,34 +1379,48 @@ impl Source for NetSnifferSource {
         // Ensure output directory exists
         create_dir_all(&output_dir)?;
 
-        // Start active probing if enabled
+        // Resolve device once — "default" must not be passed to probing/IP lookup
+        let dev = Self::resolve_capture_device(&interface)?;
+        let resolved_iface = dev.name.clone();
+        let local_ip = Self::ipv4_from_device(&dev);
+
+        // Start active probing if enabled (use resolved interface name)
         if active_probing {
-            log::info!("Starting active probing on interface: {}", interface);
-            Self::start_active_probing(interface.clone(), target_network, probe_interval);
+            log::info!(
+                "Starting active probing on interface: {} (resolved from {})",
+                resolved_iface,
+                interface
+            );
+            Self::start_active_probing(resolved_iface.clone(), target_network, probe_interval);
         } else {
             log::info!("Active probing disabled, using passive monitoring only");
         }
 
         // Build BPF filter for scanner replies and IoT protocol responses
-        // This captures replies to our scanner (incoming traffic) and IoT discovery responses
-        let scanner_ip = ""; // TODO: Get local IP from interface
-        let bpf_filter = format!(
+        let scanner_ip = local_ip
+            .map(|ip| ip.to_string())
+            .unwrap_or_default();
+        let bpf_filter = if scanner_ip.is_empty() {
             "tcp or udp or icmp or \
              (udp and (port 1900 or port 5353 or port 3702 or port 161 or port 5683 or port 5684)) or \
              (tcp and (port 1883 or port 8883))"
-        ); // Enhanced to capture IoT protocol responses
-
-        log::info!("Starting NetSniffer on interface: {}, BPF: {}", interface, bpf_filter);
-
-        // Open capture device
-        let dev = if interface == "default" {
-            Device::lookup()?.ok_or_else(|| anyhow!("no default capture device"))?
+                .to_string()
         } else {
-            Device::list()?
-                .into_iter()
-                .find(|d| d.name == interface)
-                .ok_or_else(|| anyhow!("interface {} not found", interface))?
+            format!(
+                "tcp or udp or icmp or \
+                 (udp and (port 1900 or port 5353 or port 3702 or port 161 or port 5683 or port 5684)) or \
+                 (tcp and (port 1883 or port 8883)) or \
+                 host {}",
+                scanner_ip
+            )
         };
+
+        log::info!(
+            "Starting NetSniffer on interface: {} (resolved from {}), BPF: {}",
+            resolved_iface,
+            interface,
+            bpf_filter
+        );
 
         let cap = Capture::from_device(dev)?
             .promisc(true)
@@ -1401,8 +1431,8 @@ impl Source for NetSnifferSource {
         // Create channel for packet communication between blocking and async contexts
         let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel::<PacketInfo>();
 
-        // Clone interface name for blocking task
-        let interface_for_blocking = interface.clone();
+        // Clone resolved interface name for blocking task
+        let interface_for_blocking = resolved_iface.clone();
         
         // Spawn blocking task for packet capture
         let cap_for_blocking = cap;

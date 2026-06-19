@@ -1,5 +1,5 @@
-// Self-import removed - definitions are below
-use crate::shared::shared::PortState;
+// Import PortState from types.rs to avoid circular imports
+use crate::shared::types::PortState;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -53,14 +53,8 @@ pub struct PortRange {
     pub end: u16,
 }
 
-/// Network protocols
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum Protocol {
-    Tcp,
-    Udp,
-    Icmp,
-    Sctp,
-}
+// Use Protocol from types.rs to avoid duplication
+pub use crate::shared::types::Protocol;
 
 /// Current status of a scan
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -375,16 +369,7 @@ impl std::fmt::Display for ScanType {
     }
 }
 
-impl std::fmt::Display for Protocol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Protocol::Tcp => write!(f, "TCP"),
-            Protocol::Udp => write!(f, "UDP"),
-            Protocol::Icmp => write!(f, "ICMP"),
-            Protocol::Sctp => write!(f, "SCTP"),
-        }
-    }
-}
+// Display implementation for Protocol is in types.rs
 
 impl std::fmt::Display for ScanStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

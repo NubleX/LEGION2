@@ -1,11 +1,11 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
-import { AlertTriangle, Download, Shield, Network, Server } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, Download, ExternalLink, Network, RefreshCw, Server, Shield } from 'lucide-react';
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import useHostStore, { type Host } from '../stores/hostStore';
+import useHostStore, { type Host, selectVisibleHosts } from '../stores/hostStore';
 import useServiceStore from '../stores/serviceStore';
 import ServiceTable from './ServiceTable';
 
@@ -29,6 +29,31 @@ interface VulnerabilityInfo {
   discovered_at: string;
   last_seen: string;
   references?: string[];
+}
+
+interface CveDetail {
+  name: string;
+  product: string;
+  version: string;
+  url: string;
+  source: string;
+  severity: string;
+  description: string;
+  cvss_score?: number;
+  published_date?: string;
+  last_modified_date?: string;
+  references: string[];
+  cwe: string[];
+  is_exploitable: boolean;
+  risk_score: number;
+}
+
+interface ServiceStatisticsInfo {
+  total_services: number;
+  vulnerable_services: number;
+  web_services: number;
+  database_services: number;
+  average_risk_score: number;
 }
 
 interface ResultViewerProps {
@@ -95,7 +120,7 @@ function vulnerabilitiesChanged(oldVulns: VulnerabilityInfo[], newVulns: Vulnera
 
 const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHost }) => {
   // Only subscribe to hosts array, memoize the current host lookup
-  const hosts = useHostStore(state => state.hosts);
+  const hosts = useHostStore(selectVisibleHosts);
   
   const [selectedTab, setSelectedTab] = useState<'ports' | 'services' | 'vulnerabilities' | 'details'>('ports');
   const loadServices = useServiceStore((state) => state.loadServices);
@@ -103,12 +128,87 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
   const [loadingPorts, setLoadingPorts] = useState(false);
   const [hostVulnerabilities, setHostVulnerabilities] = useState<VulnerabilityInfo[]>([]);
   const [loadingVulnerabilities, setLoadingVulnerabilities] = useState(false);
+  const [scanningVulnerabilities, setScanningVulnerabilities] = useState(false);
+  const [expandedVulnIds, setExpandedVulnIds] = useState<Set<string>>(new Set());
+  const [cveDetails, setCveDetails] = useState<Record<string, CveDetail>>({});
+  const [fetchingCveIds, setFetchingCveIds] = useState<Set<string>>(new Set());
+  const [serviceStats, setServiceStats] = useState<ServiceStatisticsInfo | null>(null);
 
   // Get the host either from selectedHost prop or by selectedScanId (treating it as host ID)
   // Memoize to avoid recalculating on every render
   const currentHost = useMemo(() => {
     return selectedHost || (selectedScanId ? hosts.find(h => h.id === selectedScanId) : null);
   }, [selectedHost, selectedScanId, hosts]);
+
+  const loadVulnerabilities = useCallback((ip: string) => {
+    setLoadingVulnerabilities(true);
+    invoke<VulnerabilityInfo[]>('get_host_vulnerabilities', { hostIp: ip })
+      .then(vulns => {
+        setHostVulnerabilities(prevVulns => {
+          if (!vulnerabilitiesChanged(prevVulns, vulns)) {
+            return prevVulns;
+          }
+          return vulns;
+        });
+      })
+      .catch(err => {
+        console.error('Failed to load vulnerabilities:', err);
+        setHostVulnerabilities([]);
+      })
+      .finally(() => setLoadingVulnerabilities(false));
+  }, []);
+
+  const loadServiceStats = useCallback((ip: string) => {
+    invoke<ServiceStatisticsInfo>('get_service_statistics', { hostIp: ip })
+      .then(setServiceStats)
+      .catch(err => {
+        console.error('Failed to load service statistics:', err);
+        setServiceStats(null);
+      });
+  }, []);
+
+  const runVulnerabilityScan = useCallback(async (ip: string) => {
+    setScanningVulnerabilities(true);
+    try {
+      await invoke('analyze_host_vulnerabilities', {
+        request: { host_ip: ip, force_rescan: true },
+      });
+      loadVulnerabilities(ip);
+      loadServiceStats(ip);
+    } catch (err) {
+      console.error('Vulnerability scan failed:', err);
+    } finally {
+      setScanningVulnerabilities(false);
+    }
+  }, [loadVulnerabilities, loadServiceStats]);
+
+  const fetchCveDetails = useCallback(async (cveId: string) => {
+    setFetchingCveIds(prev => new Set(prev).add(cveId));
+    try {
+      const detail = await invoke<CveDetail>('fetch_cve', { cveId });
+      setCveDetails(prev => ({ ...prev, [cveId]: detail }));
+    } catch (err) {
+      console.error(`Failed to fetch CVE ${cveId}:`, err);
+    } finally {
+      setFetchingCveIds(prev => {
+        const next = new Set(prev);
+        next.delete(cveId);
+        return next;
+      });
+    }
+  }, []);
+
+  const toggleVulnExpanded = useCallback((id: string) => {
+    setExpandedVulnIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
 
   const loadPorts = useCallback((ip: string) => {
     console.log('[ResultViewer] Loading ports for host:', ip);
@@ -182,32 +282,16 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
     };
   }, [currentHost?.ip, loadPorts]);
 
-  // Load vulnerabilities when host changes
+  // Load vulnerabilities and service stats when host changes
   useEffect(() => {
     if (currentHost?.ip) {
-      console.log('Loading vulnerabilities for host:', currentHost.ip);
-      setLoadingVulnerabilities(true);
-      invoke<VulnerabilityInfo[]>('get_host_vulnerabilities', { hostIp: currentHost.ip })
-        .then(vulns => {
-          console.log('Loaded vulnerabilities:', vulns);
-          // Only update state if vulnerabilities have actually changed
-          setHostVulnerabilities(prevVulns => {
-            if (!vulnerabilitiesChanged(prevVulns, vulns)) {
-              console.log('[ResultViewer] Vulnerabilities unchanged, skipping state update');
-              return prevVulns;
-            }
-            return vulns;
-          });
-        })
-        .catch(err => {
-          console.error('Failed to load vulnerabilities:', err);
-          setHostVulnerabilities([]);
-        })
-        .finally(() => setLoadingVulnerabilities(false));
+      loadVulnerabilities(currentHost.ip);
+      loadServiceStats(currentHost.ip);
     } else {
       setHostVulnerabilities([]);
+      setServiceStats(null);
     }
-  }, [currentHost?.ip]);
+  }, [currentHost?.ip, loadVulnerabilities, loadServiceStats]);
 
   const allVulnerabilities = hostVulnerabilities;
 
@@ -358,52 +442,158 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
 
         {selectedTab === 'vulnerabilities' && (
           <div className="space-y-4">
+            {currentHost?.ip && (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                {serviceStats && (
+                  <div className="flex flex-wrap gap-3 text-xs text-gray-400">
+                    <span className="px-2 py-1 bg-gray-800 rounded border border-gray-700">
+                      {serviceStats.total_services} services
+                    </span>
+                    <span className="px-2 py-1 bg-gray-800 rounded border border-gray-700 text-orange-400">
+                      {serviceStats.vulnerable_services} vulnerable
+                    </span>
+                    <span className="px-2 py-1 bg-gray-800 rounded border border-gray-700 text-blue-400">
+                      {serviceStats.web_services} web
+                    </span>
+                    <span className="px-2 py-1 bg-gray-800 rounded border border-gray-700 text-purple-400">
+                      {serviceStats.database_services} database
+                    </span>
+                    <span className="px-2 py-1 bg-gray-800 rounded border border-gray-700">
+                      avg risk {serviceStats.average_risk_score.toFixed(1)}
+                    </span>
+                  </div>
+                )}
+                <button
+                  onClick={() => currentHost.ip && runVulnerabilityScan(currentHost.ip)}
+                  disabled={scanningVulnerabilities}
+                  className="flex items-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white text-sm rounded transition-colors ml-auto"
+                >
+                  <RefreshCw className={`w-4 h-4 ${scanningVulnerabilities ? 'animate-spin' : ''}`} />
+                  {scanningVulnerabilities ? 'Scanning...' : 'Run Vulnerability Scan'}
+                </button>
+              </div>
+            )}
+
             {loadingVulnerabilities ? (
               <p className="text-gray-400 text-center py-8">Loading vulnerabilities...</p>
             ) : allVulnerabilities.length === 0 ? (
-              <p className="text-gray-400 text-center py-8">No vulnerabilities found.</p>
+              <div className="text-center py-8 space-y-3">
+                <p className="text-gray-400">No vulnerabilities found.</p>
+                {currentHost?.ip && (
+                  <button
+                    onClick={() => runVulnerabilityScan(currentHost.ip)}
+                    disabled={scanningVulnerabilities}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white text-sm rounded transition-colors"
+                  >
+                    Run Vulnerability Scan
+                  </button>
+                )}
+              </div>
             ) : (
               <div className="grid gap-4">
-                {allVulnerabilities.map((vuln: VulnerabilityInfo, index: number) => (
-                  <div key={`${vuln.name}-${index}`} className={`p-4 rounded border ${getSeverityColor(vuln.severity)}`}>
-                    <div className="flex items-start justify-between mb-3">
-                      <div>
-                        <h3 className="font-semibold text-white mb-1">{vuln.name}</h3>
-                        <div className="flex items-center gap-2">
-                          <span className={`px-2 py-1 rounded text-xs font-medium border ${getSeverityColor(vuln.severity)}`}>
-                            {vuln.severity.toUpperCase()}
-                          </span>
-                          {vuln.cvss_score && (
-                            <span className="text-sm text-gray-400">
-                              CVSS: {vuln.cvss_score}
-                            </span>
-                          )}
+                {allVulnerabilities.map((vuln: VulnerabilityInfo, index: number) => {
+                  const vulnKey = vuln.id || `${vuln.name}-${index}`;
+                  const isExpanded = expandedVulnIds.has(vulnKey);
+                  const cveDetail = vuln.cve_id ? cveDetails[vuln.cve_id] : undefined;
+                  const references = cveDetail?.references?.length
+                    ? cveDetail.references
+                    : vuln.references || [];
+                  const description = cveDetail?.description || vuln.description;
+                  const cvssScore = cveDetail?.cvss_score ?? vuln.cvss_score;
+
+                  return (
+                    <div key={vulnKey} className={`rounded border ${getSeverityColor(vuln.severity)}`}>
+                      <button
+                        type="button"
+                        onClick={() => toggleVulnExpanded(vulnKey)}
+                        className="w-full p-4 text-left"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-2 min-w-0">
+                            {isExpanded ? (
+                              <ChevronDown className="w-4 h-4 text-gray-400 mt-1 flex-shrink-0" />
+                            ) : (
+                              <ChevronRight className="w-4 h-4 text-gray-400 mt-1 flex-shrink-0" />
+                            )}
+                            <div className="min-w-0">
+                              <h3 className="font-semibold text-white mb-1">{vuln.name}</h3>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className={`px-2 py-1 rounded text-xs font-medium border ${getSeverityColor(vuln.severity)}`}>
+                                  {vuln.severity.toUpperCase()}
+                                </span>
+                                {cvssScore != null && (
+                                  <span className="text-sm text-gray-400">CVSS: {cvssScore}</span>
+                                )}
+                                {vuln.cve_id && (
+                                  <span className="text-sm text-blue-400">{vuln.cve_id}</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <AlertTriangle className="w-5 h-5 text-yellow-400 flex-shrink-0" />
+                        </div>
+                      </button>
+
+                      {isExpanded && (
+                        <div className="px-4 pb-4 border-t border-gray-700/50 pt-3 space-y-3">
+                          <p className="text-gray-300 text-sm">{description}</p>
+
                           {vuln.cve_id && (
-                            <span className="text-sm text-blue-400">
-                              {vuln.cve_id}
-                            </span>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => fetchCveDetails(vuln.cve_id!)}
+                                disabled={fetchingCveIds.has(vuln.cve_id)}
+                                className="flex items-center gap-1 px-2 py-1 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-blue-400 text-xs rounded border border-gray-600"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                                {fetchingCveIds.has(vuln.cve_id) ? 'Fetching from NVD...' : 'Fetch from NVD'}
+                              </button>
+                              {cveDetail?.url && (
+                                <a
+                                  href={cveDetail.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-xs text-blue-400 hover:text-blue-300"
+                                >
+                                  View on NVD
+                                </a>
+                              )}
+                            </div>
+                          )}
+
+                          {cveDetail && (
+                            <div className="grid grid-cols-2 gap-2 text-xs text-gray-400">
+                              {cveDetail.published_date && (
+                                <span>Published: {new Date(cveDetail.published_date).toLocaleDateString()}</span>
+                              )}
+                              {cveDetail.cwe.length > 0 && (
+                                <span>CWE: {cveDetail.cwe.join(', ')}</span>
+                              )}
+                              {cveDetail.is_exploitable && (
+                                <span className="text-red-400">Exploit available</span>
+                              )}
+                              <span>Risk score: {cveDetail.risk_score.toFixed(1)}</span>
+                            </div>
+                          )}
+
+                          {references.length > 0 && (
+                            <div className="space-y-1">
+                              <span className="text-xs font-medium text-gray-400">References:</span>
+                              {references.map((ref: string, refIndex: number) => (
+                                <div key={refIndex} className="text-xs text-blue-400 hover:text-blue-300">
+                                  <a href={ref} target="_blank" rel="noopener noreferrer">
+                                    {ref}
+                                  </a>
+                                </div>
+                              ))}
+                            </div>
                           )}
                         </div>
-                      </div>
-                      <AlertTriangle className="w-5 h-5 text-yellow-400" />
+                      )}
                     </div>
-
-                    <p className="text-gray-300 text-sm mb-3">{vuln.description}</p>
-
-                    {vuln.references && vuln.references.length > 0 && (
-                      <div className="space-y-1">
-                        <span className="text-xs font-medium text-gray-400">References:</span>
-                        {vuln.references.map((ref: string, refIndex: number) => (
-                          <div key={refIndex} className="text-xs text-blue-400 hover:text-blue-300">
-                            <a href={ref} target="_blank" rel="noopener noreferrer">
-                              {ref}
-                            </a>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

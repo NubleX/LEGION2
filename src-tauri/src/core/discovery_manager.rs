@@ -196,9 +196,15 @@ impl DiscoveryManager {
         log::info!("📊 Network topology: {} total hosts, {} newly discovered", 
                    hosts.len(), discovered.len());
         
-        // Trigger analysis engine to build topology
+        // Trigger analysis engine to build topology (only during active user scan)
+        let targets = crate::commands::engine_commands::get_active_scan_targets().await;
+        let Some(targets) = targets else {
+            log::debug!("No active scan — skipping periodic vulnerability analysis");
+            return Ok(());
+        };
+
         let analysis_engine = self.registry.get_analysis_engine();
-        if let Err(e) = analysis_engine.analyze_network().await {
+        if let Err(e) = analysis_engine.analyze_network(Some(&targets)).await {
             log::warn!("Failed to analyze network topology: {}", e);
         }
         

@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import useAppStore from '../stores/appStore';
-import useHostStore, { type Host } from '../stores/hostStore';
+import useHostStore, { type Host, selectVisibleHostsCached } from '../stores/hostStore';
 import HostTable from './HostTable';
 import NetworkMap from './NetworkMap';
 import ResultViewer from './ResultViewer';
@@ -39,14 +39,18 @@ const EnhancedScannerPanel = () => {
   const [capStatus, setCapStatus] = useState<CapabilityStatus | null>(null);
   const [capFixing, setCapFixing] = useState(false);
   const [capDismissed, setCapDismissed] = useState(false);
-  const { hosts, setHosts } = useHostStore();
+  const { setHosts, clearHosts } = useHostStore();
+  const hosts = useHostStore(selectVisibleHostsCached);
   const terminalRef = useRef<HTMLDivElement>(null);
+  const scanStartTimeRef = useRef<number>(0);
 
 
   const {
     scanInProgress,
+    scanPhase,
     liveOutput,
     metrics,
+    lastSessionAnalytics,
     startScan,
     resetScan,
     startNetsniffer,
@@ -94,15 +98,16 @@ const EnhancedScannerPanel = () => {
 
   // Simple scan duration tracking
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-    let startTime = Date.now();
+    let interval: NodeJS.Timeout | undefined;
 
-    if (scanInProgress) {
+    if (scanInProgress && scanStartTimeRef.current === 0) {
+      scanStartTimeRef.current = Date.now();
       interval = setInterval(() => {
-        setScanDuration(Math.floor((Date.now() - startTime) / 1000));
+        setScanDuration(Math.floor((Date.now() - scanStartTimeRef.current) / 1000));
       }, 1000);
-    } else {
+    } else if (!scanInProgress) {
       setScanDuration(0);
+      scanStartTimeRef.current = 0;
     }
 
     return () => {
@@ -111,31 +116,53 @@ const EnhancedScannerPanel = () => {
   }, [scanInProgress]);
 
   // Auto-scroll terminal to bottom when new output arrives
-  useEffect(() => {
-    if (terminalRef.current) {
-      // Use requestAnimationFrame to ensure DOM updates are complete
-      requestAnimationFrame(() => {
-        if (terminalRef.current) {
-          terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-        }
-      });
-    }
-  }, [liveOutput]);
+  // TEMPORARILY DISABLED - testing if this causes re-render loops
+  // useEffect(() => {
+  //   if (terminalRef.current) {
+  //     // Use requestAnimationFrame to ensure DOM updates are complete
+  //     requestAnimationFrame(() => {
+  //       if (terminalRef.current) {
+  //         terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+  //       }
+  //     });
+  //   }
+  // }, [liveOutput]);
 
   // Also scroll when switching to scanner tab during an active scan
-  useEffect(() => {
-    if (activeTab === 'scanner' && terminalRef.current) {
-      requestAnimationFrame(() => {
-        if (terminalRef.current) {
-          terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-        }
-      });
-    }
-  }, [activeTab]);
+  // TEMPORARILY DISABLED - testing if this causes re-render loops
+  // useEffect(() => {
+  //   if (activeTab === 'scanner' && terminalRef.current) {
+  //     requestAnimationFrame(() => {
+  //       if (terminalRef.current) {
+  //         terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+  //       }
+  //     });
+  //   }
+  // }, [activeTab]);
 
   // Hosts are provided by the host store via obs:host events
 
   // For Live Output, we'll use a simple terminal-like display instead of ToolOutput
+
+  const handleClearDatabase = useCallback(async () => {
+    if (scanInProgress) {
+      alert('Cannot clear database while a scan is in progress.');
+      return;
+    }
+    if (!window.confirm('Delete all hosts from the database? This cannot be undone.')) {
+      return;
+    }
+    try {
+      const deleted = await invoke<number>('clear_all_hosts');
+      clearHosts();
+      setSelectedHost(null);
+      resetScan();
+      console.log(`Cleared ${deleted} hosts from database`);
+    } catch (error) {
+      console.error('Failed to clear database:', error);
+      alert(`Failed to clear database: ${error}`);
+    }
+  }, [scanInProgress, clearHosts, resetScan]);
 
   const handleStartScan = useCallback(async (config: any) => {
     try {
@@ -162,10 +189,15 @@ const EnhancedScannerPanel = () => {
   };
 
   const getScanStatusText = () => {
+    if (scanInProgress && scanPhase) {
+      return scanPhase.label;
+    }
     if (scanInProgress) return 'Scanning...';
     if (hosts.length > 0) return 'Scan Complete - Ready for New Scan';
     return 'Ready to Start';
   };
+
+  // Error handling removed - was potentially causing infinite loops
 
   return (
     <div className="h-screen w-screen bg-gray-950 flex flex-col">
@@ -233,6 +265,18 @@ const EnhancedScannerPanel = () => {
                 </div>
               )}
 
+              {/* Clear Database Button */}
+              {!scanInProgress && hosts.length > 0 && (
+                <button
+                  onClick={handleClearDatabase}
+                  className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white text-sm rounded transition-colors flex items-center gap-1"
+                  title="Remove all hosts from database"
+                >
+                  <Database className="w-3 h-3" />
+                  Clear Database
+                </button>
+              )}
+
               {/* Ready for New Scan Button */}
               {!scanInProgress && hosts.length > 0 && (
                 <button
@@ -252,8 +296,21 @@ const EnhancedScannerPanel = () => {
           {/* Progress Bar (when scanning) */}
           {scanInProgress && (
             <div className="mt-2">
+              {scanPhase && (
+                <div className="flex items-center justify-between text-xs text-gray-300 mb-1">
+                  <span>{scanPhase.label}</span>
+                  <span>Phase {scanPhase.current} of {scanPhase.total}</span>
+                </div>
+              )}
               <div className="bg-gray-700 rounded-full h-1">
-                <div className="bg-blue-500 h-1 rounded-full animate-pulse" style={{ width: '100%' }} />
+                <div
+                  className="bg-blue-500 h-1 rounded-full transition-all duration-300"
+                  style={{
+                    width: scanPhase
+                      ? `${(scanPhase.current / scanPhase.total) * 100}%`
+                      : '100%',
+                  }}
+                />
               </div>
             </div>
           )}
@@ -291,6 +348,23 @@ const EnhancedScannerPanel = () => {
               ✕
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Session analytics from last nmap scan */}
+      {!scanInProgress && lastSessionAnalytics && (
+        <div className="flex-shrink-0 bg-gray-800 border-b border-gray-700 px-4 py-2">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-gray-300">
+            <span className="text-white font-medium">Last scan</span>
+            <span>Nmap {lastSessionAnalytics.nmap_version}</span>
+            <span>{lastSessionAnalytics.up_hosts}/{lastSessionAnalytics.total_hosts} hosts up ({lastSessionAnalytics.hosts_up_percentage.toFixed(1)}%)</span>
+            {lastSessionAnalytics.duration_seconds != null && (
+              <span>{formatDuration(lastSessionAnalytics.duration_seconds)}</span>
+            )}
+            <span className="capitalize">{lastSessionAnalytics.scan_intensity.toLowerCase()} intensity</span>
+            <span className="text-blue-400">{lastSessionAnalytics.performance_rating}</span>
+          </div>
+          <p className="text-xs text-gray-500 mt-1 truncate">{lastSessionAnalytics.scan_summary}</p>
         </div>
       )}
 

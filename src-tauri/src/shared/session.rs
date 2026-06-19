@@ -10,8 +10,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use tracing::debug;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Session {

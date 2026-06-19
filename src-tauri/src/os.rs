@@ -64,8 +64,8 @@ pub fn get_masscan_binary_path() -> PathBuf {
     }
 
     if !path.exists() {
-        log::warn!(
-            "Local masscan binary not found at {:?}, trying system PATH",
+        log::debug!(
+            "Local masscan binary not found at {:?}, using system PATH",
             path
         );
         PathBuf::from("masscan")
@@ -102,8 +102,8 @@ pub fn get_nmap_binary_path() -> PathBuf {
     }
 
     if !path.exists() {
-        log::warn!(
-            "Local nmap binary not found at {:?}, trying system PATH",
+        log::debug!(
+            "Local nmap binary not found at {:?}, using system PATH",
             path
         );
         PathBuf::from("nmap")

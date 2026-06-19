@@ -5,6 +5,30 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { create } from 'zustand';
 import type { Plan, ScanConfig } from '../types/scanning';
+import { getPhaseLabel } from '../utils/scanPhases';
+import useHostStore from './hostStore';
+
+interface ScanDonePayload {
+  scan_id: string;
+}
+
+export interface SessionAnalyticsInfo {
+  nmap_version: string;
+  scan_args: string;
+  total_hosts: number;
+  up_hosts: number;
+  down_hosts: number;
+  scan_type: string;
+  protocol: string;
+  num_services: number;
+  duration_seconds?: number;
+  hosts_up_percentage: number;
+  scan_efficiency: number;
+  ports_per_host: number;
+  scan_intensity: string;
+  performance_rating: string;
+  scan_summary: string;
+}
 
 
 // Simple state reflecting backend events
@@ -36,6 +60,14 @@ interface AppState {
   // Simple UI state
   scanInProgress: boolean;
   pendingScans: number; // Track number of pending scans in multi-scan sequences
+  activeScanTargets: string | null;
+  activeScanIds: string[];
+  scanPhase: {
+    current: number;
+    total: number;
+    label: string;
+  } | null;
+  lastSessionAnalytics: SessionAnalyticsInfo | null;
 }
 
 interface AppActions {
@@ -95,15 +127,52 @@ const useAppStore = create<AppState & AppActions>((set) => {
     });
 
 
-    await listen('obs:done', () => {
+    await listen<ScanDonePayload>('obs:done', (event) => {
+      const scanId = event.payload?.scan_id;
       set((state) => {
-        const newPendingScans = Math.max(0, (state.pendingScans || 0) - 1);
+        const isTracked = scanId && state.activeScanIds.includes(scanId);
+
+        // Safety net: if we're stuck in scanInProgress but this scan_id is unknown,
+        // it means a scan was started without going through startScan (e.g. netsniffer
+        // engine failure path). Force-reset if no pending scans remain.
+        if (!isTracked) {
+          if (state.scanInProgress && state.pendingScans <= 0) {
+            useHostStore.getState().setActiveTargetRange(null);
+            invoke('engine_clear_active_targets').catch(console.error);
+            return {
+              scanInProgress: false,
+              pendingScans: 0,
+              activeScanIds: [],
+              activeScanTargets: null,
+              scanPhase: null,
+              liveOutput: [...state.liveOutput, 'Scan completed.']
+            };
+          }
+          return state;
+        }
+
+        const newPendingScans = Math.max(0, state.pendingScans - 1);
         const allScansDone = newPendingScans === 0;
-        
+
+        if (allScansDone) {
+          useHostStore.getState().setActiveTargetRange(null);
+          invoke('engine_clear_active_targets').catch(console.error);
+          invoke<SessionAnalyticsInfo | null>('get_latest_session_analytics')
+            .then((analytics) => {
+              if (analytics) {
+                set({ lastSessionAnalytics: analytics });
+              }
+            })
+            .catch(console.error);
+        }
+
         return {
           pendingScans: newPendingScans,
-          scanInProgress: !allScansDone, // Only set to false when all scans are done
-          liveOutput: allScansDone 
+          scanInProgress: !allScansDone,
+          scanPhase: allScansDone ? null : state.scanPhase,
+          activeScanIds: allScansDone ? [] : state.activeScanIds,
+          activeScanTargets: allScansDone ? null : state.activeScanTargets,
+          liveOutput: allScansDone
             ? [...state.liveOutput, 'All scans completed. Ready for new scan.']
             : [...state.liveOutput, 'Scan phase completed. Continuing...']
         };
@@ -147,6 +216,10 @@ const useAppStore = create<AppState & AppActions>((set) => {
 
     scanInProgress: false,
     pendingScans: 0,
+    activeScanTargets: null,
+    activeScanIds: [],
+    scanPhase: null,
+    lastSessionAnalytics: null,
 
     // Actions
     startScan: async (config: ScanConfig) => {
@@ -206,36 +279,59 @@ const useAppStore = create<AppState & AppActions>((set) => {
       }
       plans.push(massmapResult.nmap_plan);
 
+      const planScanIds = plans.map((plan) => plan.scan_id);
+      const initialPhaseLabel = plans.length > 0
+        ? getPhaseLabel(plans[0], 0, plans.length)
+        : 'Scan';
+
+      useHostStore.getState().setActiveTargetRange(targets);
+
       set((state) => ({
         scanInProgress: true,
-        pendingScans: plans.length, // Track total number of scans
-        liveOutput: [...state.liveOutput, `Starting scan for ${targets} using ${plans.map(p => p.source_type).join(' & ')}...`],
+        pendingScans: plans.length,
+        activeScanTargets: targets,
+        activeScanIds: planScanIds,
+        scanPhase: plans.length > 0
+          ? { current: 1, total: plans.length, label: initialPhaseLabel }
+          : null,
+        liveOutput: [
+          ...state.liveOutput,
+          `Starting scan for ${targets} using ${plans.map(p => p.source_type).join(' & ')}...`,
+          plans.length > 1
+            ? `Massmap sequence: ${plans.length} phases (discovery → port scan → service detection).`
+            : 'Single-phase scan starting.',
+        ],
       }));
 
       try {
         // Helper function to wait for scan completion
         const waitForScanCompletion = async (scanId: string): Promise<void> => {
-          return new Promise(async (resolve, reject) => {
-            // Set up a timeout to prevent infinite waiting
+          return new Promise((resolve, reject) => {
             let timeout: NodeJS.Timeout | null = null;
-            let unlistenFn: (() => void) | null = null;
+            let checkInterval: NodeJS.Timeout | null = null;
 
             try {
-              // Listen for obs:done event
-              unlistenFn = await listen('obs:done', () => {
-                if (timeout) clearTimeout(timeout);
-                if (unlistenFn) unlistenFn();
-                resolve();
-              });
+              // Poll the store state instead of creating a new listener
+              // This avoids duplicate obs:done handlers that cause infinite loops
+              checkInterval = setInterval(() => {
+                const state = useAppStore.getState();
+                
+                // Check if scan is done by monitoring pendingScans
+                if (!state.scanInProgress && state.pendingScans === 0) {
+                  if (timeout) clearTimeout(timeout);
+                  if (checkInterval) clearInterval(checkInterval);
+                  resolve();
+                }
+              }, 100);
 
-              // Set up timeout
+              // Set up timeout — 5 min is enough for any single phase on a /24
               timeout = setTimeout(() => {
-                if (unlistenFn) unlistenFn();
-                reject(new Error(`Scan ${scanId} timed out after 30 minutes`));
-              }, 30 * 60 * 1000); // 30 minutes timeout
+                if (checkInterval) clearInterval(checkInterval);
+                reject(new Error(`Scan ${scanId} timed out after 5 minutes`));
+              }, 5 * 60 * 1000);
             } catch (error) {
               if (timeout) clearTimeout(timeout);
-              if (unlistenFn) unlistenFn();
+              if (checkInterval) clearInterval(checkInterval);
               reject(error);
             }
           });
@@ -245,10 +341,12 @@ const useAppStore = create<AppState & AppActions>((set) => {
         for (let i = 0; i < plans.length; i++) {
           const plan = plans[i];
           const isLastPlan = i === plans.length - 1;
-          
+          const phaseLabel = getPhaseLabel(plan, i, plans.length);
+
           console.log('Executing scan plan:', plan);
           set((state) => ({
-            liveOutput: [...state.liveOutput, `Starting ${plan.source_type} scan...`]
+            scanPhase: { current: i + 1, total: plans.length, label: phaseLabel },
+            liveOutput: [...state.liveOutput, `Starting ${phaseLabel}...`],
           }));
 
           // Set up completion listener BEFORE starting the scan (to avoid race condition)
@@ -340,8 +438,13 @@ const useAppStore = create<AppState & AppActions>((set) => {
         console.error('Scan execution failed:', error);
         set((state) => ({
           scanInProgress: false,
+          pendingScans: 0,
+          activeScanTargets: null,
+          activeScanIds: [],
+          scanPhase: null,
           liveOutput: [...state.liveOutput, `ERROR: Scan failed - ${error}`]
         }));
+        useHostStore.getState().setActiveTargetRange(null);
         throw error;
       }
     },
@@ -349,8 +452,14 @@ const useAppStore = create<AppState & AppActions>((set) => {
     cancelScan: async () => {
       try {
         await invoke('engine_cancel_scan');
+        invoke('engine_clear_active_targets').catch(console.error);
+        useHostStore.getState().setActiveTargetRange(null);
         set((state) => ({
           scanInProgress: false,
+          pendingScans: 0,
+          activeScanTargets: null,
+          activeScanIds: [],
+          scanPhase: null,
           liveOutput: [...state.liveOutput, 'Scan cancelled by user.']
         }));
       } catch (error) {
@@ -366,9 +475,14 @@ const useAppStore = create<AppState & AppActions>((set) => {
     },
 
     resetScan: () => {
+      useHostStore.getState().setActiveTargetRange(null);
       set({
         scanInProgress: false,
         pendingScans: 0,
+        activeScanTargets: null,
+        activeScanIds: [],
+        scanPhase: null,
+        lastSessionAnalytics: null,
         liveOutput: ['Previous scan data preserved. Ready for new scan.'],
         // Keep existing data persistent:
         // recentHosts: [],
@@ -402,36 +516,34 @@ const useAppStore = create<AppState & AppActions>((set) => {
     },
 
     startNetsniffer: async (iface?: string) => {
-      try {
-        const scanId = crypto.randomUUID();
-        const interfaceName = iface || 'default';
-        
-        console.log('[appStore] Starting netsniffer with interface:', interfaceName);
-        
-        set((state) => ({
-          liveOutput: [...state.liveOutput, `Starting network sniffer on interface: ${interfaceName}...`]
-        }));
+      const scanId = crypto.randomUUID();
+      const interfaceName = iface || 'default';
 
-        // Create netsniffer plan
+      set((state) => ({
+        liveOutput: [...state.liveOutput, `Starting network sniffer on interface: ${interfaceName}...`]
+      }));
+
+      try {
         const plan = await invoke<Plan>('create_netsniffer_plan', {
           scanId,
           interface: interfaceName,
         });
 
-        console.log('[appStore] Created netsniffer plan:', plan);
-
-        // Execute the plan via engine
         await invoke('engine_execute', { plan });
 
         set((state) => ({
-          liveOutput: [...state.liveOutput, 'Network sniffer started. Monitoring network traffic and enriching knowledgebase...']
+          liveOutput: [...state.liveOutput, 'Network sniffer started. Monitoring network traffic...']
         }));
       } catch (error) {
-        console.error('Failed to start netsniffer:', error);
+        const msg = String(error);
+        const hint = msg.includes('CAP_NET_RAW') || msg.includes('libpcap')
+          ? ' — run: sudo setcap cap_net_raw+ep ./target/release/legion2 (or run with sudo)'
+          : '';
         set((state) => ({
-          liveOutput: [...state.liveOutput, `ERROR: Failed to start network sniffer - ${error}`]
+          liveOutput: [...state.liveOutput, `ERROR: Network sniffer failed: ${msg}${hint}`]
         }));
-        throw error;
+        // Do NOT re-throw — a re-throw here causes an unhandled promise rejection in the
+        // onClick handler which triggers the Vite dev-mode error overlay (black screen).
       }
     }
   };

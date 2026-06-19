@@ -7,7 +7,7 @@
 // thiserror = "1.0"
 // tracing = "0.1"
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use roxmltree::Document;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -456,7 +456,7 @@ pub fn parse_nmap_content(xml_content: &str) -> Result<Parser, ParserError> {
 }
 
 // Utility functions for working with parsed data
-pub fn filter_hosts_by_os_family<'a>(hosts: &'a [&'a Host], os_family: &str) -> Vec<&'a Host> {
+pub fn filter_hosts_by_os_family<'a>(hosts: &'a [&'a Host], _os_family: &str) -> Vec<&'a Host> {
     // This would require access to OS information from the host nodes
     // Implementation would depend on how OS data is stored
     hosts.iter().filter(|_| false).cloned().collect() // Placeholder

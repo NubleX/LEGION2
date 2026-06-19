@@ -332,6 +332,11 @@ impl Source for MasscanScanner {
 
         let (mut cmd, xml_file) = self.build_masscan_command(plan).await;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
         log::info!("Executing masscan command: {:?}", cmd);
 
         let mut child = cmd.spawn()?;

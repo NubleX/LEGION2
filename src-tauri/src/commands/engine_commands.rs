@@ -2,12 +2,13 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 use crate::core::{engine::Engine, registry::Registry};
+use crate::core::sinks::{DoneEvent, ErrorEvent};
 use crate::database::Db;
 use crate::plan::Plan;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
 
 #[cfg(unix)]
@@ -20,6 +21,7 @@ static SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
 lazy_static::lazy_static! {
     static ref CHILD_PIDS: Arc<Mutex<HashSet<u32>>> = Arc::new(Mutex::new(HashSet::new()));
     static ref GLOBAL_ENGINE: Arc<Mutex<Option<Engine>>> = Arc::new(Mutex::new(None));
+    static ref ACTIVE_SCAN_TARGETS: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 }
 
 /// Register a child scanner process PID so it can be killed on cancel
@@ -45,11 +47,36 @@ async fn kill_all_children() {
     for pid in pids {
         log::info!("Killing scanner child PID {}", pid);
         #[cfg(unix)]
-        // Safe: we only kill processes we ourselves spawned
-        unsafe { libc::kill(pid as i32, libc::SIGKILL); }
+        kill_process_tree(pid);
         #[cfg(not(unix))]
         log::warn!("Process kill not implemented on this platform (PID {})", pid);
     }
+}
+
+#[cfg(unix)]
+fn kill_process_tree(pid: u32) {
+    // Negative PID kills the process group when spawned with process_group(0)
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+}
+
+/// Set active scan target range for scoped background analysis
+pub async fn set_active_scan_targets(targets: Option<String>) {
+    *ACTIVE_SCAN_TARGETS.lock().await = targets;
+}
+
+/// Get active scan target range (if any)
+pub async fn get_active_scan_targets() -> Option<String> {
+    ACTIVE_SCAN_TARGETS.lock().await.clone()
+}
+
+/// Kill all scanner children on app shutdown or cancel
+pub async fn shutdown_kill_children() {
+    cancel_current_scan();
+    kill_all_children().await;
+    set_active_scan_targets(None).await;
 }
 
 /// One command to rule them all - unified engine execution
@@ -60,6 +87,9 @@ pub async fn engine_execute(
     app: AppHandle,
 ) -> Result<(), String> {
     log::info!("Engine execute called with plan: {:?}", plan);
+
+    // Clone app handle upfront - make_registry may consume the original
+    let app_handle = app.clone();
 
     // Reset cancellation flag for new scan
     reset_scan_cancellation();
@@ -120,10 +150,19 @@ pub async fn engine_execute(
     if !engine.is_ready().await {
         let current_state = engine.get_state().await;
         return Err(format!(
-            "Engine not ready for new scan. Current state: {:?}",
+            "A scan is already in progress (engine state: {:?}). \
+             Wait for it to finish or click Cancel before starting another scan.",
             current_state
         ));
     }
+
+    // Track active scan targets for scoped background analysis (skip netsniffer / empty targets)
+    if !plan.targets.trim().is_empty() {
+        set_active_scan_targets(Some(plan.targets.clone())).await;
+    }
+
+    // Capture scan_id for error-path event emission (app_handle already cloned at top)
+    let scan_id = plan.scan_id.to_string();
 
     // Execute in background task - return immediately while streaming
     tokio::spawn(async move {
@@ -135,6 +174,15 @@ pub async fn engine_execute(
             }
             Err(e) => {
                 log::error!("Engine execution failed: {}", e);
+
+                // Emit obs:error so the UI shows an error message
+                let _ = app_handle.emit("obs:error", &ErrorEvent {
+                    message: format!("Scan failed: {}", e),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                });
+
+                // Emit obs:done so the frontend unblocks scanInProgress
+                let _ = app_handle.emit("obs:done", &DoneEvent { scan_id: scan_id.clone() });
             }
         }
     });
@@ -160,9 +208,7 @@ pub fn cancel_current_scan() {
 #[tauri::command]
 pub async fn engine_cancel_scan() -> Result<(), String> {
     log::info!("Engine scan cancellation requested");
-    cancel_current_scan();
-    // Immediately SIGKILL all registered child scanner processes
-    kill_all_children().await;
+    shutdown_kill_children().await;
     Ok(())
 }
 
@@ -183,6 +229,12 @@ pub async fn engine_reset() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Clear active scan target range (called when all scan phases complete)
+#[tauri::command]
+pub async fn engine_clear_active_targets() {
+    set_active_scan_targets(None).await;
 }
 
 /// Get current engine state

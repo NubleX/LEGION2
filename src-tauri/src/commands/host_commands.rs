@@ -4,7 +4,7 @@
 use crate::database::Db;
 use crate::network::network::parse_target_specification;
 use crate::shared::shared::Host;
-use crate::shared::ScanTypes::OSDetection;
+use crate::shared::scan_types::OSDetection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::net::IpAddr;
@@ -99,6 +99,14 @@ pub async fn get_host_details(
 pub async fn delete_host(host_id: String, db: State<'_, Arc<Db>>) -> Result<(), String> {
     db.inner()
         .delete_host(&host_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn clear_all_hosts(db: State<'_, Arc<Db>>) -> Result<u64, String> {
+    db.inner()
+        .clear_all_hosts()
         .await
         .map_err(|e| e.to_string())
 }

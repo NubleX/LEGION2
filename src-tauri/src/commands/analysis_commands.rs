@@ -8,6 +8,9 @@ use tauri::State;
 use crate::analysis::vulnerability::VulnerabilityEngine;
 use crate::analysis::{AnalysisEngine, AnalysisResult};
 use crate::database::{Db, VulnerabilityRecord};
+use crate::session_state::{self, SessionAnalyticsInfo};
+use crate::shared::parser::parse_nmap_content;
+use crate::shared::service::{Service, ServiceAnalyzer, ServiceStatistics};
 
 /// Run analysis for a specific host
 #[tauri::command]
@@ -24,7 +27,10 @@ pub async fn analyze_host(
 /// Run full network analysis
 #[tauri::command]
 pub async fn analyze_network(engine: State<'_, AnalysisEngine>) -> Result<AnalysisResult, String> {
-    engine.analyze_network().await.map_err(|e| e.to_string())
+    engine
+        .analyze_network(None)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Get currently running analyses
@@ -237,4 +243,129 @@ impl Default for VulnerabilityStats {
             highest_cvss_score: 0.0,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceStatisticsInfo {
+    pub total_services: usize,
+    pub vulnerable_services: usize,
+    pub web_services: usize,
+    pub database_services: usize,
+    pub average_risk_score: f64,
+}
+
+impl From<ServiceStatistics> for ServiceStatisticsInfo {
+    fn from(stats: ServiceStatistics) -> Self {
+        Self {
+            total_services: stats.total_services,
+            vulnerable_services: stats.vulnerable_services,
+            web_services: stats.web_services,
+            database_services: stats.database_services,
+            average_risk_score: stats.average_risk_score,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportResult {
+    pub hosts_imported: usize,
+    pub session_summary: String,
+}
+
+/// Service risk statistics for a host using ServiceAnalyzer
+#[tauri::command]
+pub async fn get_service_statistics(
+    host_ip: String,
+    db: State<'_, Arc<Db>>,
+) -> Result<ServiceStatisticsInfo, String> {
+    let ports = db
+        .inner()
+        .get_host_ports_detailed(&host_ip)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let services: Vec<Service> = ports
+        .into_iter()
+        .filter_map(|port| {
+            if port.service.is_none() && port.version.is_none() && port.banner.is_none() {
+                return None;
+            }
+            let mut service = Service::new();
+            service.name = port.service.clone().unwrap_or_default();
+            service.version = port.version.clone().unwrap_or_default();
+            service.extrainfo = port.banner.clone().unwrap_or_default();
+            service.proto = port.protocol;
+            Some(service)
+        })
+        .collect();
+
+    Ok(ServiceAnalyzer::get_service_statistics(&services).into())
+}
+
+/// Parse nmap XML and import discovered hosts into the database
+#[tauri::command]
+pub async fn import_nmap_xml(
+    xml_content: String,
+    db: State<'_, Arc<Db>>,
+) -> Result<ImportResult, String> {
+    let parser = parse_nmap_content(&xml_content)
+        .map_err(|e| format!("Failed to parse nmap XML: {}", e))?;
+
+    let session_summary = parser.get_session().scan_summary();
+    let mut hosts_imported = 0usize;
+
+    for host in parser.get_all_hosts(Some("up")) {
+        let ip = host.get_ip();
+        if ip.is_empty() {
+            continue;
+        }
+
+        db.inner()
+            .upsert_host(
+                ip,
+                if host.hostname.is_empty() {
+                    None
+                } else {
+                    Some(host.hostname.as_str())
+                },
+                Some(host.status.as_str()),
+                if host.macaddr.is_empty() {
+                    None
+                } else {
+                    Some(host.macaddr.as_str())
+                },
+                if host.vendor.is_empty() {
+                    None
+                } else {
+                    Some(host.vendor.as_str())
+                },
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| format!("Failed to import host {}: {}", ip, e))?;
+        hosts_imported += 1;
+    }
+
+    session_state::record_from_xml(&xml_content)
+        .map_err(|e| format!("Failed to parse session metadata: {}", e))?;
+
+    Ok(ImportResult {
+        hosts_imported,
+        session_summary,
+    })
+}
+
+/// Parse nmap XML and return session analytics
+#[tauri::command]
+pub async fn parse_scan_session(xml_content: String) -> Result<SessionAnalyticsInfo, String> {
+    session_state::record_from_xml(&xml_content)
+        .map_err(|e| format!("Failed to parse scan session: {}", e))
+}
+
+/// Return the most recently recorded scan session analytics
+#[tauri::command]
+pub async fn get_latest_session_analytics() -> Result<Option<SessionAnalyticsInfo>, String> {
+    Ok(session_state::latest_analytics())
 }

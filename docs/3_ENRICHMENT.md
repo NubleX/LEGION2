@@ -8,7 +8,7 @@ LEGION2 employs a comprehensive enrichment pipeline that transforms raw network 
 
 Enrichment in LEGION2 follows a **transform-based pipeline** architecture where observations flow through specialized enrichment modules:
 
-```
+```md
 Raw Observations (from Sources)
     ↓
 ┌─────────────────────────────────────┐
@@ -43,17 +43,20 @@ Enriched Observations
 **Purpose**: Identify device manufacturers and vendors from MAC addresses using OUI (Organizationally Unique Identifier) lookups.
 
 **How It Works**:
+
 - Extracts MAC addresses from Ethernet headers (Layer 2)
 - Parses first 3 bytes (OUI) from MAC address
 - Queries comprehensive OUI database (`netsniffer::oui_lookup_vendor()`)
 - Stores vendor information in database
 
 **Implementation**:
+
 - **Transform**: `MacEnrichmentTransform`
 - **Module Name**: `mac_enrichment` or `mac-enrichment`
 - **Database Fields**: `nic_vendor`, `vendor`, `mac_address`
 
 **Example**:
+
 ```rust
 // MAC address: 00:1B:63:AA:BB:CC
 // OUI: 00:1B:63 → "Apple, Inc."
@@ -67,12 +70,14 @@ Enriched Observations
 ```
 
 **Use Cases**:
+
 - Identify device types (routers, IoT devices, workstations)
 - Correlate MAC addresses across multiple IPs (DHCP lease tracking)
 - Detect virtual machines (VMware, VirtualBox, Hyper-V)
 - Network topology mapping
 
 **Supported Vendors**:
+
 - Major manufacturers: Apple, Microsoft, Cisco, Dell, HP, Intel
 - Virtualization: VMware, VirtualBox, Parallels, Hyper-V
 - Networking: Netgear, Linksys, TP-Link, D-Link
@@ -85,12 +90,14 @@ Enriched Observations
 **Methods**:
 
 #### A. TTL-Based Detection
+
 - **TTL 64**: Linux/Unix systems
 - **TTL 128**: Windows systems
 - **TTL 255**: Network devices/routers
 - **TTL 32**: Some Unix variants
 
 #### B. TCP Signature Analysis
+
 - **Window Size**: Different OSes use characteristic window sizes
   - Windows 7/8/10: 8192 bytes
   - Windows XP/2003: 65535 bytes
@@ -101,11 +108,13 @@ Enriched Observations
 - **Options Hash**: Unique fingerprint from TCP options sequence
 
 **Implementation**:
+
 - **Transform**: `PassiveOsTransform`
 - **Module Name**: `passive_os` or `passive-os`
 - **Database Fields**: `os_name`, `os_family`, `os_accuracy`
 
 **Confidence Scoring**:
+
 - Base score: 0-100
 - TTL match: +20 points
 - TCP window match: +30 points
@@ -114,6 +123,7 @@ Enriched Observations
 - SACK support: +15 points
 
 **Example**:
+
 ```rust
 // Detected from packet:
 {
@@ -133,6 +143,7 @@ Enriched Observations
 ```
 
 **Use Cases**:
+
 - Identify vulnerable OS versions
 - Correlate OS with CVE database
 - Network segmentation planning
@@ -143,6 +154,7 @@ Enriched Observations
 **Purpose**: Automatically identify known vulnerabilities and exploits for discovered services and products.
 
 **How It Works**:
+
 1. Extracts product/version information from service observations
 2. Queries CVE database (`cve_db.rs`) for matching CVEs
 3. Queries ExploitDB for associated exploits
@@ -150,16 +162,19 @@ Enriched Observations
 5. Emits vulnerability observations with severity and exploit information
 
 **Implementation**:
+
 - **Transform**: `CveExploitEnrichmentTransform`
 - **Module Name**: `cve_enrichment` or `cve-enrichment`
 - **Database**: Separate CVE database (`cve_db.rs`)
 
 **Data Sources**:
+
 - **CVE Database**: Local SQLite database with NVD (National Vulnerability Database) data
 - **ExploitDB**: Offensive Security Exploit Database
 - **CVSS Scores**: Vulnerability severity ratings (0.0-10.0)
 
 **Example**:
+
 ```rust
 // Service observation:
 {
@@ -183,6 +198,7 @@ Enriched Observations
 ```
 
 **Use Cases**:
+
 - Automated vulnerability assessment
 - Risk prioritization (CVSS scores)
 - Exploit availability checking
@@ -193,17 +209,20 @@ Enriched Observations
 **Purpose**: Build relationships between ports, services, and known vulnerabilities to enable predictive vulnerability detection.
 
 **How It Works**:
+
 1. Identifies port-service combinations from observations
 2. Queries CVE database for common vulnerabilities on specific port/service pairs
 3. Creates port-service-CVE mapping keys
 4. Stores correlations for future lookups
 
 **Implementation**:
+
 - **Transform**: `PortServiceCveTransform`
 - **Module Name**: `port_service_cve` or `port-service-cve`
 - **Database**: Port-service-CVE relationships stored in observations
 
 **Example**:
+
 ```rust
 // Port-service observation:
 {
@@ -221,6 +240,7 @@ Enriched Observations
 ```
 
 **Common Port-Service-CVE Mappings**:
+
 - **Port 22 (SSH)**: OpenSSH vulnerabilities
 - **Port 80/443 (HTTP/HTTPS)**: Web server CVEs (Apache, nginx, IIS)
 - **Port 3306 (MySQL)**: Database vulnerabilities
@@ -228,14 +248,13 @@ Enriched Observations
 - **Port 21 (FTP)**: FTP server vulnerabilities
 
 **Use Cases**:
+
 - Predictive vulnerability detection
 - Service-specific CVE lookup
 - Risk assessment by port
 - Security policy enforcement
 
 ## IoT Traffic Enrichment
-
-### Overview
 
 IoT devices use specialized protocols for discovery and communication. LEGION2 can passively monitor and actively probe these protocols to discover and enrich IoT device information.
 
@@ -248,17 +267,20 @@ IoT devices use specialized protocols for discovery and communication. LEGION2 c
 **Purpose**: Universal Plug and Play device discovery
 
 **Enrichment Capabilities**:
+
 - Device identification from LOCATION header
 - Firmware version from SERVER header
 - Device type from USN (Unique Service Name)
 - Service endpoints from LOCATION URL
 
 **Implementation**:
+
 - **Probe**: `SSDPProbe` (`scanners/probes/iot_probes.rs`)
 - **Passive Detection**: NetSniffer captures SSDP M-SEARCH responses
 - **Active Probing**: `IoTProbeSender::send_multicast_probe(IoTProtocol::SSDP)`
 
 **Example Enrichment**:
+
 ```rust
 // SSDP response captured:
 LOCATION: http://192.168.1.50:49152/description.xml
@@ -278,6 +300,7 @@ ST: upnp:rootdevice
 ```
 
 **Use Cases**:
+
 - IoT device inventory
 - Smart home device discovery
 - Media server detection
@@ -290,17 +313,20 @@ ST: upnp:rootdevice
 **Purpose**: Zero-configuration networking (Bonjour, Avahi)
 
 **Enrichment Capabilities**:
+
 - Service discovery (_services._dns-sd._udp.local)
 - Device hostnames (.local domain)
 - Service types (HTTP, SSH, VNC, etc.)
 - TXT record metadata
 
 **Implementation**:
+
 - **Probe**: `MDNSProbe` (`scanners/probes/iot_probes.rs`)
 - **Passive Detection**: NetSniffer captures mDNS responses
 - **Active Probing**: `IoTProbeSender::send_multicast_probe(IoTProtocol::MDNS)`
 
 **Example Enrichment**:
+
 ```rust
 // mDNS response:
 _http._tcp.local → MyPrinter._http._tcp.local
@@ -320,6 +346,7 @@ TXT: model=HP LaserJet, serial=ABC123
 ```
 
 **Use Cases**:
+
 - Printer discovery
 - Apple device detection (AirPlay, AirPrint)
 - IoT device identification
@@ -332,17 +359,20 @@ TXT: model=HP LaserJet, serial=ABC123
 **Purpose**: Lightweight IoT communication protocol
 
 **Enrichment Capabilities**:
+
 - Resource discovery (/.well-known/core)
 - Device capabilities
 - Resource endpoints
 - Link-Format parsing
 
 **Implementation**:
+
 - **Probe**: `CoAPProbe` (`scanners/probes/iot_probes.rs`)
 - **Passive Detection**: NetSniffer captures CoAP responses
 - **Active Probing**: `IoTProbeSender::send_multicast_probe(IoTProtocol::CoAP)`
 
 **Example Enrichment**:
+
 ```rust
 // CoAP response from /.well-known/core:
 </sensors/temp>;ct=0;rt="temperature-c",
@@ -363,6 +393,7 @@ TXT: model=HP LaserJet, serial=ABC123
 ```
 
 **Use Cases**:
+
 - IoT sensor discovery
 - Smart home device enumeration
 - Resource endpoint mapping
@@ -374,16 +405,19 @@ TXT: model=HP LaserJet, serial=ABC123
 **Purpose**: IoT messaging protocol
 
 **Enrichment Capabilities**:
+
 - Broker discovery
 - Topic enumeration
 - Authentication status
 - Client identification
 
 **Implementation**:
+
 - **Probe**: `MQTTProbe` (`scanners/probes/iot_probes.rs`)
 - **Active Probing**: `IoTProbeSender::send_unicast_probe(IoTProtocol::MQTT, target_ip)`
 
 **Example Enrichment**:
+
 ```rust
 // MQTT CONNACK response:
 Return Code: 0 (Connection Accepted)
@@ -400,6 +434,7 @@ Return Code: 0 (Connection Accepted)
 ```
 
 **Use Cases**:
+
 - IoT broker discovery
 - Message queue enumeration
 - Device communication analysis
@@ -411,16 +446,19 @@ Return Code: 0 (Connection Accepted)
 **Purpose**: Network device management
 
 **Enrichment Capabilities**:
+
 - System description (sysDescr OID: 1.3.6.1.2.1.1.1.0)
 - Device identification
 - Firmware versions
 - Community string enumeration
 
 **Implementation**:
+
 - **Probe**: `SNMPProbe` (`scanners/probes/iot_probes.rs`)
 - **Active Probing**: `IoTProbeSender::send_unicast_probe(IoTProtocol::SNMP, target_ip)`
 
 **Example Enrichment**:
+
 ```rust
 // SNMP response:
 sysDescr: "Cisco IOS Software, C2960 Software (C2960-LANBASE-M), Version 15.0(2)SE"
@@ -439,6 +477,7 @@ sysDescr: "Cisco IOS Software, C2960 Software (C2960-LANBASE-M), Version 15.0(2)
 ```
 
 **Use Cases**:
+
 - Network device inventory
 - Firmware version detection
 - Community string enumeration
@@ -451,17 +490,20 @@ sysDescr: "Cisco IOS Software, C2960 Software (C2960-LANBASE-M), Version 15.0(2)
 **Purpose**: Windows device discovery
 
 **Enrichment Capabilities**:
+
 - Windows device identification
 - Service endpoints (XAddrs)
 - Device types
 - SOAP service enumeration
 
 **Implementation**:
+
 - **Probe**: `WSDDProbe` (`scanners/probes/iot_probes.rs`)
 - **Passive Detection**: NetSniffer captures WSDD responses
 - **Active Probing**: `IoTProbeSender::send_multicast_probe(IoTProtocol::WSDD)`
 
 **Example Enrichment**:
+
 ```rust
 // WSDD ProbeMatch response:
 XAddrs: http://192.168.1.100:5357/onvif/device_service
@@ -477,6 +519,7 @@ Types: wsdp:Device
 ```
 
 **Use Cases**:
+
 - Windows device discovery
 - ONVIF camera detection
 - Network printer discovery
@@ -485,7 +528,8 @@ Types: wsdp:Device
 ### IoT Enrichment Workflow
 
 **Passive Monitoring** (NetSniffer):
-```
+
+```md
 1. NetSniffer captures packets on network interface
 2. Filters for IoT protocol traffic (SSDP, mDNS, CoAP)
 3. Parses protocol-specific responses
@@ -493,8 +537,9 @@ Types: wsdp:Device
 5. Enriches host observations with IoT data
 ```
 
-**Active Probing** (IoT Probes):
-```
+**Active Probing** (IoT Probes)
+
+```md
 1. Send multicast probes (SSDP, mDNS, CoAP, WSDD)
 2. Send unicast probes (SNMP, MQTT)
 3. Capture responses
@@ -503,6 +548,7 @@ Types: wsdp:Device
 ```
 
 **Integration Example**:
+
 ```rust
 // In NetSnifferSource or custom transform:
 if packet.dport == 1900 && packet.proto == "udp" {
@@ -518,13 +564,12 @@ if packet.dport == 1900 && packet.proto == "udp" {
 
 ## Access Point Enrichment
 
-### Overview
-
 WiFi access points and wireless networks provide rich metadata for network enrichment, including SSID, BSSID, encryption types, signal strength, and client associations.
 
 ### WiFi Protocol Support
 
 **802.11 Frame Types**:
+
 - **Beacon Frames**: Access point advertisements
 - **Probe Requests**: Client device discovery
 - **Probe Responses**: Access point responses
@@ -535,6 +580,7 @@ WiFi access points and wireless networks provide rich metadata for network enric
 #### 1. Access Point Discovery
 
 **Information Extracted**:
+
 - **SSID**: Network name
 - **BSSID**: Access point MAC address
 - **Channel**: Operating frequency channel
@@ -544,6 +590,7 @@ WiFi access points and wireless networks provide rich metadata for network enric
 - **Security**: Authentication methods
 
 **Example Enrichment**:
+
 ```rust
 // Beacon frame captured:
 SSID: "Corporate_WiFi"
@@ -568,12 +615,14 @@ RSSI: -45 dBm
 #### 2. Client Device Discovery
 
 **Information Extracted**:
+
 - **Client MAC**: Device MAC address
 - **Probed SSIDs**: Networks device is looking for
 - **Vendor**: From MAC OUI lookup
 - **Device Type**: Inferred from probe patterns
 
 **Example Enrichment**:
+
 ```rust
 // Probe request captured:
 Source MAC: AA:BB:CC:DD:EE:FF
@@ -592,12 +641,14 @@ Probed SSID: "Guest_WiFi"
 #### 3. Network Topology Mapping
 
 **Capabilities**:
+
 - Access point to client associations
 - Signal strength mapping
 - Channel interference analysis
 - Rogue access point detection
 
 **Example Enrichment**:
+
 ```rust
 // Association relationship:
 {
@@ -616,11 +667,13 @@ Probed SSID: "Guest_WiFi"
 ### Implementation Notes
 
 **Current Status**:
+
 - WiFi frame parsing is planned but not yet fully implemented
 - Requires 802.11 packet capture (monitor mode)
 - Platform-specific (Linux: monitor mode, macOS: airport, Windows: netsh)
 
 **Future Enhancements**:
+
 - 802.11 beacon frame parsing
 - Probe request/response analysis
 - WPA handshake capture
@@ -629,8 +682,6 @@ Probed SSID: "Guest_WiFi"
 
 ## Protocol-Based Enrichment
 
-### Overview
-
 Different network protocols provide unique enrichment opportunities. LEGION2 analyzes protocol-specific characteristics to extract maximum intelligence.
 
 ### Protocol Categories
@@ -638,20 +689,24 @@ Different network protocols provide unique enrichment opportunities. LEGION2 ana
 #### 1. Discovery Protocols
 
 **SSDP/UPnP**: Device and service discovery
+
 - LOCATION URLs for device description
 - SERVER headers for OS/firmware
 - USN for device identification
 
 **mDNS/DNS-SD**: Zero-configuration networking
+
 - Service enumeration
 - Hostname resolution (.local)
 - TXT record metadata
 
 **LLMNR**: Windows name resolution
+
 - Hostname discovery
 - Windows domain identification
 
 **NetBIOS**: Windows network discovery
+
 - Computer names
 - Workgroup/domain names
 - Service enumeration
@@ -659,18 +714,21 @@ Different network protocols provide unique enrichment opportunities. LEGION2 ana
 #### 2. Management Protocols
 
 **SNMP**: Network device management
+
 - System information (sysDescr)
 - Device identification
 - Firmware versions
 - Community strings
 
 **DHCP**: IP address assignment
+
 - Hostname discovery
 - Vendor class identifiers
 - Option 12 (hostname)
 - Option 43 (vendor-specific)
 
 **ICMP**: Network diagnostics
+
 - Host discovery
 - OS fingerprinting (TTL)
 - Network topology (traceroute)
@@ -678,22 +736,26 @@ Different network protocols provide unique enrichment opportunities. LEGION2 ana
 #### 3. Application Protocols
 
 **HTTP/HTTPS**: Web services
+
 - Server headers (Apache, nginx, IIS)
 - Application frameworks
 - Version information
 - Security headers
 
 **SSH**: Remote access
+
 - Banner grabbing
 - Version detection
 - Key exchange algorithms
 
 **FTP**: File transfer
+
 - Banner analysis
 - Anonymous access detection
 - Version identification
 
 **SMTP**: Email services
+
 - Server identification
 - Banner analysis
 - Authentication methods
@@ -701,16 +763,19 @@ Different network protocols provide unique enrichment opportunities. LEGION2 ana
 #### 4. IoT Protocols
 
 **MQTT**: IoT messaging
+
 - Broker identification
 - Topic enumeration
 - Authentication status
 
 **CoAP**: Constrained applications
+
 - Resource discovery
 - Device capabilities
 - Endpoint mapping
 
 **Modbus**: Industrial control
+
 - Device identification
 - Function code enumeration
 - Unit ID discovery
@@ -718,7 +783,9 @@ Different network protocols provide unique enrichment opportunities. LEGION2 ana
 ### Protocol Enrichment Transform
 
 **Future Implementation**:
+
 A `ProtocolEnrichmentTransform` could:
+
 - Parse protocol-specific headers
 - Extract version information
 - Identify application frameworks
@@ -726,6 +793,7 @@ A `ProtocolEnrichmentTransform` could:
 - Map protocol features
 
 **Example**:
+
 ```rust
 // HTTP response:
 HTTP/1.1 200 OK
@@ -776,7 +844,7 @@ let plan = Plan::netsniffer(scan_id, "eth0")
 ### Available Enrichment Modules
 
 | Module Name | Description | Output Fields |
-|------------|-------------|---------------|
+| ------------ | ------------- | --------------- |
 | `mac_enrichment` | MAC-vendor lookup | `vendor`, `nic_vendor`, `oui` |
 | `passive_os` | OS fingerprinting | `os_name`, `os_family`, `os_accuracy` |
 | `service_parsing` | Service identification | `service`, `product`, `version` |
@@ -941,6 +1009,7 @@ db.store_access_point(
 ### 1. Enrichment Order
 
 Apply enrichment modules in logical order:
+
 1. **MAC enrichment** first (foundation data)
 2. **OS fingerprinting** (uses MAC vendor hints)
 3. **Service parsing** (identifies products)
@@ -978,6 +1047,7 @@ Apply enrichment modules in logical order:
 ### NetSniffer Integration
 
 NetSniffer automatically applies enrichment transforms:
+
 - Captures packets → Extracts MAC/IP/Port data
 - MAC enrichment → Vendor identification
 - OS fingerprinting → OS detection
@@ -987,6 +1057,7 @@ NetSniffer automatically applies enrichment transforms:
 ### Massmap Integration
 
 Massmap results can be enriched post-scan:
+
 - Nmap XML output → Service/product/version
 - CVE enrichment → Vulnerability lookup
 - MAC enrichment → Vendor identification (if MACs in XML)
@@ -994,6 +1065,7 @@ Massmap results can be enriched post-scan:
 ### Vulnerability Analysis Integration
 
 Enriched observations feed into vulnerability analysis:
+
 - CVE data → Risk scoring
 - Exploit availability → Exploitability assessment
 - Port-service-CVE → Common vulnerability patterns
@@ -1041,4 +1113,3 @@ LEGION2's enrichment pipeline transforms raw network observations into a compreh
 The enrichment system is modular and extensible, allowing new enrichment types to be added as transforms. Current enrichments include MAC-vendor mapping, OS fingerprinting, CVE/exploit correlation, and IoT device discovery, with access point and protocol-specific enrichments planned for future releases.
 
 All enriched data flows through the unified pipeline architecture, ensuring consistent storage in the encrypted database and real-time updates to the frontend via Tauri events.
-

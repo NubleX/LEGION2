@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use roxmltree::Document;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tracing::{debug, info};
+use tracing::debug;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Host {

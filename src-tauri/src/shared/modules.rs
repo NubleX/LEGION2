@@ -192,18 +192,14 @@ impl ModuleRegistry {
     }
 }
 
-// Global module registry instance
-static mut MODULE_REGISTRY: Option<ModuleRegistry> = None;
-static INIT: std::sync::Once = std::sync::Once::new();
+// Simplified module registry using lazy_static for thread safety
+use std::sync::LazyLock;
+
+static MODULE_REGISTRY: LazyLock<ModuleRegistry> = LazyLock::new(|| ModuleRegistry::new());
 
 /// Get the global module registry instance
 pub fn get_registry() -> &'static ModuleRegistry {
-    unsafe {
-        INIT.call_once(|| {
-            MODULE_REGISTRY = Some(ModuleRegistry::new());
-        });
-        MODULE_REGISTRY.as_ref().unwrap()
-    }
+    &MODULE_REGISTRY
 }
 
 /// Module configuration and initialization

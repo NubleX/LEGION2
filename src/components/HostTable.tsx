@@ -3,7 +3,7 @@
 
 import { AlertTriangle, Network, Shield, Server } from 'lucide-react';
 import React, { useState } from 'react';
-import useHostStore, { Host } from '../stores/hostStore';
+import useHostStore, { Host, selectVisibleHosts } from '../stores/hostStore';
 import useServiceStore from '../stores/serviceStore';
 
 interface HostTableProps {
@@ -13,7 +13,7 @@ interface HostTableProps {
 
 const HostTable: React.FC<HostTableProps> = React.memo(({ onHostSelect, className = '' }) => {
   // Subscribe to hosts array from store
-  const hosts = useHostStore(state => state.hosts);
+  const hosts = useHostStore(selectVisibleHosts);
   const getServices = useServiceStore(state => state.getServices);
   const loadServices = useServiceStore(state => state.loadServices);
   const [expandedHosts, setExpandedHosts] = useState<Set<string>>(new Set());

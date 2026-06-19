@@ -16,7 +16,7 @@ Massmap is the unified scanning strategy that intelligently combines `masscan` (
 
 **How Massmap Works:**
 
-```
+```md
 User Initiates Scan
     ↓
 create_massmap_plan() analyzes:
@@ -64,7 +64,7 @@ NetSniffer is a **passive** packet capture and analysis tool that monitors netwo
 
 **NetSniffer's Role in the Scanner Ecosystem:**
 
-```
+```md
 ┌─────────────────────────────────────────────────────────────┐
 │              LEGION2 Scanning Ecosystem                      │
 └─────────────────────────────────────────────────────────────┘
@@ -119,7 +119,7 @@ impl Source for NetSnifferSource {
 
 ### Streaming Pipeline Flow
 
-```
+```md
 NetSnifferSource.start()
     ↓
 ┌─────────────────────────────────────┐
@@ -275,6 +275,7 @@ let stream = stream::unfold(packet_rx, |mut rx| async move {
 ### 3. Observation Mapping
 
 **TCP SYN-ACK → Service Observation:**
+
 ```rust
 Observation {
     kind: ObservationKind::Service,
@@ -290,6 +291,7 @@ Observation {
 ```
 
 **Unique Source IP → Host Observation:**
+
 ```rust
 Observation {
     kind: ObservationKind::Host,
@@ -306,23 +308,25 @@ Observation {
 
 NetSniffer complements massmap by providing data that active scanners cannot:
 
-### Massmap Discovers:
+### Massmap Discovers
+
 - ✅ IP addresses
 - ✅ Open ports
 - ✅ Services (via nmap)
 - ✅ OS (via nmap -O)
 - ✅ Versions (via nmap -sV)
 
-### NetSniffer Enriches:
+### NetSniffer Enriches
+
 - ✅ MAC addresses (Layer 2)
 - ✅ Vendor identification (OUI)
 - ✅ Passive OS hints (TTL fingerprinting)
 - ✅ Network topology (host-to-host communication)
 - ✅ IoT device discovery (SSDP, mDNS)
 
-### Typical Workflow:
+### Typical Workflow
 
-```
+```md
 1. User runs massmap scan
    └─ Masscan discovers hosts/ports quickly
    └─ Nmap performs detailed analysis
@@ -383,6 +387,7 @@ NetSniffer observations flow to the same sinks as massmap:
 ### Multi-Protocol Support
 
 NetSniffer handles multiple protocols:
+
 - **TCP**: SYN-ACK detection, service identification
 - **UDP**: Service discovery (SSDP, mDNS, NetBIOS)
 - **ICMP**: Host discovery, error messages
@@ -391,6 +396,7 @@ NetSniffer handles multiple protocols:
 ### BPF Filtering
 
 Configurable Berkeley Packet Filter (BPF) expressions:
+
 - Default: `"tcp or udp or icmp"`
 - Can be customized for specific traffic patterns
 - Example: `"tcp and dst port 80"` for HTTP traffic only
@@ -398,6 +404,7 @@ Configurable Berkeley Packet Filter (BPF) expressions:
 ### Heartbeat Monitoring
 
 NetSniffer emits periodic heartbeat observations to indicate it's still running:
+
 ```rust
 Observation {
     kind: ObservationKind::Metric,
@@ -411,6 +418,7 @@ Observation {
 ### Cancellation Support
 
 NetSniffer respects the global scan cancellation flag:
+
 ```rust
 if engine_commands::is_scan_cancelled() {
     log::info!("NetSniffer capture cancelled by user");
@@ -431,6 +439,7 @@ if engine_commands::is_scan_cancelled() {
 ### Transform Pipeline Expansion
 
 As packet parsing grows complex, consider splitting into dedicated transforms:
+
 - `ServiceParsingTransform`: Protocol detection and service identification
 - `IpEnrichmentTransform`: OUI/geo/ASN lookups
 - `ProgressTrackingTransform`: Metrics and performance monitoring
@@ -488,4 +497,3 @@ NetSniffer completes LEGION2's three-tier scanning strategy:
 All three components feed into the unified streaming pipeline, ensuring consistent data flow to the database and frontend. NetSniffer's passive nature makes it ideal for stealth operations and continuous monitoring, while massmap handles active reconnaissance efficiently.
 
 The integration is seamless: once NetSniffer starts, observations automatically flow through the same pipeline as massmap, updating the UI in real-time via Tauri events and persisting to the encrypted database.
-

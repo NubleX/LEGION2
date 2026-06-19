@@ -142,8 +142,8 @@ impl AnalysisEngine {
         Ok(findings)
     }
 
-    /// Run full network analysis
-    pub async fn analyze_network(&self) -> Result<AnalysisResult> {
+    /// Run full network analysis, optionally scoped to a target specification
+    pub async fn analyze_network(&self, target_filter: Option<&str>) -> Result<AnalysisResult> {
         let analysis_id = "network_analysis".to_string();
 
         self.active_analyses.write().await.push(analysis_id.clone());
@@ -151,7 +151,14 @@ impl AnalysisEngine {
 
         // Get all findings and vulnerabilities
         let findings = self.correlation_engine.correlate_all_findings().await?;
-        let vulnerabilities = self.vulnerability_engine.analyze_all_hosts().await?;
+        let vulnerabilities = match target_filter {
+            Some(targets) => {
+                self.vulnerability_engine
+                    .analyze_hosts_in_range(targets)
+                    .await?
+            }
+            None => self.vulnerability_engine.analyze_all_hosts().await?,
+        };
 
         // Generate comprehensive attack paths
         let attack_paths = self

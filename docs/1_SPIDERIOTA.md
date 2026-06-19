@@ -33,7 +33,7 @@ Traditional network scanning approaches face challenges with IoT devices:
 
 IoT Spider integrates seamlessly with LEGION2's unified streaming pipeline architecture:
 
-```
+```md
 ┌─────────────────────────────────────────────────────────────┐
 │              IoT Spider Architecture                         │
 └─────────────────────────────────────────────────────────────┘
@@ -89,7 +89,7 @@ Registry::create_source("iot_probe")
 
 ### Component Architecture
 
-```
+```md
 ┌─────────────────────────────────────────────────────────────┐
 │                    IoT Spider Components                      │
 └─────────────────────────────────────────────────────────────┘
@@ -135,13 +135,15 @@ IoT Spider implements 6 discovery protocols commonly used by IoT devices and net
 **Purpose**: Discover UPnP-enabled devices (routers, printers, media servers, IoT devices)
 
 **Protocol Details**:
+
 - **Multicast Address**: `239.255.255.250:1900`
 - **Protocol**: UDP
 - **Probe Type**: M-SEARCH request
 - **Response**: HTTP-like headers with device information
 
 **Probe Format**:
-```
+
+```md
 M-SEARCH * HTTP/1.1
 Host: 239.255.255.250:1900
 MAN: "ssdp:discover"
@@ -150,12 +152,14 @@ ST: ssdp:all
 ```
 
 **Response Parsing**:
+
 - Extracts `LOCATION` header (device description URL)
 - Extracts `USN` (Unique Service Name)
 - Extracts `SERVER` header (device type/version)
 - Extracts `ST` (Service Type)
 
 **Device Types Discovered**:
+
 - Routers and gateways
 - Network printers
 - Media servers (DLNA)
@@ -170,20 +174,24 @@ ST: ssdp:all
 **Purpose**: Discover devices using Bonjour/ZeroConf (Apple devices, printers, IoT)
 
 **Protocol Details**:
+
 - **Multicast Address**: `224.0.0.251:5353`
 - **Protocol**: UDP
 - **Probe Type**: DNS query for `_services._dns-sd._udp.local`
 - **Response**: DNS PTR records with service information
 
 **Probe Format**:
+
 - DNS query packet requesting PTR records for service discovery
 
 **Response Parsing**:
+
 - Extracts service names from DNS answers
 - Parses TXT records for device information
 - Identifies device types from service names
 
 **Device Types Discovered**:
+
 - Apple devices (Mac, iPhone, iPad, Apple TV)
 - Network printers
 - AirPlay devices
@@ -197,12 +205,14 @@ ST: ssdp:all
 **Purpose**: Discover Windows devices and WCF services
 
 **Protocol Details**:
+
 - **Multicast Address**: `239.255.255.250:3702`
 - **Protocol**: UDP
 - **Probe Type**: SOAP envelope with Probe action
 - **Response**: SOAP ProbeMatch with service information
 
 **Probe Format**:
+
 ```xml
 <env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope"
               xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
@@ -218,11 +228,13 @@ ST: ssdp:all
 ```
 
 **Response Parsing**:
+
 - Extracts `MessageID` for correlation
 - Extracts `XAddrs` (service addresses)
 - Extracts `Types` (service types)
 
 **Device Types Discovered**:
+
 - Windows workstations and servers
 - Windows printers
 - WCF web services
@@ -235,23 +247,27 @@ ST: ssdp:all
 **Purpose**: Query network devices for system information
 
 **Protocol Details**:
+
 - **Port**: `161` (UDP)
 - **Protocol**: UDP (unicast only)
 - **Probe Type**: SNMP GetRequest for system description (OID 1.3.6.1.2.1.1.1.0)
 - **Community**: `public` (default)
 
 **Probe Format**:
+
 - SNMP v2c GetRequest packet with proper ASN.1 DER encoding
 - Queries system description OID (1.3.6.1.2.1.1.1.0)
 - Based on NSE library `snmp.lua` implementation
 
 **Response Parsing**:
+
 - Full ASN.1 DER decoding of SNMP response packets
 - Extracts system description from Response-PDU
 - Parses OID values and variable bindings
 - Identifies device type from system description
 
 **Device Types Discovered**:
+
 - Network switches and routers
 - Printers and network devices
 - UPS systems
@@ -265,17 +281,20 @@ ST: ssdp:all
 **Purpose**: Discover IoT devices using CoAP resource discovery
 
 **Protocol Details**:
+
 - **Multicast Address**: `224.0.1.187:5683` (multicast) or `5683/5684` (unicast)
 - **Protocol**: UDP
 - **Probe Type**: CoAP GET request to `/.well-known/core`
 - **Response**: Link-Format resource list
 
 **Probe Format**:
+
 - CoAP GET request with proper header encoding (version, type, token length, code)
 - Uri-Path options for `/.well-known/core` resource
 - Based on NSE library `coap.lua` implementation
 
 **Response Parsing**:
+
 - Full CoAP header parsing (version, type, code, message ID)
 - Extracts CoAP response codes (2.05 Content, 4.04 Not Found, etc.)
 - Parses Link-Format payload (RFC 6690) with resource paths and attributes
@@ -283,6 +302,7 @@ ST: ssdp:all
 - Identifies available resources with full attribute parsing
 
 **Device Types Discovered**:
+
 - IoT sensors (temperature, humidity, motion)
 - Smart lighting systems
 - Home automation devices
@@ -296,21 +316,25 @@ ST: ssdp:all
 **Purpose**: Discover MQTT brokers (IoT messaging infrastructure)
 
 **Protocol Details**:
+
 - **Ports**: `1883` (non-TLS), `8883` (TLS)
 - **Protocol**: TCP (unicast only)
 - **Probe Type**: MQTT CONNECT packet
 - **Response**: CONNACK with broker information
 
 **Probe Format**:
+
 - MQTT CONNECT packet with client ID
 - Protocol level 4 (MQTT 3.1.1)
 
 **Response Parsing**:
+
 - Extracts CONNACK return code
 - Identifies broker acceptance/rejection
 - Determines broker version (if available)
 
 **Device Types Discovered**:
+
 - MQTT brokers
 - IoT messaging infrastructure
 - Home automation hubs
@@ -322,7 +346,7 @@ ST: ssdp:all
 
 ### Execution Flow
 
-```
+```md
 1. User creates IoT spider plan:
    Plan::iot_spider(scan_id, targets, protocols)
 
@@ -410,6 +434,7 @@ IoT Spider automatically identifies devices suitable as pivot points based on:
    - Device capabilities indicated
 
 **Pivot Candidate Criteria**:
+
 - Devices responding to SSDP/WSDD (web interfaces likely)
 - SNMP-enabled devices (network infrastructure)
 - MQTT brokers (central messaging)
@@ -569,6 +594,7 @@ impl MDNSProbe {
 ```
 
 **Implementation Details**:
+
 - **DNS Parsing**: Uses `dns-parser` crate (v0.8) for complete DNS packet parsing
 - **Service Discovery**: Extracts all DNS-SD service information (PTR, SRV, TXT, A, AAAA)
 - **Record Extraction**: Parses all DNS record types for comprehensive device information
@@ -621,6 +647,7 @@ impl SNMPProbe {
 ```
 
 **Implementation Details**:
+
 - **ASN.1 Encoding**: Full DER encoding for SNMP v2c GetRequest packets
 - **OID Encoding**: Base 128 encoding for OID components (RFC 2578)
 - **Response Parsing**: Extracts system description and other OID values from Response-PDU
@@ -658,6 +685,7 @@ impl CoAPProbe {
 ```
 
 **Implementation Details**:
+
 - **Packet Structure**: Proper CoAP header encoding per RFC 7252
 - **Option Encoding**: Delta/length encoding for Uri-Path options
 - **Link-Format Parsing**: Full RFC 6690 Link-Format parsing with attribute extraction
@@ -694,6 +722,7 @@ let bpf_filter = format!(
 ```
 
 This filter ensures that:
+
 - All standard traffic is captured (tcp/udp/icmp)
 - IoT protocol ports are explicitly included
 - Responses to probes are captured efficiently
@@ -727,6 +756,7 @@ impl Source for IoTProbeSource {
 **Scenario**: Discover all IoT devices on a local network
 
 **Approach**:
+
 ```rust
 let plan = Plan::iot_spider(
     scan_id,
@@ -742,6 +772,7 @@ let plan = Plan::iot_spider(
 **Scenario**: Identify network infrastructure devices (routers, switches)
 
 **Approach**:
+
 ```rust
 let plan = Plan::iot_spider(
     scan_id,
@@ -757,6 +788,7 @@ let plan = Plan::iot_spider(
 **Scenario**: Find devices suitable for traffic monitoring and pivoting
 
 **Approach**:
+
 ```rust
 let plan = Plan::iot_spider(
     scan_id,
@@ -767,6 +799,7 @@ let plan = Plan::iot_spider(
 ```
 
 **Result**: Identifies devices with:
+
 - Multiple exposed services
 - Management interfaces
 - Network infrastructure capabilities
@@ -777,6 +810,7 @@ let plan = Plan::iot_spider(
 **Scenario**: Discover devices without triggering security alerts
 
 **Approach**:
+
 ```rust
 // Use only multicast protocols (no direct connection attempts)
 let plan = Plan::iot_spider(
@@ -793,6 +827,7 @@ let plan = Plan::iot_spider(
 **Scenario**: Identify vulnerable IoT devices for security assessment
 
 **Approach**:
+
 ```rust
 let plan = Plan::iot_spider(
     scan_id,
@@ -807,6 +842,7 @@ let plan = Plan::iot_spider(
 ```
 
 **Result**: Discovers IoT devices and enriches with:
+
 - Device types and versions
 - Exposed services
 - Known CVEs
@@ -877,7 +913,7 @@ IoT Spider observations are stored in the standard database schema:
 
 ### Recent Enhancements (2025)
 
-1. **SNMP Probe**: 
+1. **SNMP Probe**:
    - ✅ Full ASN.1 DER encoding/decoding implemented
    - ✅ System description extraction from Response-PDU
    - ✅ Based on NSE library `snmp.lua` reference implementation
@@ -936,12 +972,14 @@ IoT Spider observations are stored in the standard database schema:
 ### No Devices Discovered
 
 **Possible Causes**:
+
 - Network doesn't have IoT devices
 - Firewall blocking multicast traffic
 - Wrong network interface selected
 - Devices not responding to probes
 
 **Solutions**:
+
 - Verify network interface: `Plan::with_interface("eth0")`
 - Check firewall rules for multicast
 - Try specific protocols: `vec!["ssdp".to_string()]`
@@ -950,11 +988,13 @@ IoT Spider observations are stored in the standard database schema:
 ### Partial Discovery
 
 **Possible Causes**:
+
 - Some protocols not supported by devices
 - Network segmentation limiting multicast
 - Devices filtering specific protocols
 
 **Solutions**:
+
 - Try all protocols: `vec![]` (defaults to all)
 - Use unicast probes for specific targets
 - Check network topology for segmentation
@@ -962,11 +1002,13 @@ IoT Spider observations are stored in the standard database schema:
 ### Performance Issues
 
 **Possible Causes**:
+
 - Too many targets for unicast probes
 - Network latency affecting timeouts
 - High packet capture load
 
 **Solutions**:
+
 - Use multicast-only for large networks
 - Increase timeout for slow networks
 - Limit protocols to essential ones
@@ -1016,4 +1058,3 @@ let plan = Plan::iot_spider(
 ## Conclusion
 
 IoT Spider provides a lightweight, efficient method for discovering IoT devices and identifying network pivot points. By combining active probing with passive monitoring, it offers a comprehensive view of network devices without the overhead of full port scans. Its integration with LEGION2's unified pipeline ensures that discovered devices are automatically enriched with MAC addresses, OS information, and vulnerability data, making it an essential tool for network reconnaissance and security assessment.
-

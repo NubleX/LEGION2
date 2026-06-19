@@ -3,6 +3,7 @@
 
 import { emit, listen } from '@tauri-apps/api/event';
 import { create } from 'zustand';
+import { isIpInTargetRange } from '../utils/targetRange';
 
 export interface Host {
   id: string;
@@ -26,12 +27,16 @@ export interface Host {
   timestamp?: string;
 }
 
-interface HostStore {
+export interface HostStoreState {
   hosts: Host[];
   ports: Record<string, Set<number>>;
+  activeTargetRange: string | null;
   getHosts: () => Host[];
+  getVisibleHosts: () => Host[];
   getHost: (ip: string) => Host | undefined;
   setHosts: (hosts: Host[]) => void;
+  setActiveTargetRange: (targets: string | null) => void;
+  clearHosts: () => void;
   addHost: (host: Host) => void;
 }
 
@@ -70,7 +75,7 @@ function hasHostDataChanged(existing: Host, incoming: Partial<Host>): boolean {
   return false;
 }
 
-const useHostStore = create<HostStore>((set, get) => {
+const useHostStore = create<HostStoreState>((set, get) => {
   // Listen for host events from the backend and update the store
   listen('obs:host', (event: any) => {
     const hostEvent = event.payload;
@@ -282,9 +287,19 @@ const useHostStore = create<HostStore>((set, get) => {
   return {
     hosts: [],
     ports: {},
+    activeTargetRange: null,
     getHosts: () => get().hosts,
+    getVisibleHosts: () => {
+      const { hosts, activeTargetRange } = get();
+      if (!activeTargetRange) {
+        return hosts;
+      }
+      return hosts.filter((host) => isIpInTargetRange(host.ip, activeTargetRange));
+    },
     getHost: (ip: string) => get().hosts.find(h => h.ip === ip),
     setHosts: (hosts: Host[]) => set({ hosts }),
+    setActiveTargetRange: (targets: string | null) => set({ activeTargetRange: targets }),
+    clearHosts: () => set({ hosts: [], activeTargetRange: null }),
     addHost: (host: Host) => set(state => ({
       hosts: [...state.hosts.filter(h => h.ip !== host.ip), host]
     })),
@@ -292,3 +307,36 @@ const useHostStore = create<HostStore>((set, get) => {
 });
 
 export default useHostStore;
+
+export const selectVisibleHosts = (state: HostStoreState): Host[] => {
+  if (!state.activeTargetRange) {
+    return state.hosts;
+  }
+  // Create a stable filtered array reference using useMemo
+  // This will be properly memoized when used with useShallow or similar
+  const filtered = state.hosts.filter((host) => isIpInTargetRange(host.ip, state.activeTargetRange!));
+  return filtered;
+};
+
+// Alternative: use a hook-based selector for better caching
+let lastHosts: Host[] | null = null;
+let lastRange: string | null = null;
+let cachedResult: Host[] | null = null;
+
+export const selectVisibleHostsCached = (state: HostStoreState): Host[] => {
+  // Return cached result if inputs haven't changed
+  if (lastHosts === state.hosts && lastRange === state.activeTargetRange && cachedResult) {
+    return cachedResult;
+  }
+  
+  lastHosts = state.hosts;
+  lastRange = state.activeTargetRange;
+  
+  if (!state.activeTargetRange) {
+    cachedResult = state.hosts;
+  } else {
+    cachedResult = state.hosts.filter((host) => isIpInTargetRange(host.ip, state.activeTargetRange!));
+  }
+  
+  return cachedResult;
+};

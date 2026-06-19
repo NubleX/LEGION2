@@ -8,15 +8,13 @@
     "windows": [
       {
         "decorations": true,
-        "height": 1080,
         "label": "main",
         "maximized": true,
         "minHeight": 600,
         "minWidth": 800,
         "resizable": true,
         "title": "LEGION2",
-        "visible": true,
-        "width": 1920
+        "visible": true
       }
     ]
   },

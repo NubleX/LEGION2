@@ -41,9 +41,7 @@ impl Engine {
 
     pub async fn is_ready(&self) -> bool {
         let state = self.get_state().await;
-        // Allow multiple concurrent scans for recursive discovery
-        // Only block if explicitly cancelled or in error state
-        matches!(state, EngineState::Idle | EngineState::Completed | EngineState::Running | EngineState::Error)
+        matches!(state, EngineState::Idle | EngineState::Completed)
     }
 
     /// Reset the engine to a clean state for new scans
@@ -67,17 +65,16 @@ impl Engine {
         log::info!("Engine starting execution with transforms in pipeline");
 
         // Check if engine is ready for new scan
-        // For recursive discovery and continuous netsniffer, allow concurrent operations
         let current_state = self.get_state().await;
         if matches!(current_state, EngineState::Error) {
             return Err(anyhow::anyhow!("Engine in error state, cannot start new scan"));
         }
-
-        // Set running state and scan ID (allow concurrent scans for recursive discovery)
-        // Only update if not already running (to support concurrent operations)
-        if current_state == EngineState::Idle || current_state == EngineState::Completed {
-            *self.state.lock().await = EngineState::Running;
+        if matches!(current_state, EngineState::Running) {
+            return Err(anyhow::anyhow!("Engine is already running a scan"));
         }
+
+        // Set running state and scan ID
+        *self.state.lock().await = EngineState::Running;
         *self.current_scan_id.lock().await = Some(plan.scan_id.to_string());
         
         log::info!("Engine state set to Running for scan: {}", plan.scan_id);
@@ -181,7 +178,8 @@ impl Engine {
                 log::info!("Engine execution completed successfully for scan: {}", plan.scan_id);
             }
             Err(e) => {
-                *self.state.lock().await = EngineState::Error;
+                // Reset to Idle so next scan attempt doesn't get rejected
+                *self.state.lock().await = EngineState::Idle;
                 log::error!("Engine execution failed for scan: {}: {}", plan.scan_id, e);
                 return Err(e);
             }

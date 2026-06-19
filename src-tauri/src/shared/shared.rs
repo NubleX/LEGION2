@@ -1,20 +1,14 @@
 // LEGION2 - A free and open-source penetration testing tool.
-// Copyright (c) 2025 NubleX / Igor Dunaev
+// Copyright (c) 2026 NubleX / Igor Dunaev
 
-use anyhow;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt;
-use std::str::FromStr;
 use uuid::Uuid;
 
-// Re-export proper types from ScanTypes.rs
-pub use crate::shared::ScanTypes::{
-    ScanProgress, ScanStatus, ScanTarget, ScanType, ScanConfig, ScanResult,
-    DiscoveredHost, DiscoveredService, ScanError, ScanStatistics, NetworkStats, OSDetection,
-    PortRange, Protocol as ScanProtocol,
-};
+// Re-export commonly used types
+pub use crate::shared::types::{PortState, Protocol, Severity};
+pub use crate::shared::scan_types::{ScanProgress, ScanStatus, ScanTarget};
 
 // Event types for scan event system (used by masscan.rs)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -59,34 +53,6 @@ pub struct Observation {
 
 pub type ObsStream = futures::stream::BoxStream<'static, Observation>;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum HostStatus {
-    Up,
-    Down,
-    Unknown,
-}
-
-impl fmt::Display for HostStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            HostStatus::Up => write!(f, "up"),
-            HostStatus::Down => write!(f, "down"),
-            HostStatus::Unknown => write!(f, "unknown"),
-        }
-    }
-}
-
-impl FromStr for HostStatus {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> anyhow::Result<Self> {
-        match s {
-            "up" => Ok(HostStatus::Up),
-            "down" => Ok(HostStatus::Down),
-            "unknown" => Ok(HostStatus::Unknown),
-            other => Err(anyhow::anyhow!("Invalid HostStatus: {}", other)),
-        }
-    }
-}
 
 /// Classifies network service by port number with security context
 pub fn classify_service_by_port(port: u16) -> ServiceInfo {
@@ -159,127 +125,6 @@ pub struct Host {
     pub notes: Option<String>,
     pub tags: Vec<String>,
     pub scan_progress: Option<f32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Protocol {
-    Tcp,
-    Udp,
-}
-
-impl Protocol {
-    #[allow(dead_code)] // The as_str() method is a utility function I may need later for string conversions.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Protocol::Tcp => "tcp",
-            Protocol::Udp => "udp",
-        }
-    }
-}
-
-impl fmt::Display for Protocol {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Protocol::Tcp => write!(f, "tcp"),
-            Protocol::Udp => write!(f, "udp"),
-        }
-    }
-}
-
-impl FromStr for Protocol {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "tcp" => Ok(Protocol::Tcp),
-            "udp" => Ok(Protocol::Udp),
-            _ => Err(anyhow::anyhow!("Invalid Protocol: {}", s)),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum PortState {
-    Open,
-    Closed,
-    Filtered,
-    Unknown,
-}
-
-impl PortState {
-    #[allow(dead_code)] // The as_str() method is a utility function I may need later for string conversions.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            PortState::Open => "open",
-            PortState::Closed => "closed",
-            PortState::Filtered => "filtered",
-            PortState::Unknown => "unknown",
-        }
-    }
-}
-
-impl fmt::Display for PortState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PortState::Open => write!(f, "open"),
-            PortState::Closed => write!(f, "closed"),
-            PortState::Filtered => write!(f, "filtered"),
-            PortState::Unknown => write!(f, "unknown"),
-        }
-    }
-}
-
-impl FromStr for PortState {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "open" => Ok(PortState::Open),
-            "closed" => Ok(PortState::Closed),
-            "filtered" => Ok(PortState::Filtered),
-            "unknown" => Ok(PortState::Unknown),
-            _ => Err(anyhow::anyhow!("Invalid PortState: {}", s)),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Severity {
-    Info,
-    Low,
-    Medium,
-    High,
-    Critical,
-    Unknown,
-}
-
-impl fmt::Display for Severity {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Severity::Info => write!(f, "info"),
-            Severity::Low => write!(f, "low"),
-            Severity::Medium => write!(f, "medium"),
-            Severity::High => write!(f, "high"),
-            Severity::Critical => write!(f, "critical"),
-            Severity::Unknown => write!(f, "unknown"),
-        }
-    }
-}
-
-impl FromStr for Severity {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "info" => Ok(Severity::Info),
-            "low" => Ok(Severity::Low),
-            "medium" => Ok(Severity::Medium),
-            "high" => Ok(Severity::High),
-            "critical" => Ok(Severity::Critical),
-            "unknown" => Ok(Severity::Unknown),
-            _ => Err(anyhow::anyhow!("Invalid Severity: {}", s)),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

@@ -117,7 +117,7 @@ impl Registry {
             
             match sink_type.as_str() {
                 "ui" => {
-                    let mut ui_sink = UiSink::new(self.app_handle.clone());
+                    let mut ui_sink = UiSink::new(self.app_handle.clone(), plan.scan_id);
                     ui_sink.set_analysis_engine(analysis_engine.clone());
                     let discovery_manager = self.get_discovery_manager();
                     ui_sink.set_discovery_manager(discovery_manager.clone());

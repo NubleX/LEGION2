@@ -8,7 +8,7 @@ use crate::shared::shared::{ScanPort, ScanVulnerability};
 use crate::shared::traits::Source;
 use crate::utils::parsing::NmapParser;
 use crate::utils::xml_parser::XmlParser;
-use crate::shared::ScanTypes::OSDetection;
+use crate::shared::scan_types::OSDetection;
 use crate::os::{get_nmap_binary_path};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -245,6 +245,11 @@ impl Source for NmapScanner {
 
     async fn start(&self, plan: &Plan) -> anyhow::Result<ObsStream> {
         let (mut cmd, xml_file) = self.build_nmap_command(plan).await;
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
         let mut child = cmd
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -417,6 +422,15 @@ impl Source for NmapScanner {
                                         match xml_parser.parse_nmap_xml(xml_path) {
                                             Ok(mut xml_observations) => {
                                                 log::info!("XML parser generated {} comprehensive observations", xml_observations.len());
+
+                                                if let Ok(session_info) =
+                                                    crate::session_state::record_from_file(&xml_file)
+                                                {
+                                                    log::info!(
+                                                        "Recorded scan session: {}",
+                                                        session_info.scan_summary
+                                                    );
+                                                }
 
                                                 // Queue all XML observations (in reverse order so they emit in correct order with pop())
                                                 xml_observations.reverse();

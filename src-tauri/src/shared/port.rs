@@ -6,7 +6,7 @@
 // anyhow = "1.0"
 // thiserror = "1.0"
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use roxmltree::Node;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

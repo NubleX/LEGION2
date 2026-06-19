@@ -1,6 +1,7 @@
 // LEGION2 - A free and open-source penetration testing tool.
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
+use anyhow;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -14,6 +15,115 @@ pub enum Severity {
     High,
     Critical,
     Unknown,
+}
+
+impl std::fmt::Display for Severity {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Severity::Info => write!(f, "info"),
+            Severity::Low => write!(f, "low"),
+            Severity::Medium => write!(f, "medium"),
+            Severity::High => write!(f, "high"),
+            Severity::Critical => write!(f, "critical"),
+            Severity::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
+impl std::str::FromStr for Severity {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "info" => Ok(Severity::Info),
+            "low" => Ok(Severity::Low),
+            "medium" => Ok(Severity::Medium),
+            "high" => Ok(Severity::High),
+            "critical" => Ok(Severity::Critical),
+            "unknown" => Ok(Severity::Unknown),
+            _ => Err(anyhow::anyhow!("Invalid Severity: {}", s)),
+        }
+    }
+}
+
+/// Network protocols
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum Protocol {
+    Tcp,
+    Udp,
+    Icmp,
+    Sctp,
+}
+
+impl Protocol {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Protocol::Tcp => "tcp",
+            Protocol::Udp => "udp",
+            Protocol::Icmp => "icmp",
+            Protocol::Sctp => "sctp",
+        }
+    }
+}
+
+impl std::fmt::Display for Protocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for Protocol {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "tcp" => Ok(Protocol::Tcp),
+            "udp" => Ok(Protocol::Udp),
+            "icmp" => Ok(Protocol::Icmp),
+            "sctp" => Ok(Protocol::Sctp),
+            _ => Err(anyhow::anyhow!("Invalid Protocol: {}", s)),
+        }
+    }
+}
+
+/// Port states
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum PortState {
+    Open,
+    Closed,
+    Filtered,
+    Unknown,
+}
+
+impl PortState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PortState::Open => "open",
+            PortState::Closed => "closed",
+            PortState::Filtered => "filtered",
+            PortState::Unknown => "unknown",
+        }
+    }
+}
+
+impl std::fmt::Display for PortState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for PortState {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "open" => Ok(PortState::Open),
+            "closed" => Ok(PortState::Closed),
+            "filtered" => Ok(PortState::Filtered),
+            "unknown" => Ok(PortState::Unknown),
+            _ => Err(anyhow::anyhow!("Invalid PortState: {}", s)),
+        }
+    }
 }
 
 /// Confidence levels for analysis results (0-100 scale)
@@ -95,12 +205,37 @@ pub struct NetworkSubnet {
     pub gateway: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum HostStatus {
     Up,
     Down,
     Unknown,
     Filtered,
+}
+
+impl std::fmt::Display for HostStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HostStatus::Up => write!(f, "up"),
+            HostStatus::Down => write!(f, "down"),
+            HostStatus::Unknown => write!(f, "unknown"),
+            HostStatus::Filtered => write!(f, "filtered"),
+        }
+    }
+}
+
+impl std::str::FromStr for HostStatus {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "up" => Ok(HostStatus::Up),
+            "down" => Ok(HostStatus::Down),
+            "unknown" => Ok(HostStatus::Unknown),
+            "filtered" => Ok(HostStatus::Filtered),
+            _ => Err(anyhow::anyhow!("Invalid HostStatus: {}", s)),
+        }
+    }
 }
 
 /// Attack path through the network
