@@ -247,17 +247,22 @@ impl NmapParser {
                 }
             }
         }
-        // Check for port discovery lines
-        if line.contains("open") && (line.contains("/tcp") || line.contains("/udp")) {
-            // Parse port discovery: "22/tcp   open  ssh     OpenSSH 7.4 (protocol 2.0)"
+        // Check for port discovery lines (nmap table: "22/tcp   open  ssh")
+        if line.contains("/tcp") || line.contains("/udp") {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 3 {
                 if let Some(port_proto) = parts.get(0) {
                     let port_parts: Vec<&str> = port_proto.split('/').collect();
-                    if port_parts.len() == 2 {
+                    if port_parts.len() == 2
+                        && port_parts[0].chars().all(|c| c.is_ascii_digit())
+                    {
                         let port_str = port_parts[0];
                         let protocol = port_parts[1];
                         let state = parts[1];
+                        // "closed" contains the substring "open" — must check state explicitly
+                        if state != "open" {
+                            return None;
+                        }
                         let service = if parts.len() > 2 { parts[2] } else { "unknown" };
 
                         if let Some(ref current_ip) = self.current_host {
@@ -873,4 +878,26 @@ struct DiscoveredPort {
     ip: String,
     port: String,
     protocol: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn closed_port_lines_are_not_treated_as_open_services() {
+        let mut parser = NmapParser::new(Uuid::new_v4());
+        parser.current_host = Some("192.168.1.216".to_string());
+
+        let closed = parser.parse_line("21/tcp    closed ftp");
+        assert!(closed.is_none(), "closed ports must not emit service observations");
+
+        let open = parser.parse_line("22/tcp    open  ssh");
+        assert!(open.is_some(), "open ports should emit service observations");
+        assert_eq!(
+            open.unwrap().fields.get("state").and_then(|v| v.as_str()),
+            Some("open")
+        );
+    }
 }

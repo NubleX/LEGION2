@@ -308,35 +308,30 @@ const useHostStore = create<HostStoreState>((set, get) => {
 
 export default useHostStore;
 
-export const selectVisibleHosts = (state: HostStoreState): Host[] => {
-  if (!state.activeTargetRange) {
-    return state.hosts;
-  }
-  // Create a stable filtered array reference using useMemo
-  // This will be properly memoized when used with useShallow or similar
-  const filtered = state.hosts.filter((host) => isIpInTargetRange(host.ip, state.activeTargetRange!));
-  return filtered;
-};
-
-// Alternative: use a hook-based selector for better caching
+// Module-level cache so getSnapshot returns a stable reference when inputs are unchanged.
+// Without this, .filter() creates a new array every call → React 19 infinite loop.
 let lastHosts: Host[] | null = null;
 let lastRange: string | null = null;
 let cachedResult: Host[] | null = null;
 
-export const selectVisibleHostsCached = (state: HostStoreState): Host[] => {
-  // Return cached result if inputs haven't changed
+export const selectVisibleHosts = (state: HostStoreState): Host[] => {
   if (lastHosts === state.hosts && lastRange === state.activeTargetRange && cachedResult) {
     return cachedResult;
   }
-  
+
   lastHosts = state.hosts;
   lastRange = state.activeTargetRange;
-  
+
   if (!state.activeTargetRange) {
     cachedResult = state.hosts;
   } else {
-    cachedResult = state.hosts.filter((host) => isIpInTargetRange(host.ip, state.activeTargetRange!));
+    cachedResult = state.hosts.filter((host) =>
+      isIpInTargetRange(host.ip, state.activeTargetRange!)
+    );
   }
-  
+
   return cachedResult;
 };
+
+/** @deprecated Use selectVisibleHosts — both are now cached. */
+export const selectVisibleHostsCached = selectVisibleHosts;

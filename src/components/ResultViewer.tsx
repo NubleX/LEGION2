@@ -129,6 +129,7 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
   const [hostVulnerabilities, setHostVulnerabilities] = useState<VulnerabilityInfo[]>([]);
   const [loadingVulnerabilities, setLoadingVulnerabilities] = useState(false);
   const [scanningVulnerabilities, setScanningVulnerabilities] = useState(false);
+  const [vulnScanMessage, setVulnScanMessage] = useState<string | null>(null);
   const [expandedVulnIds, setExpandedVulnIds] = useState<Set<string>>(new Set());
   const [cveDetails, setCveDetails] = useState<Record<string, CveDetail>>({});
   const [fetchingCveIds, setFetchingCveIds] = useState<Set<string>>(new Set());
@@ -169,14 +170,30 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
 
   const runVulnerabilityScan = useCallback(async (ip: string) => {
     setScanningVulnerabilities(true);
+    setVulnScanMessage(null);
     try {
-      await invoke('analyze_host_vulnerabilities', {
+      const ports = await invoke<PortInfo[]>('get_host_ports_detailed', { hostIp: ip });
+      if (ports.length === 0) {
+        setVulnScanMessage('No ports in database for this host. Run a service scan (nmap phase) first.');
+        return;
+      }
+
+      const result = await invoke<{
+        vulnerabilities_found: number;
+        analysis_time_ms: number;
+      }>('analyze_host_vulnerabilities', {
         request: { host_ip: ip, force_rescan: true },
       });
       loadVulnerabilities(ip);
       loadServiceStats(ip);
+      setVulnScanMessage(
+        result.vulnerabilities_found > 0
+          ? `Found ${result.vulnerabilities_found} potential vulnerabilities.`
+          : `Scan complete: no known vulnerabilities matched ${ports.length} open port(s).`
+      );
     } catch (err) {
       console.error('Vulnerability scan failed:', err);
+      setVulnScanMessage('Vulnerability scan failed. Check backend logs for details.');
     } finally {
       setScanningVulnerabilities(false);
     }
@@ -472,6 +489,12 @@ const ResultViewer: React.FC<ResultViewerProps> = ({ selectedScanId, selectedHos
                   {scanningVulnerabilities ? 'Scanning...' : 'Run Vulnerability Scan'}
                 </button>
               </div>
+            )}
+
+            {vulnScanMessage && (
+              <p className="text-sm text-gray-300 bg-gray-800 border border-gray-700 rounded px-3 py-2">
+                {vulnScanMessage}
+              </p>
             )}
 
             {loadingVulnerabilities ? (

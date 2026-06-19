@@ -166,11 +166,15 @@ const useAppStore = create<AppState & AppActions>((set) => {
             .catch(console.error);
         }
 
+        const remainingScanIds = allScansDone
+          ? []
+          : state.activeScanIds.filter((id) => id !== scanId);
+
         return {
           pendingScans: newPendingScans,
           scanInProgress: !allScansDone,
           scanPhase: allScansDone ? null : state.scanPhase,
-          activeScanIds: allScansDone ? [] : state.activeScanIds,
+          activeScanIds: remainingScanIds,
           activeScanTargets: allScansDone ? null : state.activeScanTargets,
           liveOutput: allScansDone
             ? [...state.liveOutput, 'All scans completed. Ready for new scan.']
@@ -311,13 +315,11 @@ const useAppStore = create<AppState & AppActions>((set) => {
             let checkInterval: NodeJS.Timeout | null = null;
 
             try {
-              // Poll the store state instead of creating a new listener
-              // This avoids duplicate obs:done handlers that cause infinite loops
+              // Poll until this specific phase's scan_id is removed from activeScanIds
               checkInterval = setInterval(() => {
                 const state = useAppStore.getState();
-                
-                // Check if scan is done by monitoring pendingScans
-                if (!state.scanInProgress && state.pendingScans === 0) {
+
+                if (!state.activeScanIds.includes(scanId)) {
                   if (timeout) clearTimeout(timeout);
                   if (checkInterval) clearInterval(checkInterval);
                   resolve();

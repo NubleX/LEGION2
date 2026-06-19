@@ -202,8 +202,10 @@ pub struct SessionParser;
 
 impl SessionParser {
     pub fn parse_nmap_xml(xml_content: &str) -> Result<Session> {
-        let doc =
-            roxmltree::Document::parse(xml_content).context("Failed to parse XML document")?;
+        let mut options = roxmltree::ParsingOptions::default();
+        options.allow_dtd = true;
+        let doc = roxmltree::Document::parse_with_options(xml_content, options)
+            .context("Failed to parse XML document")?;
 
         let nmap_run_node = doc.root().first_child().context("No root element found")?;
 

@@ -57,16 +57,16 @@
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
-use etherparse::{PacketHeaders, TcpHeader, TcpOptionElement, TcpOptionsIterator};
-use pcap::{Active, Capture, Device};
+use etherparse::PacketHeaders;
+use pcap::{Capture, Device};
 use serde::Serialize;
 use serde_json::json;
 use std::collections::VecDeque;
-use std::fs::{create_dir_all, File, OpenOptions};
+use std::fs::{create_dir_all, OpenOptions};
 use std::io::Write;
-use std::net::{Ipv4Addr, Ipv6Addr, UdpSocket, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+use std::path::PathBuf;
 use std::time::Duration;
-use std::path::{Path, PathBuf};
 use crate::commands::engine_commands;
 
 // Minimal packet info for channel communication
@@ -123,66 +123,6 @@ struct PktMeta {
     evidence_path: Option<String>,
 }
 
-struct NdjsonZstdWriter {
-    base_dir: PathBuf,
-    max_bytes: u64,
-    bytes_written: u64,
-    file_idx: u64,
-    enc: zstd::stream::write::Encoder<'static, File>,
-}
-
-impl NdjsonZstdWriter {
-    fn new<P: AsRef<Path>>(dir: P, max_bytes: u64) -> Result<Self> {
-        let dir = dir.as_ref();
-        create_dir_all(dir)?;
-        let (file_idx, enc) = Self::open_new(dir, 0)?;
-        Ok(Self {
-            base_dir: dir.to_path_buf(),
-            max_bytes,
-            bytes_written: 0,
-            file_idx,
-            enc,
-        })
-    }
-
-    fn open_new(
-        dir: &Path,
-        idx: u64,
-    ) -> Result<(u64, zstd::stream::write::Encoder<'static, File>)> {
-        let ts = Utc::now().format("%Y%m%dT%H%M%S").to_string();
-        let path = dir.join(format!("sniff_{ts}_{idx:06}.ndjson.zst"));
-        let f = File::create(path)?;
-        let enc = zstd::stream::write::Encoder::new(f, 7)?;
-        Ok((idx, enc))
-    }
-
-    fn rotate(&mut self) -> Result<()> {
-        self.file_idx += 1;
-        let (idx, enc) = Self::open_new(&self.base_dir, self.file_idx)?;
-        self.enc = enc;
-        self.bytes_written = 0;
-        self.file_idx = idx;
-        Ok(())
-    }
-
-    fn write_json<T: Serialize>(&mut self, v: &T) -> Result<()> {
-        serde_json::to_writer(&mut self.enc, v)?;
-        self.enc.write_all(b"\n")?;
-        self.bytes_written += 1; // count lines; size-only rotation below will still work
-        Ok(())
-    }
-
-    fn maybe_rotate_by_size(&mut self) -> Result<()> {
-        // We don't have direct bytes_written on the encoder. Cheap approximation:
-        // rotate every N lines, or check file size occasionally if you keep a handle.
-        // Here: rotate every 1,000,000 events; tweak as needed.
-        if self.bytes_written >= self.max_bytes {
-            self.rotate()?;
-        }
-        Ok(())
-    }
-}
-
 fn format_mac(mac: [u8; 6]) -> String {
     format!(
         "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -191,7 +131,6 @@ fn format_mac(mac: [u8; 6]) -> String {
 }
 
 use std::collections::HashMap;
-use std::u8;
 
 fn oui_vendor_map() -> HashMap<[u8; 3], &'static str> {
     let mut map = HashMap::new();
@@ -626,60 +565,67 @@ fn hash_opts_kinds(kinds: &[u8]) -> u64 {
     h
 }
 
-fn main() -> Result<()> {
-    // Config (quick & dirty). You can wire clap later.
-    let scanner_ip = std::env::var("SCANNER_IP").unwrap_or_else(|_| "192.0.2.10".into());
-    let ep_low: u16 = std::env::var("EP_LOW")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(40000);
-    let ep_high: u16 = std::env::var("EP_HIGH")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(65000);
-    let iface_name = std::env::var("IFACE").unwrap_or_else(|_| "default".into());
-    let vantage = std::env::var("VANTAGE").unwrap_or_else(|_| "gw1".into());
+fn parse_tcp_options(
+    tcp: &etherparse::TcpHeader,
+) -> (Option<u16>, Option<u8>, Option<bool>, Vec<u8>) {
+    let mut mss = None;
+    let mut wscale = None;
+    let mut sack_ok = None;
+    let mut kinds: Vec<u8> = Vec::new();
 
-    // Open capture
-    let dev = NetSnifferSource::resolve_capture_device(&iface_name)?;
-
-    let mut cap: Capture<Active> = Capture::from_device(dev)?
-        .promisc(true)
-        .immediate_mode(true)
-        .timeout(10)
-        .open()?;
-
-    // BPF: only replies to our scanner ephemeral ports (SYN/ACK, FIN, RST, ACK)
-    let bpf = format!(
-        "tcp and dst host {scanner_ip} and dst portrange {ep_low}-{ep_high} and (tcp[13] & (0x01|0x04|0x10|0x12) != 0)"
-    );
-    cap.filter(&bpf, true)?;
-
-    // Also consider: UDP replies & ICMP errors for UDP “drive-by” mapping (add another cap or switch filter when needed).
-
-    let mut writer = NdjsonZstdWriter::new("data/ndjson", 1_000_000)?; // rotate every ~1M events
-
-    loop {
-        match cap.next_packet() {
-            Ok(pkt) => {
-                if let Some(meta) = handle_packet(&pkt.data, &pkt.header, &vantage, &iface_name) {
-                    writer.write_json(&meta)?;
-                    writer.maybe_rotate_by_size()?;
+    use etherparse::TcpOptionElement::*;
+    for opt_result in tcp.options_iterator() {
+        if let Ok(opt) = opt_result {
+            match opt {
+                MaximumSegmentSize(s) => {
+                    mss = Some(s);
+                    kinds.push(2);
                 }
+                WindowScale(ws) => {
+                    wscale = Some(ws);
+                    kinds.push(3);
+                }
+                SelectiveAcknowledgementPermitted => {
+                    sack_ok = Some(true);
+                    kinds.push(4);
+                }
+                SelectiveAcknowledgement(_, _) => kinds.push(5),
+                Timestamp(_, _) => kinds.push(8),
+                Noop => kinds.push(1),
             }
-            Err(pcap::Error::TimeoutExpired) => continue,
-            Err(e) => eprintln!("pcap error: {e}"),
         }
     }
+
+    (mss, wscale, sack_ok, kinds)
 }
 
-fn handle_packet(
-    raw: &[u8],
-    h: &pcap::PacketHeader,
-    vantage: &str,
-    iface: &str,
-) -> Option<PktMeta> {
-    handle_packet_with_ts(raw, h.ts.tv_sec, h.ts.tv_usec, h.len, vantage, iface)
+fn tcp_flags_byte(tcp: &etherparse::TcpHeader) -> u8 {
+    let mut tcp_flags: u8 = 0;
+    if tcp.fin {
+        tcp_flags |= 0x01;
+    }
+    if tcp.syn {
+        tcp_flags |= 0x02;
+    }
+    if tcp.rst {
+        tcp_flags |= 0x04;
+    }
+    if tcp.psh {
+        tcp_flags |= 0x08;
+    }
+    if tcp.ack {
+        tcp_flags |= 0x10;
+    }
+    if tcp.urg {
+        tcp_flags |= 0x20;
+    }
+    if tcp.ece {
+        tcp_flags |= 0x40;
+    }
+    if tcp.cwr {
+        tcp_flags |= 0x80;
+    }
+    tcp_flags
 }
 
 fn handle_packet_with_ts(
@@ -719,45 +665,8 @@ fn handle_packet_with_ts(
             Some(etherparse::NetHeaders::Ipv4(v4, _)),
             Some(etherparse::TransportHeader::Tcp(tcp)),
         ) => {
-            let mut mss = None;
-            let mut wscale = None;
-            let mut sack_ok = None;
-            let mut kinds: Vec<u8> = Vec::new();
-
-            // Parse TCP options correctly
-            let options_iter = etherparse::TcpOptionsIterator::from_slice(tcp.options.as_slice());
-            for opt_result in options_iter {
-                if let Ok(opt) = opt_result {
-                    use etherparse::TcpOptionElement::*;
-                    match opt {
-                        MaximumSegmentSize(s) => {
-                            mss = Some(s);
-                            kinds.push(2);
-                        }
-                        WindowScale(ws) => {
-                            wscale = Some(ws);
-                            kinds.push(3);
-                        }
-                        SelectiveAckPermitted => {
-                            sack_ok = Some(true);
-                            kinds.push(4);
-                        }
-                        Timestamp(_, _) => kinds.push(8),
-                        Noop => kinds.push(1),
-                    }
-                }
-            }
-
-            // Encode TCP flags into a single byte
-            let mut tcp_flags: u8 = 0;
-            if tcp.fin { tcp_flags |= 0x01; }
-            if tcp.syn { tcp_flags |= 0x02; }
-            if tcp.rst { tcp_flags |= 0x04; }
-            if tcp.psh { tcp_flags |= 0x08; }
-            if tcp.ack { tcp_flags |= 0x10; }
-            if tcp.urg { tcp_flags |= 0x20; }
-            if tcp.ece { tcp_flags |= 0x40; }
-            if tcp.cwr { tcp_flags |= 0x80; }
+            let (mss, wscale, sack_ok, kinds) = parse_tcp_options(tcp);
+            let tcp_flags = tcp_flags_byte(tcp);
 
             (
                 "ipv4",
@@ -781,45 +690,8 @@ fn handle_packet_with_ts(
             Some(etherparse::NetHeaders::Ipv6(v6, _)),
             Some(etherparse::TransportHeader::Tcp(tcp)),
         ) => {
-            let mut mss = None;
-            let mut wscale = None;
-            let mut sack_ok = None;
-            let mut kinds: Vec<u8> = Vec::new();
-
-            // Parse TCP options correctly
-            let options_iter = etherparse::TcpOptionsIterator::from_slice(tcp.options.as_slice());
-            for opt_result in options_iter {
-                if let Ok(opt) = opt_result {
-                    use etherparse::TcpOptionElement::*;
-                    match opt {
-                        MaximumSegmentSize(s) => {
-                            mss = Some(s);
-                            kinds.push(2);
-                        }
-                        WindowScale(ws) => {
-                            wscale = Some(ws);
-                            kinds.push(3);
-                        }
-                        SelectiveAckPermitted => {
-                            sack_ok = Some(true);
-                            kinds.push(4);
-                        }
-                        Timestamp(_, _) => kinds.push(8),
-                        Noop => kinds.push(1),
-                    }
-                }
-            }
-
-            // Encode TCP flags into a single byte
-            let mut tcp_flags: u8 = 0;
-            if tcp.fin { tcp_flags |= 0x01; }
-            if tcp.syn { tcp_flags |= 0x02; }
-            if tcp.rst { tcp_flags |= 0x04; }
-            if tcp.psh { tcp_flags |= 0x08; }
-            if tcp.ack { tcp_flags |= 0x10; }
-            if tcp.urg { tcp_flags |= 0x20; }
-            if tcp.ece { tcp_flags |= 0x40; }
-            if tcp.cwr { tcp_flags |= 0x80; }
+            let (mss, wscale, sack_ok, kinds) = parse_tcp_options(tcp);
+            let tcp_flags = tcp_flags_byte(tcp);
 
             (
                 "ipv6",
@@ -880,32 +752,6 @@ fn handle_packet_with_ts(
     Some(meta)
 }
 
-// --- IoT "spider" probe: SSDP (UPnP) M-SEARCH ---
-fn probe_ssdp(interface_v4: Option<Ipv4Addr>) -> Result<()> {
-    let sock = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
-    // Keep M-SEARCHs from leaving your L2 domain aggressively
-    sock.set_multicast_ttl_v4(2)?;
-    if let Some(ifip) = interface_v4 {
-        // Hint the outgoing interface if needed
-        let _ = sock.join_multicast_v4(&Ipv4Addr::new(239, 255, 255, 250), &ifip);
-        // optional
-    }
-    let target = ("239.255.255.250", 1900);
-
-    // Minimal but correct M-SEARCH
-    let msg = concat!(
-        "M-SEARCH * HTTP/1.1\r\n",
-        "HOST: 239.255.255.250:1900\r\n",
-        "MAN: \"ssdp:discover\"\r\n",
-        "MX: 2\r\n",
-        "ST: ssdp:all\r\n",
-        "\r\n"
-    );
-
-    sock.send_to(msg.as_bytes(), target)?;
-    Ok(())
-}
-
 // NDJSON Logger
 
 pub fn log_artifact(data: serde_json::Value) {
@@ -929,7 +775,7 @@ pub fn log_artifact(data: serde_json::Value) {
 use crate::shared::shared::{ObsStream, Observation, ObservationKind};
 use crate::shared::traits::Source;
 use crate::plan::Plan;
-use futures::stream::{self, StreamExt as FuturesStreamExt};
+use futures::stream;
 
 /// NetSniffer as a Source in the unified scanner pipeline
 /// Provides passive network monitoring, OS fingerprinting, MAC vendor lookup
@@ -955,21 +801,25 @@ impl NetSnifferSource {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_max_packets(mut self, max: usize) -> Self {
         self.max_packets = Some(max);
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_active_probing(mut self, enabled: bool) -> Self {
         self.active_probing = enabled;
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_probe_interval(mut self, interval: Duration) -> Self {
         self.probe_interval = interval;
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_target_network(mut self, network: Option<String>) -> Self {
         self.target_network = network;
         self
@@ -1009,7 +859,7 @@ impl NetSnifferSource {
     }
 
     /// Send SSDP M-SEARCH probe (multicast)
-    fn send_ssdp_probe(interface: &str) -> Result<()> {
+    fn send_ssdp_probe() -> Result<()> {
         let msg = format!(
             "M-SEARCH * HTTP/1.1\r\n\
              Host: 239.255.255.250:1900\r\n\
@@ -1026,7 +876,7 @@ impl NetSnifferSource {
     }
 
     /// Send mDNS query (multicast)
-    fn send_mdns_probe(interface: &str) -> Result<()> {
+    fn send_mdns_probe() -> Result<()> {
         // Simple mDNS query for _services._dns-sd._udp.local
         let query = vec![
             0x00, 0x00, // Transaction ID
@@ -1110,8 +960,8 @@ impl NetSnifferSource {
         Ok(())
     }
 
-    /// Generate target IPs from network CIDR or use common local network ranges
-    fn get_probe_targets(network: Option<&String>, local_ip: Option<Ipv4Addr>) -> Vec<Ipv4Addr> {
+    /// Generate target IPs from local /24 network
+    fn get_probe_targets(local_ip: Option<Ipv4Addr>) -> Vec<Ipv4Addr> {
         let mut targets = Vec::new();
         
         if let Some(local) = local_ip {
@@ -1136,7 +986,7 @@ impl NetSnifferSource {
     /// Start active probing background task
     fn start_active_probing(
         interface: String,
-        target_network: Option<String>,
+        _target_network: Option<String>,
         probe_interval: Duration,
     ) {
         tokio::spawn(async move {
@@ -1158,7 +1008,7 @@ impl NetSnifferSource {
                 }
 
                 // Get probe targets
-                let targets = Self::get_probe_targets(target_network.as_ref(), local_ip);
+                let targets = Self::get_probe_targets(local_ip);
                 if targets.is_empty() {
                     log::debug!("No targets for active probing");
                     tokio::time::sleep(probe_interval).await;
@@ -1173,20 +1023,14 @@ impl NetSnifferSource {
                 let common_udp_ports = vec![53, 123, 161, 1900, 5353];
 
                 // Send probes in parallel
-                let interface_clone = interface.clone();
-                let targets_clone = targets.clone();
-                let tcp_ports_clone = common_tcp_ports.clone();
-                tokio::task::spawn_blocking(move || {
-                    // SSDP multicast probe
-                    if let Err(e) = Self::send_ssdp_probe(&interface_clone) {
+                tokio::task::spawn_blocking(|| {
+                    if let Err(e) = Self::send_ssdp_probe() {
                         log::debug!("SSDP probe error: {}", e);
                     }
                 });
 
-                let interface_clone = interface.clone();
-                tokio::task::spawn_blocking(move || {
-                    // mDNS multicast probe
-                    if let Err(e) = Self::send_mdns_probe(&interface_clone) {
+                tokio::task::spawn_blocking(|| {
+                    if let Err(e) = Self::send_mdns_probe() {
                         log::debug!("mDNS probe error: {}", e);
                     }
                 });
@@ -1194,7 +1038,6 @@ impl NetSnifferSource {
                 let targets_clone = targets.clone();
                 let udp_ports_clone = common_udp_ports.clone();
                 tokio::task::spawn_blocking(move || {
-                    // UDP probes
                     if let Err(e) = Self::send_udp_probes(&targets_clone, &udp_ports_clone) {
                         log::debug!("UDP probe error: {}", e);
                     }
@@ -1203,7 +1046,6 @@ impl NetSnifferSource {
                 let targets_clone = targets.clone();
                 let tcp_ports_clone = common_tcp_ports.clone();
                 tokio::task::spawn_blocking(move || {
-                    // TCP SYN probes
                     if let Err(e) = Self::send_tcp_syn_probes(&targets_clone, &tcp_ports_clone) {
                         log::debug!("TCP probe error: {}", e);
                     }
@@ -1211,7 +1053,6 @@ impl NetSnifferSource {
 
                 let targets_clone = targets.clone();
                 tokio::task::spawn_blocking(move || {
-                    // ICMP pings
                     if let Err(e) = Self::send_icmp_pings(&targets_clone) {
                         log::debug!("ICMP probe error: {}", e);
                     }
@@ -1429,11 +1270,8 @@ impl Source for NetSnifferSource {
             .open()?;
 
         // Create channel for packet communication between blocking and async contexts
-        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel::<PacketInfo>();
+        let (packet_tx, packet_rx) = tokio::sync::mpsc::unbounded_channel::<PacketInfo>();
 
-        // Clone resolved interface name for blocking task
-        let interface_for_blocking = resolved_iface.clone();
-        
         // Spawn blocking task for packet capture
         let cap_for_blocking = cap;
         tokio::task::spawn_blocking(move || {
@@ -1521,9 +1359,9 @@ impl Source for NetSnifferSource {
         });
 
         // Create observation stream from channel
-        let mut obs_queue = VecDeque::new();
-        let mut packet_count: usize = 0;
-        let mut last_heartbeat_time = std::time::Instant::now();
+        let obs_queue = VecDeque::new();
+        let packet_count: usize = 0;
+        let last_heartbeat_time = std::time::Instant::now();
         let interface_for_stream = interface.clone();
 
         let stream = stream::unfold(

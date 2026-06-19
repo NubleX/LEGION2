@@ -990,7 +990,7 @@ impl Db {
                     p.version,
                     p.banner
                 FROM ports p
-                WHERE p.host_id = ? AND p.service_name IS NOT NULL
+                WHERE p.host_id = ?
                 ORDER BY p.number
                 "#
             )?;
@@ -1095,7 +1095,7 @@ impl Db {
                     p.version,
                     p.banner
                 FROM ports p
-                WHERE p.host_id = ? AND p.service_name IS NOT NULL
+                WHERE p.host_id = ?
                 ORDER BY p.number
                 "#
             )?;
