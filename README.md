@@ -7,7 +7,7 @@
 ![Version](https://img.shields.io/badge/version-0.4.0-red.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)
 ![Language](https://img.shields.io/badge/language-Rust%20%2B%20TypeScript-orange.svg)
-![Status](https://img.shields.io/badge/status-alpha--development-orange.svg)
+![Status](https://img.shields.io/badge/status-beta-orange.svg)
 
 ### Version: 0.4.0
 
