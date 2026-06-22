@@ -168,3 +168,7 @@ src-tauri/.logs/*
 src-tauri/gen/schemas/*
 src-tauri/claude/*
 src-tauri/.scans/*
+
+# release artifacts (publish via GitHub Releases, not git)
+releases/
+*.AppImage
