@@ -81,7 +81,7 @@ Massmap coordinates **nmap ↔ masscan**: Phase 1 writes alive hosts to the DB; 
 All sinks read and write through one encrypted SQLite database (`network.db` under `.legion2_data/`). DbSink batches host and service observations every few seconds, upserts by IP and port, and skips down hosts and non-open ports. The frontend does not maintain a parallel scan cache — the **Hosts & Results** tab, port counts in the host table, vulnerability scan targets, and export actions all query the same DB the scanners populate.
 
 <div align="center">
-  <img src="images/legion2/Legion2-v0.4.0-hosts.png" alt="LEGION2 Hosts View" width="1300"/>
+  <img src="images/legion2/Legion2-v0.4.1-hosts.png" alt="LEGION2 Hosts View" width="1300"/>
   <p><em>Hosts &amp; Results — per-host port state (open/closed), services, and vuln counts from the shared database</em></p>
 </div>
 
@@ -90,7 +90,7 @@ When a scan completes, host rows, open-port counts, and service names in the UI 
 The **Network Topology** tab renders the same host set: gateway detection, client/server typing, and edges are derived from DB host metadata and discovery order, not a separate graph store.
 
 <div align="center">
-  <img src="images/legion2/Legion2-v0.4.0-topology.png" alt="LEGION2 Network Topology" width="1300"/>
+  <img src="images/legion2/Legion2-v0.4.1-topology.png" alt="LEGION2 Network Topology" width="1300"/>
   <p><em>Network Topology — live graph synchronized with discovered hosts and roles</em></p>
 </div>
 
