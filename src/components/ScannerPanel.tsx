@@ -38,7 +38,28 @@ const EnhancedScannerPanel = () => {
   const [scanDuration, setScanDuration] = useState(0);
   const [capStatus, setCapStatus] = useState<CapabilityStatus | null>(null);
   const [capFixing, setCapFixing] = useState(false);
-  const [capDismissed, setCapDismissed] = useState(false);
+  const [capDismissed, setCapDismissedState] = useState(false);
+  // Persisted across restarts, keyed to the actual capability state: dismissing
+  // it once shouldn't make it nag again on every launch while the underlying
+  // "nmap/masscan missing cap_net_raw" fact hasn't changed. It only comes back
+  // if that fact changes (e.g. caps got revoked, or Fix Permissions succeeded
+  // and then regressed) — see syncDismissedFromStorage below.
+  const CAP_DISMISS_KEY = 'legion2.capBannerDismissedFor';
+  const setCapDismissed = (dismissed: boolean, status: CapabilityStatus | null) => {
+    setCapDismissedState(dismissed);
+    try {
+      if (dismissed && status) {
+        localStorage.setItem(
+          CAP_DISMISS_KEY,
+          JSON.stringify({ masscan_ok: status.masscan_ok, nmap_ok: status.nmap_ok })
+        );
+      } else {
+        localStorage.removeItem(CAP_DISMISS_KEY);
+      }
+    } catch {
+      // Private window / blocked storage — fall back to in-session dismissal only.
+    }
+  };
   const { setHosts, clearHosts } = useHostStore();
   const hosts = useHostStore(selectVisibleHosts);
   const terminalRef = useRef<HTMLDivElement>(null);
@@ -78,7 +99,24 @@ const EnhancedScannerPanel = () => {
   // Check scanner capabilities on mount (Linux only — no-op on other platforms)
   useEffect(() => {
     invoke<CapabilityStatus>('check_scanner_capabilities')
-      .then(setCapStatus)
+      .then((status) => {
+        setCapStatus(status);
+        try {
+          const stored = localStorage.getItem(CAP_DISMISS_KEY);
+          if (stored) {
+            const prev = JSON.parse(stored);
+            // Still the same (still-missing) capability state the user already
+            // dismissed — keep it dismissed. Anything else (caps changed) clears it.
+            if (prev.masscan_ok === status.masscan_ok && prev.nmap_ok === status.nmap_ok) {
+              setCapDismissedState(true);
+            } else {
+              localStorage.removeItem(CAP_DISMISS_KEY);
+            }
+          }
+        } catch {
+          // Ignore storage errors — banner just shows as if never dismissed.
+        }
+      })
       .catch(() => {}); // Non-fatal — silently skip if unavailable
   }, []);
 
@@ -89,6 +127,13 @@ const EnhancedScannerPanel = () => {
       // Re-check after fix
       const updated = await invoke<CapabilityStatus>('check_scanner_capabilities');
       setCapStatus(updated);
+      // Capabilities changed (hopefully for the better) — any stale dismissal
+      // for the old state no longer applies.
+      try {
+        localStorage.removeItem(CAP_DISMISS_KEY);
+      } catch {
+        // Ignore.
+      }
     } catch (err) {
       console.error('Failed to set capabilities:', err);
     } finally {
@@ -342,7 +387,7 @@ const EnhancedScannerPanel = () => {
               {capFixing ? 'Fixing...' : 'Fix Permissions'}
             </button>
             <button
-              onClick={() => setCapDismissed(true)}
+              onClick={() => setCapDismissed(true, capStatus)}
               className="px-2 py-1 text-amber-400 hover:text-amber-200 text-sm"
             >
               ✕
@@ -373,7 +418,7 @@ const EnhancedScannerPanel = () => {
         <div className="flex-shrink-0 bg-green-900 border-b border-green-700 px-4 py-1 flex items-center gap-2 text-green-300 text-sm">
           <CheckCircle className="w-4 h-4 text-green-400" />
           <span>Scanner capabilities verified — masscan &amp; nmap have raw socket access.</span>
-          <button onClick={() => setCapDismissed(true)} className="ml-auto px-2 py-0.5 text-green-500 hover:text-green-300 text-sm">✕</button>
+          <button onClick={() => setCapDismissed(true, capStatus)} className="ml-auto px-2 py-0.5 text-green-500 hover:text-green-300 text-sm">✕</button>
         </div>
       )}
 

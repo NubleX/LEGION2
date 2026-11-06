@@ -246,7 +246,7 @@ pub async fn is_nmap_available() -> bool {
 /// Resolve a binary to its absolute path, required by setcap/getcap.
 /// If the local bundled binary is not found, falls back to resolving via `which`.
 #[cfg(target_os = "linux")]
-async fn resolve_absolute_path(path: PathBuf) -> Option<PathBuf> {
+pub async fn resolve_absolute_path(path: PathBuf) -> Option<PathBuf> {
     if path.is_absolute() && path.exists() {
         return Some(path);
     }
@@ -273,7 +273,30 @@ pub async fn binary_has_raw_caps(bin: &std::path::Path) -> Result<bool, String> 
         .await
         .map_err(|e| format!("getcap not found: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.contains("cap_net_raw") || stdout.contains("cap_net_admin"))
+    Ok(getcap_output_has_raw(&stdout))
+}
+
+/// Raw sockets need cap_net_raw specifically; cap_net_admin alone (Kali's default nmap
+/// ships with `cap_net_admin=ep`) does not allow SYN/ARP scans.
+#[cfg(target_os = "linux")]
+fn getcap_output_has_raw(stdout: &str) -> bool {
+    stdout.contains("cap_net_raw")
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod caps_tests {
+    use super::getcap_output_has_raw;
+
+    #[test]
+    fn cap_net_admin_alone_is_not_enough() {
+        assert!(!getcap_output_has_raw("/usr/bin/nmap cap_net_admin=ep"));
+    }
+
+    #[test]
+    fn cap_net_raw_is_detected() {
+        assert!(getcap_output_has_raw("/usr/bin/nmap cap_net_raw,cap_net_admin=eip"));
+        assert!(!getcap_output_has_raw(""));
+    }
 }
 
 /// Set raw-socket capabilities on masscan and nmap using pkexec (prompts for password graphically).

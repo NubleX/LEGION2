@@ -1,6 +1,8 @@
 {
   "dependencies": {
     "@tauri-apps/plugin-shell": "^2.3.0",
+    "d3-force": "^3.0.0",
+    "d3-quadtree": "^3.0.1",
     "lucide-react": "^0.552.0",
     "react": "19.1.1",
     "react-dom": "19.1.1",
@@ -11,6 +13,7 @@
     "@tailwindcss/postcss": "4.1.12",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/cli": "^2.10.1",
+    "@types/d3-force": "^3.0.10",
     "@types/node": "24.10.0",
     "@types/react": "19.1.10",
     "@types/react-dom": "19.1.7",

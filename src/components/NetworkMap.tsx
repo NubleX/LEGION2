@@ -2,6 +2,14 @@
 // Copyright (c) 2025 NubleX / Igor Dunaev
 
 import { listen } from '@tauri-apps/api/event';
+import {
+  forceCenter,
+  forceCollide,
+  forceLink,
+  forceManyBody,
+  forceSimulation,
+  type Simulation,
+} from 'd3-force';
 import { Eye, EyeOff, Network, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
 import type { Host } from '../stores/hostStore';
@@ -15,23 +23,39 @@ interface NetworkMapProps {
 
 type HostRole = 'gateway' | 'server' | 'client' | 'unknown' | 'cluster';
 
-interface NetworkNode {
+// A node in the force simulation. d3-force adds/mutates x, y, vx, vy, fx, fy
+// on these objects in place every tick — this is why node identity must be
+// preserved across updates (see syncSimulation): replacing the object loses
+// its velocity/position and causes a visible snap instead of a smooth
+// transition to the new layout.
+interface SimNode {
   id: string;
   x: number;
   y: number;
+  vx?: number;
+  vy?: number;
+  fx?: number | null;
+  fy?: number | null;
   host?: Host;
   clusterHosts?: Host[];
   isCluster: boolean;
+  isSynthetic?: boolean; // hub/anchor nodes that organize the layout but aren't drawn
   clusterLabel?: string;
   subnet: string;
   role: HostRole;
 }
 
+interface SimLink {
+  source: string | SimNode;
+  target: string | SimNode;
+  kind: 'member' | 'anchor';
+}
+
 const CLUSTER_THRESHOLD = 20;
+const CENTER_ANCHOR_ID = '__center__';
 
 const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHostIp }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [nodes, setNodes] = useState<NetworkNode[]>([]);
   const [liveHosts, setLiveHosts] = useState<Host[]>(hosts);
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -41,6 +65,28 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
   const [showServices, setShowServices] = useState(false);
   const [showLegend, setShowLegend] = useState(true);
   const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
+  const [hostCount, setHostCount] = useState(0);
+
+  // Simulation state lives in refs, not React state: positions are mutated
+  // 60x/sec by d3-force and drawn straight to canvas on every tick. Routing
+  // that through setState/React would re-render the whole component tree
+  // every frame — the same class of bug as the obs:progress IPC flood, just
+  // on the frontend's own render loop instead of Tauri's.
+  const simulationRef = useRef<Simulation<SimNode, SimLink> | null>(null);
+  const nodeMapRef = useRef<Map<string, SimNode>>(new Map());
+  const linksRef = useRef<SimLink[]>([]);
+  const draggedNodeRef = useRef<SimNode | null>(null);
+  const mouseDownPosRef = useRef({ x: 0, y: 0 });
+  const scaleRef = useRef(scale);
+  const offsetRef = useRef(offset);
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    scaleRef.current = scale;
+  }, [scale]);
+  useEffect(() => {
+    offsetRef.current = offset;
+  }, [offset]);
 
   useEffect(() => {
     setLiveHosts(hosts);
@@ -97,173 +143,235 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     return subnets;
   };
 
-  const placeOnRing = (
-    items: { id: string; host?: Host; clusterHosts?: Host[]; isCluster: boolean; clusterLabel?: string; role: HostRole }[],
-    centerX: number,
-    centerY: number,
-    radius: number,
-    subnet: string,
-    startAngle = 0,
-    sweep = 2 * Math.PI,
-  ): NetworkNode[] => {
-    if (items.length === 0) return [];
+  // Describes the desired node set for the current hosts/cluster state,
+  // with no position information — the simulation decides where everything
+  // lands, and settles incrementally instead of recomputing angles for
+  // every node whenever a single host streams in (that recompute-from-index
+  // behavior was the source of the jitter: one new host could shift every
+  // other node's angle on a ring).
+  interface DesiredEntry {
+    id: string;
+    host?: Host;
+    clusterHosts?: Host[];
+    isCluster: boolean;
+    clusterLabel?: string;
+    subnet: string;
+    role: HostRole;
+    hubId: string;
+  }
 
-    return items.map((item, index) => {
-      const angle = startAngle + ((index + 0.5) / items.length) * sweep;
-      return {
-        id: item.id,
-        x: centerX + Math.cos(angle) * radius,
-        y: centerY + Math.sin(angle) * radius,
-        host: item.host,
-        clusterHosts: item.clusterHosts,
-        isCluster: item.isCluster,
-        clusterLabel: item.clusterLabel,
-        subnet,
-        role: item.role,
-      };
+  const buildDesiredEntries = (hostList: Host[], expanded: Set<string>): DesiredEntry[] => {
+    const subnets = groupBySubnet(hostList);
+    const entries: DesiredEntry[] = [];
+
+    subnets.forEach((subnetHosts, subnet) => {
+      const gateways = subnetHosts.filter((h) => getHostRole(h) === 'gateway');
+      const servers = subnetHosts.filter((h) => getHostRole(h) === 'server');
+      const clients = subnetHosts.filter((h) => getHostRole(h) === 'client');
+      const unknowns = subnetHosts.filter((h) => getHostRole(h) === 'unknown');
+
+      const hub = gateways[0];
+      const hubId = hub ? hub.ip : `${subnet}::hub`;
+
+      if (hub) {
+        entries.push({ id: hub.ip, host: hub, isCluster: false, subnet, role: 'gateway', hubId });
+      } else {
+        // Synthetic, undrawn anchor so the subnet still has a stable point
+        // to link members to and to repel other subnets from.
+        entries.push({ id: hubId, isCluster: false, subnet, role: 'gateway', hubId });
+      }
+
+      gateways.slice(1).forEach((h) =>
+        entries.push({ id: h.ip, host: h, isCluster: false, subnet, role: 'gateway', hubId })
+      );
+      servers.forEach((h) =>
+        entries.push({ id: h.ip, host: h, isCluster: false, subnet, role: 'server', hubId })
+      );
+
+      const clientClusterId = `${subnet}-client`;
+      if (clients.length > CLUSTER_THRESHOLD && !expanded.has(clientClusterId)) {
+        entries.push({
+          id: clientClusterId,
+          isCluster: true,
+          clusterHosts: clients,
+          clusterLabel: `${clients.length} client hosts`,
+          subnet,
+          role: 'cluster',
+          hubId,
+        });
+      } else {
+        clients.forEach((h) =>
+          entries.push({ id: h.ip, host: h, isCluster: false, subnet, role: 'client', hubId })
+        );
+      }
+
+      const unknownClusterId = `${subnet}-unknown`;
+      if (unknowns.length > CLUSTER_THRESHOLD && !expanded.has(unknownClusterId)) {
+        entries.push({
+          id: unknownClusterId,
+          isCluster: true,
+          clusterHosts: unknowns,
+          clusterLabel: `${unknowns.length} unknown hosts`,
+          subnet,
+          role: 'cluster',
+          hubId,
+        });
+      } else {
+        unknowns.forEach((h) =>
+          entries.push({ id: h.ip, host: h, isCluster: false, subnet, role: 'unknown', hubId })
+        );
+      }
     });
+
+    return entries;
   };
 
-  const buildSubnetNodes = (
-    subnet: string,
-    subnetHosts: Host[],
-    centerX: number,
-    centerY: number,
-    canvasSize: number,
-  ): NetworkNode[] => {
-    const gateways = subnetHosts.filter((h) => getHostRole(h) === 'gateway');
-    const servers = subnetHosts.filter((h) => getHostRole(h) === 'server');
-    const clients = subnetHosts.filter((h) => getHostRole(h) === 'client');
-    const unknowns = subnetHosts.filter((h) => getHostRole(h) === 'unknown');
+  // Create the simulation once; subsequent updates mutate its node/link
+  // sets in place rather than recreating it, which is what makes additions
+  // settle smoothly instead of restarting the whole layout.
+  useEffect(() => {
+    const sim = forceSimulation<SimNode>([])
+      .force('charge', forceManyBody().strength(-220))
+      .force('collision', forceCollide<SimNode>().radius((d) => (d.isCluster ? 20 : 14)))
+      .alphaDecay(0.04)
+      .velocityDecay(0.35)
+      .on('tick', scheduleDraw);
+    simulationRef.current = sim;
 
-    const clientClusterId = `${subnet}-client`;
-    const unknownClusterId = `${subnet}-unknown`;
-    const shouldClusterClients = clients.length > CLUSTER_THRESHOLD && !expandedClusters.has(clientClusterId);
-    const shouldClusterUnknowns = unknowns.length > CLUSTER_THRESHOLD && !expandedClusters.has(unknownClusterId);
-
-    const prominent: {
-      id: string;
-      host?: Host;
-      clusterHosts?: Host[];
-      isCluster: boolean;
-      clusterLabel?: string;
-      role: HostRole;
-    }[] = [
-      ...gateways.map((h) => ({ id: h.ip, host: h, isCluster: false, role: 'gateway' as HostRole })),
-      ...servers.map((h) => ({ id: h.ip, host: h, isCluster: false, role: 'server' as HostRole })),
-    ];
-
-    if (shouldClusterClients) {
-      prominent.push({
-        id: clientClusterId,
-        isCluster: true,
-        clusterHosts: clients,
-        clusterLabel: `${clients.length} client hosts`,
-        role: 'cluster',
-      });
-    } else {
-      prominent.push(
-        ...clients.map((h) => ({ id: h.ip, host: h, isCluster: false, role: 'client' as HostRole })),
-      );
-    }
-
-    if (shouldClusterUnknowns) {
-      prominent.push({
-        id: unknownClusterId,
-        isCluster: true,
-        clusterHosts: unknowns,
-        clusterLabel: `${unknowns.length} unknown hosts`,
-        role: 'cluster',
-      });
-    } else {
-      prominent.push(
-        ...unknowns.map((h) => ({ id: h.ip, host: h, isCluster: false, role: 'unknown' as HostRole })),
-      );
-    }
-
-    const hub = gateways[0];
-    const hubX = hub ? centerX : centerX;
-    const hubY = hub ? centerY : centerY;
-    const baseRadius = Math.min(canvasSize * 0.35, 40 + prominent.length * 4);
-    const outerRadius = Math.max(baseRadius, 60);
-
-    const nodes: NetworkNode[] = [];
-
-    if (hub) {
-      nodes.push({
-        id: hub.ip,
-        x: hubX,
-        y: hubY,
-        host: hub,
-        isCluster: false,
-        subnet,
-        role: 'gateway',
-      });
-    }
-
-    const ringItems = prominent.filter((item) => item.id !== hub?.ip);
-    nodes.push(...placeOnRing(ringItems, hubX, hubY, outerRadius, subnet));
-
-    return nodes;
-  };
+    return () => {
+      sim.stop();
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
     canvas.width = rect.width * dpr;
     canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
+    const ctx = canvas.getContext('2d');
+    ctx?.scale(dpr, dpr);
     canvas.style.width = rect.width + 'px';
     canvas.style.height = rect.height + 'px';
+
+    const sim = simulationRef.current;
+    if (sim) {
+      sim.force('center', forceCenter(rect.width / 2, rect.height / 2));
+      const center = nodeMapRef.current.get(CENTER_ANCHOR_ID);
+      if (center) {
+        center.fx = rect.width / 2;
+        center.fy = rect.height / 2;
+      }
+    }
   }, []);
 
+  // Structural sync: add/remove/relabel nodes without disturbing the
+  // position of anything that already existed.
   useEffect(() => {
-    if (liveHosts.length === 0) {
-      setNodes([]);
-      return;
-    }
-
+    const sim = simulationRef.current;
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!sim || !canvas) return;
 
     const rect = canvas.getBoundingClientRect();
-    const centerX = rect.width / 2;
-    const centerY = rect.height / 2;
-    const canvasSize = Math.min(rect.width, rect.height);
-    const subnets = groupBySubnet(liveHosts);
-    const subnetEntries = Array.from(subnets.entries());
+    const centerX = rect.width / 2 || 300;
+    const centerY = rect.height / 2 || 200;
+    const map = nodeMapRef.current;
+    const wasEmpty = map.size === 0;
 
-    let newNodes: NetworkNode[] = [];
-
-    if (subnetEntries.length === 1) {
-      const [subnet, subnetHosts] = subnetEntries[0];
-      newNodes = buildSubnetNodes(subnet, subnetHosts, centerX, centerY, canvasSize);
-    } else {
-      const subnetRadius = canvasSize * 0.28;
-      subnetEntries.forEach(([subnet, subnetHosts], subnetIndex) => {
-        const subnetAngle = (subnetIndex / subnetEntries.length) * 2 * Math.PI;
-        const subnetCenterX = centerX + Math.cos(subnetAngle) * subnetRadius;
-        const subnetCenterY = centerY + Math.sin(subnetAngle) * subnetRadius;
-        const hostRadius = Math.max(50, Math.min(120, 30 + subnetHosts.length * 2));
-        newNodes.push(
-          ...buildSubnetNodes(subnet, subnetHosts, subnetCenterX, subnetCenterY, hostRadius * 2),
-        );
+    if (!map.has(CENTER_ANCHOR_ID)) {
+      map.set(CENTER_ANCHOR_ID, {
+        id: CENTER_ANCHOR_ID,
+        x: centerX,
+        y: centerY,
+        fx: centerX,
+        fy: centerY,
+        isCluster: false,
+        isSynthetic: true,
+        subnet: '',
+        role: 'unknown',
       });
     }
 
-    setNodes(newNodes);
+    const desired = buildDesiredEntries(liveHosts, expandedClusters);
+    const desiredIds = new Set(desired.map((e) => e.id));
+    desiredIds.add(CENTER_ANCHOR_ID);
+
+    // Drop anything no longer wanted (host went down, cluster expanded, etc).
+    for (const id of Array.from(map.keys())) {
+      if (!desiredIds.has(id)) map.delete(id);
+    }
+
+    desired.forEach((entry) => {
+      const existing = map.get(entry.id);
+      if (existing) {
+        // Update metadata only — x/y/vx/vy keep flowing from the simulation.
+        existing.host = entry.host;
+        existing.clusterHosts = entry.clusterHosts;
+        existing.clusterLabel = entry.clusterLabel;
+        existing.subnet = entry.subnet;
+        existing.role = entry.role;
+        existing.isCluster = entry.isCluster;
+        return;
+      }
+
+      // Spawn new nodes near their hub (or center, if the hub is also new)
+      // instead of at a fixed point, so a burst of new hosts doesn't all
+      // launch from the same spot and fly outward together.
+      const hub = map.get(entry.hubId);
+      const spawnX = (hub?.x ?? centerX) + (Math.random() - 0.5) * 40;
+      const spawnY = (hub?.y ?? centerY) + (Math.random() - 0.5) * 40;
+      map.set(entry.id, {
+        id: entry.id,
+        x: spawnX,
+        y: spawnY,
+        host: entry.host,
+        clusterHosts: entry.clusterHosts,
+        clusterLabel: entry.clusterLabel,
+        isCluster: entry.isCluster,
+        subnet: entry.subnet,
+        role: entry.role,
+      });
+    });
+
+    const links: SimLink[] = [];
+    const subnetHubIds = new Set<string>();
+    desired.forEach((entry) => {
+      subnetHubIds.add(entry.hubId);
+      if (entry.id !== entry.hubId) {
+        links.push({ source: entry.id, target: entry.hubId, kind: 'member' });
+      }
+    });
+    // Weakly tether every subnet's hub to the shared center anchor so
+    // multiple subnets spread out around it instead of drifting off-canvas,
+    // without forcing them into the old fixed ring positions.
+    subnetHubIds.forEach((hubId) => {
+      links.push({ source: hubId, target: CENTER_ANCHOR_ID, kind: 'anchor' });
+    });
+    linksRef.current = links;
+
+    const nodesArray = Array.from(map.values());
+    sim.nodes(nodesArray);
+    sim.force(
+      'link',
+      forceLink<SimNode, SimLink>(links)
+        .id((d) => d.id)
+        .distance((l) => (l.kind === 'member' ? 80 : 220))
+        .strength((l) => (l.kind === 'member' ? 0.6 : 0.15))
+    );
+
+    sim.alpha(wasEmpty ? 1 : 0.35).restart();
+    setHostCount(nodesArray.filter((n) => !n.isSynthetic).length);
   }, [liveHosts, expandedClusters]);
 
-  const getNodeColor = (node: NetworkNode) => {
+  const getNodeColor = (node: SimNode) => {
     if (node.isCluster) return '#64748b';
 
-    const host = node.host!;
+    const host = node.host;
+    if (!host) return '#8b5cf6'; // synthetic subnet hub with no real gateway host
     if (host.status === 'down') return '#6b7280';
 
     const vulnCount = host.vulnerability_count || 0;
@@ -280,7 +388,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     return '#dc2626';
   };
 
-  const drawNodeShape = (ctx: CanvasRenderingContext2D, node: NetworkNode, isSelected: boolean) => {
+  const drawNodeShape = (ctx: CanvasRenderingContext2D, node: SimNode, isSelected: boolean) => {
     const size = node.isCluster ? (isSelected ? 18 : 14) : (isSelected ? 12 : 8);
     const color = getNodeColor(node);
 
@@ -330,83 +438,41 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     }
   };
 
-  const findHub = (subnetNodes: NetworkNode[]): NetworkNode | null => {
-    const gateway = subnetNodes.find((n) => n.role === 'gateway' && !n.isCluster);
-    if (gateway) return gateway;
-
-    if (subnetNodes.length === 0) return null;
-
-    const avgX = subnetNodes.reduce((sum, n) => sum + n.x, 0) / subnetNodes.length;
-    const avgY = subnetNodes.reduce((sum, n) => sum + n.y, 0) / subnetNodes.length;
-    return {
-      ...subnetNodes[0],
-      x: avgX,
-      y: avgY,
-      id: `${subnetNodes[0].subnet}-hub`,
-      isCluster: false,
-      role: 'gateway',
-    };
-  };
-
   const drawNetwork = () => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx) return;
 
+    const rect = canvas.getBoundingClientRect();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.save();
-    ctx.translate(offset.x, offset.y);
-    ctx.scale(scale, scale);
+    ctx.translate(offsetRef.current.x, offsetRef.current.y);
+    ctx.scale(scaleRef.current, scaleRef.current);
 
-    const subnets = new Map<string, NetworkNode[]>();
-    nodes.forEach((node) => {
-      if (!subnets.has(node.subnet)) subnets.set(node.subnet, []);
-      subnets.get(node.subnet)!.push(node);
+    // Links: source/target were id strings when handed to forceLink, which
+    // resolves and mutates them in place to the actual node objects — so by
+    // the time ticks are firing, d.source.x/.y are always current.
+    ctx.lineWidth = 1;
+    linksRef.current.forEach((link) => {
+      const s = link.source as SimNode;
+      const t = link.target as SimNode;
+      if (typeof s === 'string' || typeof t === 'string') return; // not yet resolved
+      ctx.strokeStyle = link.kind === 'anchor' ? '#8b5cf6' : '#374151';
+      ctx.globalAlpha = link.kind === 'anchor' ? 0.25 : 0.35;
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(t.x, t.y);
+      ctx.stroke();
     });
-
-    subnets.forEach((subnetNodes) => {
-      const hub = findHub(subnetNodes);
-      if (!hub) return;
-
-      ctx.strokeStyle = '#374151';
-      ctx.lineWidth = 1;
-      ctx.globalAlpha = 0.35;
-
-      subnetNodes.forEach((node) => {
-        if (node.id === hub.id) return;
-        ctx.beginPath();
-        ctx.moveTo(hub.x, hub.y);
-        ctx.lineTo(node.x, node.y);
-        ctx.stroke();
-      });
-    });
-
-    const gateways = nodes.filter((n) => n.role === 'gateway' && !n.isCluster);
-    if (gateways.length > 1) {
-      ctx.strokeStyle = '#8b5cf6';
-      ctx.lineWidth = 2;
-      ctx.globalAlpha = 0.3;
-      for (let i = 0; i < gateways.length; i++) {
-        for (let j = i + 1; j < gateways.length; j++) {
-          if (gateways[i].subnet !== gateways[j].subnet) {
-            ctx.beginPath();
-            ctx.moveTo(gateways[i].x, gateways[i].y);
-            ctx.lineTo(gateways[j].x, gateways[j].y);
-            ctx.stroke();
-          }
-        }
-      }
-    }
 
     ctx.globalAlpha = 1;
 
-    nodes.forEach((node) => {
-      const isSelected = node.isCluster
-        ? false
-        : node.host?.ip === selectedHostIp;
+    nodeMapRef.current.forEach((node) => {
+      if (node.isSynthetic) return;
+      const isSelected = node.isCluster ? false : node.host?.ip === selectedHostIp;
       drawNodeShape(ctx, node, isSelected);
 
-      if (showLabels && scale > 0.4) {
+      if (showLabels && scaleRef.current > 0.4) {
         ctx.fillStyle = '#f9fafb';
         ctx.font = node.isCluster ? '11px monospace' : '10px monospace';
         ctx.textAlign = 'center';
@@ -432,9 +498,25 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     });
 
     ctx.restore();
+    void rect; // keep for future resize-aware drawing without re-triggering lint
   };
 
-  const handleNodeClick = (node: NetworkNode) => {
+  // Coalesce ticks (and prop-driven redraws) into at most one canvas paint
+  // per animation frame.
+  function scheduleDraw() {
+    if (rafRef.current) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      drawNetwork();
+    });
+  }
+
+  useEffect(() => {
+    scheduleDraw();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scale, offset, selectedHostIp, showLabels, showServices, hostCount]);
+
+  const handleNodeClick = (node: SimNode) => {
     if (node.isCluster) {
       setExpandedClusters((prev) => new Set([...prev, node.id]));
       return;
@@ -444,16 +526,38 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     }
   };
 
+  const getNodeAt = (x: number, y: number): SimNode | null => {
+    const transformedX = (x - offsetRef.current.x) / scaleRef.current;
+    const transformedY = (y - offsetRef.current.y) / scaleRef.current;
+
+    let found: SimNode | null = null;
+    nodeMapRef.current.forEach((node) => {
+      if (found || node.isSynthetic) return;
+      const hitRadius = node.isCluster ? 16 : 12;
+      const distance = Math.hypot(transformedX - node.x, transformedY - node.y);
+      if (distance <= hitRadius) found = node;
+    });
+    return found;
+  };
+
   const handleMouseDown = (e: React.MouseEvent) => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
 
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+    mouseDownPosRef.current = { x: e.clientX, y: e.clientY };
     const clickedNode = getNodeAt(x, y);
 
     if (clickedNode) {
-      handleNodeClick(clickedNode);
+      if (clickedNode.isCluster) {
+        handleNodeClick(clickedNode);
+        return;
+      }
+      draggedNodeRef.current = clickedNode;
+      clickedNode.fx = clickedNode.x;
+      clickedNode.fy = clickedNode.y;
+      simulationRef.current?.alphaTarget(0.3).restart();
       return;
     }
 
@@ -462,11 +566,37 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (draggedNodeRef.current && rect) {
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      draggedNodeRef.current.fx = (x - offsetRef.current.x) / scaleRef.current;
+      draggedNodeRef.current.fy = (y - offsetRef.current.y) / scaleRef.current;
+      scheduleDraw();
+      return;
+    }
     if (!isDragging) return;
     setOffset({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
   };
 
-  const handleMouseUp = () => setIsDragging(false);
+  const handleMouseUp = (e: React.MouseEvent) => {
+    const dragged = draggedNodeRef.current;
+    if (dragged) {
+      const moved = Math.hypot(
+        e.clientX - mouseDownPosRef.current.x,
+        e.clientY - mouseDownPosRef.current.y
+      );
+      dragged.fx = null;
+      dragged.fy = null;
+      simulationRef.current?.alphaTarget(0);
+      draggedNodeRef.current = null;
+      if (moved < 5 && dragged.host) {
+        onHostSelect(dragged.host);
+      }
+      return;
+    }
+    setIsDragging(false);
+  };
 
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
@@ -474,31 +604,15 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     setScale((prev) => Math.max(0.1, Math.min(3, prev * delta)));
   };
 
-  const getNodeAt = (x: number, y: number): NetworkNode | null => {
-    const transformedX = (x - offset.x) / scale;
-    const transformedY = (y - offset.y) / scale;
-
-    return nodes.find((node) => {
-      const hitRadius = node.isCluster ? 16 : 12;
-      const distance = Math.sqrt(
-        (transformedX - node.x) ** 2 + (transformedY - node.y) ** 2,
-      );
-      return distance <= hitRadius;
-    }) || null;
-  };
-
   const resetView = () => {
     setScale(1);
     setOffset({ x: 0, y: 0 });
     setExpandedClusters(new Set());
+    simulationRef.current?.alpha(0.6).restart();
   };
 
   const zoomIn = () => setScale((prev) => Math.min(3, prev * 1.2));
   const zoomOut = () => setScale((prev) => Math.max(0.1, prev / 1.2));
-
-  useEffect(() => {
-    drawNetwork();
-  }, [nodes, scale, offset, selectedHostIp, showLabels, showServices]);
 
   return (
     <div className="bg-gray-900 rounded-lg border border-gray-700 flex flex-col h-full">
@@ -543,6 +657,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
           onWheel={handleWheel}
         />
 
@@ -586,6 +701,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
                   <span className="text-gray-300">Cluster (click)</span>
                 </div>
               </div>
+              <div className="text-xs text-gray-500">Drag a node to pin it; drop to release.</div>
             </div>
           )}
         </div>

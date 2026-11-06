@@ -101,7 +101,10 @@ const useAppStore = create<AppState & AppActions>((set) => {
     await listen('obs:progress', (event: any) => {
       const progressData = event.payload;
       set(state => ({
-        liveOutput: [...state.liveOutput, progressData.message]
+        // Cap like recentHosts/recentServices — an unbounded array here means
+        // every single event does an O(n) spread + re-render of the whole
+        // live-output list, which compounds into a UI stall on large scans.
+        liveOutput: [...state.liveOutput.slice(-499), progressData.message]
       }));
     });
 
@@ -410,9 +413,13 @@ const useAppStore = create<AppState & AppActions>((set) => {
                       }));
                       nmapPlan.targets = aliveIps.join(' ');
                     }
-                    // Always add -Pn: hosts are confirmed alive by Phase 1 ARP scan,
-                    // no need to re-discover them in Phase 3.
-                    if (!nmapPlan.extra.includes('-Pn')) {
+                    // Add -Pn only when a prior phase actually confirmed live hosts.
+                    // -Pn skips nmap's own host discovery and makes it report
+                    // "Host is up" unconditionally — if both discovery phases found
+                    // nothing (aliveIps empty), forcing -Pn here made nmap mark every
+                    // host in the original, unconfirmed target range as "up" with no
+                    // evidence. Let nmap do its own discovery in that fallback case.
+                    if (aliveIps.length > 0 && !nmapPlan.extra.includes('-Pn')) {
                       nmapPlan.extra = [...nmapPlan.extra, '-Pn'];
                     }
                   }

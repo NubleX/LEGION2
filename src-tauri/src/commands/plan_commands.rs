@@ -385,7 +385,11 @@ pub async fn create_massmap_plan(
             // -sV: service version detection for device type hints
             // --version-intensity 2: fast probing (default is 7)
             // --host-timeout 30s: cap per-host time so one slow host can't stall the scan
-            // -Pn: skip host discovery (masscan already confirmed alive hosts)
+            // -Pn only when masscan ran: it skips host discovery and makes nmap report
+            // "Host is up" unconditionally for every target, which is only true evidence
+            // if an earlier phase (ARP discovery / masscan) actually confirmed it — added
+            // below, gated on use_masscan, same as the comprehensive branch. Without that
+            // gate every host in a single-phase quick scan showed as "up" with no evidence.
             // No -O: OS detection is slow; MAC vendor from ARP covers topology needs
             let args = vec![
                 "-sT".to_string(),
@@ -393,14 +397,17 @@ pub async fn create_massmap_plan(
                 "--version-intensity".to_string(), "2".to_string(),
                 "-T4".to_string(),
                 "--host-timeout".to_string(), "30s".to_string(),
-                "-Pn".to_string(),
             ];
-            Plan::nmap(scan_id, targets, nmap_ports, args)
+            let mut plan = Plan::nmap(scan_id, targets, nmap_ports, args)
                 .with_nse_scripts(vec![
                     "banner".to_string(),
                     "http-title".to_string(),
                     "ssh-hostkey".to_string(),
-                ])
+                ]);
+            if use_masscan {
+                plan = plan.with_extra_args(vec!["-Pn".to_string()]);
+            }
+            plan
         }
         "comprehensive" => {
             let mut plan = Plan::comprehensive(scan_id, targets, nmap_ports);

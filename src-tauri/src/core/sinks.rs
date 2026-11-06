@@ -1,5 +1,6 @@
 ﻿use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -8,6 +9,14 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
+
+/// Minimum spacing between `obs:progress` IPC emits. A fast nmap/masscan run
+/// against a large range can produce thousands of per-port lines in under a
+/// second; emitting each individually floods the webview's main loop and
+/// the whole app locks up (CPU pegged, UI unresponsive) rather than erroring
+/// — see LEGION2 issue "scan stalls on /24 ranges". Dropped messages are
+/// summarized into the next emitted one instead of silently vanishing.
+const PROGRESS_MIN_INTERVAL: Duration = Duration::from_millis(50);
 use crate::analysis::vulnerability::VulnerabilityEngine;
 use crate::shared::traits::Sink;
 use crate::database::Db;
@@ -136,6 +145,14 @@ pub struct UiSink {
     metrics: SinkMetrics,
     analysis_engine: Option<Arc<crate::analysis::AnalysisEngine>>,
     discovery_manager: Option<Arc<crate::core::discovery_manager::DiscoveryManager>>,
+    progress_throttle: Arc<Mutex<ProgressThrottle>>,
+}
+
+/// Tracks when `obs:progress` was last actually emitted and how many
+/// messages were coalesced since then.
+struct ProgressThrottle {
+    last_emit: Instant,
+    dropped: u64,
 }
 
 impl UiSink {
@@ -147,6 +164,10 @@ impl UiSink {
             metrics: SinkMetrics::new(),
             analysis_engine: None,
             discovery_manager: None,
+            progress_throttle: Arc::new(Mutex::new(ProgressThrottle {
+                last_emit: Instant::now() - PROGRESS_MIN_INTERVAL,
+                dropped: 0,
+            })),
         }
     }
     
@@ -249,13 +270,51 @@ impl UiSink {
 
     /// Emit a progress event
     async fn emit_progress(&self, message: &str, percentage: Option<f32>) -> Result<()> {
+        // Coalesce bursts (e.g. per-port nmap/masscan lines on a large range)
+        // into a bounded rate so the IPC channel and webview never see more
+        // than ~20 obs:progress events/sec, no matter how fast the scanner
+        // produces them.
+        //
+        // Each dropped message describes a DIFFERENT host/port, not a repeat
+        // of the same line — so a dropped count can never be folded into the
+        // next message's text without lying about what that message means
+        // ("Nmap scan report for 1.2.3.4 (+7 more)" reads as "7 more of this
+        // host" when it actually means "7 unrelated lines were dropped
+        // before this one got through"). Emit the drop count as its own,
+        // separately-labeled event instead, and always pass the real
+        // message through unmodified.
+        let dropped = {
+            let mut throttle = self.progress_throttle.lock().await;
+            let elapsed = throttle.last_emit.elapsed();
+            if elapsed < PROGRESS_MIN_INTERVAL {
+                throttle.dropped += 1;
+                return Ok(());
+            }
+            let dropped = throttle.dropped;
+            throttle.last_emit = Instant::now();
+            throttle.dropped = 0;
+            dropped
+        };
+
+        if dropped > 0 {
+            let notice = ProgressEvent {
+                message: format!("… {} earlier update(s) skipped to keep up …", dropped),
+                percentage: None,
+                timestamp: Utc::now().to_rfc3339(),
+            };
+            if let Err(e) = self.app.emit("obs:progress", &notice) {
+                log::error!("Failed to emit obs:progress skip-notice: {}", e);
+                self.metrics.increment_errors().await;
+            }
+        }
+
         let progress_event = ProgressEvent {
             message: message.to_string(),
             percentage,
             timestamp: Utc::now().to_rfc3339(),
         };
 
-        log::info!("Emitting obs:progress event: {}", progress_event.message);
+        log::debug!("Emitting obs:progress event: {}", progress_event.message);
         if let Err(e) = self.app.emit("obs:progress", &progress_event) {
             log::error!("Failed to emit obs:progress event: {}", e);
             self.metrics.increment_errors().await;

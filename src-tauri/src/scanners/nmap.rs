@@ -9,7 +9,9 @@ use crate::shared::traits::Source;
 use crate::utils::parsing::NmapParser;
 use crate::utils::xml_parser::XmlParser;
 use crate::shared::scan_types::OSDetection;
-use crate::os::{get_nmap_binary_path};
+use crate::os::get_nmap_binary_path;
+#[cfg(target_os = "linux")]
+use crate::os::{binary_has_raw_caps, resolve_absolute_path};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -115,16 +117,43 @@ impl NmapScanner {
         Err("No suitable local network interface found".to_string())
     }
 
+    /// Pick nmap's privilege flag. Linux only: other platforms use nmap's own detection.
+    #[cfg(target_os = "linux")]
+    async fn privilege_flag(nmap_path: &std::path::PathBuf, plan: &Plan) -> Option<&'static str> {
+        if Self::is_running_as_root() {
+            return None;
+        }
+        let has_raw = match resolve_absolute_path(nmap_path.clone()).await {
+            Some(abs) => binary_has_raw_caps(&abs).await.unwrap_or(false),
+            None => false,
+        };
+        if has_raw {
+            return Some("--privileged");
+        }
+        if Self::needs_root_privileges(plan) {
+            log::info!("nmap: no cap_net_raw and not root - falling back to unprivileged scan. Use Fix Permissions for SYN/ARP/OS scans.");
+        }
+        Some("--unprivileged")
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn privilege_flag(_nmap_path: &std::path::PathBuf, _plan: &Plan) -> Option<&'static str> {
+        None
+    }
+
     async fn build_nmap_command(&self, plan: &Plan) -> (Command, String) {
         let nmap_path = get_nmap_binary_path();
 
-        // Run nmap directly — privileged access is handled via cap_net_raw (set by Fix Permissions).
-        // If caps are not set and not running as root, nmap gracefully falls back to TCP connect scan.
-        if Self::needs_root_privileges(plan) && !Self::is_running_as_root() {
-            log::info!("nmap: running without root — cap_net_raw required for SYN/ARP scans. Use Fix Permissions if scanning fails.");
-        }
+        // nmap decides "privileged" from euid == 0, not from file capabilities. With only
+        // cap_net_raw set it aborts raw scans ("requires root privileges") unless told via
+        // --privileged. Without the capability, --unprivileged makes it fall back to a
+        // TCP connect scan instead of quitting.
+        let privilege_flag = Self::privilege_flag(&nmap_path, plan).await;
 
         let mut cmd = Command::new(&nmap_path);
+        if let Some(flag) = privilege_flag {
+            cmd.arg(flag);
+        }
 
         // Add extra arguments from plan first (these contain scan type flags like -T4, -F, etc.)
         for arg in &plan.extra {
