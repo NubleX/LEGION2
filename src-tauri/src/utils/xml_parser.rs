@@ -175,14 +175,47 @@ impl XmlParser {
         let mut fields = Map::new();
         let mut primary_ip = String::new();
 
-        // Parse host status
-        if let Some(status_node) = host_node
+        // Parse host status with evidence. nmap's `-Pn` forces EVERY target to
+        // status="up" with reason="user-set" — that is not evidence the host is
+        // alive, just that discovery was skipped. Trusting it filled the results
+        // with phantom "live" hosts that have no open ports. Only treat a host as
+        // up when nmap gives a real reason (an actual probe response) or the host
+        // genuinely has an open port; otherwise demote to "down" so the DbSink/
+        // UiSink (which only keep status=="up") drop it instead of showing it as
+        // live. A real "up" from the discovery phase is never downgraded, because
+        // "down" hosts are skipped by the sinks rather than upserted.
+        let status_node = host_node
             .children()
-            .find(|n| n.tag_name().name() == "status")
-        {
-            if let Some(status) = status_node.attribute("state") {
-                fields.insert("status".to_string(), status.into());
-            }
+            .find(|n| n.tag_name().name() == "status");
+        let raw_status = status_node
+            .and_then(|n| n.attribute("state"))
+            .unwrap_or("unknown");
+        let status_reason = status_node
+            .and_then(|n| n.attribute("reason"))
+            .unwrap_or("");
+
+        let has_open_port = host_node
+            .descendants()
+            .filter(|n| n.tag_name().name() == "port")
+            .any(|p| {
+                p.children()
+                    .find(|c| c.tag_name().name() == "state")
+                    .and_then(|s| s.attribute("state"))
+                    .map(|st| st == "open")
+                    .unwrap_or(false)
+            });
+
+        // Any non-empty reason other than "user-set" (the -Pn marker) is a real
+        // response: echo-reply, arp-response, syn-ack, reset, timestamp-reply, ...
+        let reason_is_real = !status_reason.is_empty() && status_reason != "user-set";
+        let effective_status = if raw_status == "up" && !reason_is_real && !has_open_port {
+            "down"
+        } else {
+            raw_status
+        };
+        fields.insert("status".to_string(), effective_status.into());
+        if !status_reason.is_empty() {
+            fields.insert("status_reason".to_string(), status_reason.into());
         }
 
         // Parse addresses (IPv4, IPv6, MAC) - based on legacy Host.rs

@@ -155,8 +155,14 @@ impl NmapScanner {
             cmd.arg(flag);
         }
 
-        // Add extra arguments from plan first (these contain scan type flags like -T4, -F, etc.)
+        // Add extra arguments from plan first (these contain scan type flags like -T4, -F, etc.).
+        // Skip any privilege flag here: privilege_flag() above already chose
+        // --privileged/--unprivileged, so letting it through again produced the
+        // "--privileged --privileged" seen in the nmap command line.
         for arg in &plan.extra {
+            if arg == "--privileged" || arg == "--unprivileged" {
+                continue;
+            }
             cmd.arg(arg);
         }
 
