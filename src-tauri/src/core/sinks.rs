@@ -17,6 +17,10 @@ use tokio::time::{interval, Duration};
 /// — see LEGION2 issue "scan stalls on /24 ranges". Dropped messages are
 /// summarized into the next emitted one instead of silently vanishing.
 const PROGRESS_MIN_INTERVAL: Duration = Duration::from_millis(50);
+/// Hard cap on how many lines a single batch may carry. If a burst fills the
+/// buffer faster than the interval timer flushes it, flush early at this size
+/// so one IPC payload never grows unbounded. No line is dropped either way.
+const PROGRESS_MAX_BATCH: usize = 400;
 use crate::analysis::vulnerability::VulnerabilityEngine;
 use crate::shared::traits::Sink;
 use crate::database::Db;
@@ -148,11 +152,11 @@ pub struct UiSink {
     progress_throttle: Arc<Mutex<ProgressThrottle>>,
 }
 
-/// Tracks when `obs:progress` was last actually emitted and how many
-/// messages were coalesced since then.
+/// Buffers scanner progress lines between flushes. Lines are coalesced into
+/// batches (never dropped); `last_emit` tracks when the last batch went out.
 struct ProgressThrottle {
     last_emit: Instant,
-    dropped: u64,
+    buffer: Vec<ProgressEvent>,
 }
 
 impl UiSink {
@@ -166,7 +170,7 @@ impl UiSink {
             discovery_manager: None,
             progress_throttle: Arc::new(Mutex::new(ProgressThrottle {
                 last_emit: Instant::now() - PROGRESS_MIN_INTERVAL,
-                dropped: 0,
+                buffer: Vec::new(),
             })),
         }
     }
@@ -271,57 +275,53 @@ impl UiSink {
     /// Emit a progress event
     async fn emit_progress(&self, message: &str, percentage: Option<f32>) -> Result<()> {
         // Coalesce bursts (e.g. per-port nmap/masscan lines on a large range)
-        // into a bounded rate so the IPC channel and webview never see more
-        // than ~20 obs:progress events/sec, no matter how fast the scanner
-        // produces them.
-        //
-        // Each dropped message describes a DIFFERENT host/port, not a repeat
-        // of the same line — so a dropped count can never be folded into the
-        // next message's text without lying about what that message means
-        // ("Nmap scan report for 1.2.3.4 (+7 more)" reads as "7 more of this
-        // host" when it actually means "7 unrelated lines were dropped
-        // before this one got through"). Emit the drop count as its own,
-        // separately-labeled event instead, and always pass the real
-        // message through unmodified.
-        let dropped = {
+        // WITHOUT dropping any line. Each line is distinct information (a
+        // different host or port), so instead of discarding lines and emitting
+        // a "N skipped" notice, buffer them and flush the whole buffer as one
+        // `obs:progress_batch` event. A flush happens when the min interval has
+        // elapsed (so sparse output goes out immediately) or when the buffer
+        // reaches PROGRESS_MAX_BATCH (so a flood can't grow one payload without
+        // bound). Either way every line is delivered, in order.
+        let batch = {
             let mut throttle = self.progress_throttle.lock().await;
+            throttle.buffer.push(ProgressEvent {
+                message: message.to_string(),
+                percentage,
+                timestamp: Utc::now().to_rfc3339(),
+            });
+
             let elapsed = throttle.last_emit.elapsed();
-            if elapsed < PROGRESS_MIN_INTERVAL {
-                throttle.dropped += 1;
+            if elapsed < PROGRESS_MIN_INTERVAL && throttle.buffer.len() < PROGRESS_MAX_BATCH {
                 return Ok(());
             }
-            let dropped = throttle.dropped;
             throttle.last_emit = Instant::now();
-            throttle.dropped = 0;
-            dropped
+            std::mem::take(&mut throttle.buffer)
         };
 
-        if dropped > 0 {
-            let notice = ProgressEvent {
-                message: format!("… {} earlier update(s) skipped to keep up …", dropped),
-                percentage: None,
-                timestamp: Utc::now().to_rfc3339(),
-            };
-            if let Err(e) = self.app.emit("obs:progress", &notice) {
-                log::error!("Failed to emit obs:progress skip-notice: {}", e);
-                self.metrics.increment_errors().await;
-            }
+        self.emit_progress_batch(batch).await
+    }
+
+    /// Emit a coalesced batch of progress lines as a single IPC event.
+    async fn emit_progress_batch(&self, batch: Vec<ProgressEvent>) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
         }
-
-        let progress_event = ProgressEvent {
-            message: message.to_string(),
-            percentage,
-            timestamp: Utc::now().to_rfc3339(),
-        };
-
-        log::debug!("Emitting obs:progress event: {}", progress_event.message);
-        if let Err(e) = self.app.emit("obs:progress", &progress_event) {
-            log::error!("Failed to emit obs:progress event: {}", e);
+        if let Err(e) = self.app.emit("obs:progress_batch", &batch) {
+            log::error!("Failed to emit obs:progress_batch event: {}", e);
             self.metrics.increment_errors().await;
-        } else {
-            log::debug!("Successfully emitted obs:progress event");
         }
         Ok(())
+    }
+
+    /// Flush any buffered progress lines immediately. Called at scan completion
+    /// so the tail of the output is never left sitting in the buffer.
+    async fn flush_progress(&self) -> Result<()> {
+        let batch = {
+            let mut throttle = self.progress_throttle.lock().await;
+            throttle.last_emit = Instant::now();
+            std::mem::take(&mut throttle.buffer)
+        };
+        self.emit_progress_batch(batch).await
     }
 
     /// Emit an error event
@@ -340,6 +340,10 @@ impl UiSink {
 
     /// Emit completion event with final metrics
     async fn emit_completion(&self) -> Result<()> {
+        // Flush any progress lines still buffered so the tail of the scan
+        // output reaches the UI before the done event.
+        let _ = self.flush_progress().await;
+
         // Emit final metrics before completion
         let final_metrics = self.metrics.get_metrics().await;
         if let Err(e) = self.app.emit("obs:metrics", &final_metrics) {

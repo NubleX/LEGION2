@@ -12,7 +12,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "4.1.12",
     "@tauri-apps/api": "^2.10.1",
-    "@tauri-apps/cli": "^2.10.1",
+    "@tauri-apps/cli": "^2.11.4",
     "@types/d3-force": "^3.0.10",
     "@types/node": "24.10.0",
     "@types/react": "19.1.10",
@@ -35,5 +35,5 @@
     "tauri:dev": "tauri dev"
   },
   "type": "module",
-  "version": "0.4.0"
+  "version": "0.4.1"
 }

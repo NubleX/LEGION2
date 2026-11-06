@@ -54,7 +54,7 @@ interface SimLink {
 const CLUSTER_THRESHOLD = 20;
 const CENTER_ANCHOR_ID = '__center__';
 
-const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHostIp }) => {
+const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHostIp, className }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [liveHosts, setLiveHosts] = useState<Host[]>(hosts);
   const [scale, setScale] = useState(1);
@@ -99,8 +99,15 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     listen<Host>('obs:host', (event) => {
       const host = event.payload;
       setLiveHosts((prev) => {
-        if (prev.find((h) => h.ip === host.ip)) return prev;
-        return [...prev, host];
+        const idx = prev.findIndex((h) => h.ip === host.ip);
+        if (idx === -1) return [...prev, host];
+        // Merge updated fields (status, port_count, vuln counts) into the
+        // existing host instead of dropping the event — otherwise a host
+        // discovered early never reflects later port/service/vuln changes
+        // on the map.
+        const next = prev.slice();
+        next[idx] = { ...next[idx], ...host };
+        return next;
       });
     }).then((f) => (unlistenHost = f));
 
@@ -245,28 +252,46 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Size the canvas to its container and keep it sized. The old version ran
+  // this once on mount; because the Topology tab is hidden at mount, the rect
+  // was 0x0 and the canvas stayed 0x0 forever (nothing ever drew). A
+  // ResizeObserver re-applies sizing whenever the element gains or changes
+  // size — including the first time the tab becomes visible — which heals the
+  // 0x0 case and handles window resizes.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    const ctx = canvas.getContext('2d');
-    ctx?.scale(dpr, dpr);
-    canvas.style.width = rect.width + 'px';
-    canvas.style.height = rect.height + 'px';
+    const applySize = () => {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      const ctx = canvas.getContext('2d');
+      // setTransform (not scale) so repeated resizes don't compound the dpr.
+      ctx?.setTransform(dpr, 0, 0, dpr, 0, 0);
+      canvas.style.width = rect.width + 'px';
+      canvas.style.height = rect.height + 'px';
 
-    const sim = simulationRef.current;
-    if (sim) {
-      sim.force('center', forceCenter(rect.width / 2, rect.height / 2));
-      const center = nodeMapRef.current.get(CENTER_ANCHOR_ID);
-      if (center) {
-        center.fx = rect.width / 2;
-        center.fy = rect.height / 2;
+      const sim = simulationRef.current;
+      if (sim) {
+        sim.force('center', forceCenter(rect.width / 2, rect.height / 2));
+        const center = nodeMapRef.current.get(CENTER_ANCHOR_ID);
+        if (center) {
+          center.fx = rect.width / 2;
+          center.fy = rect.height / 2;
+        }
+        sim.alpha(Math.max(sim.alpha(), 0.2)).restart();
       }
-    }
+      scheduleDraw();
+    };
+
+    applySize();
+    const ro = new ResizeObserver(applySize);
+    ro.observe(canvas);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Structural sync: add/remove/relabel nodes without disturbing the
@@ -501,13 +526,20 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
     void rect; // keep for future resize-aware drawing without re-triggering lint
   };
 
+  // The simulation's 'tick' handler is registered once and would otherwise
+  // capture the first render's drawNetwork (with its stale showLabels /
+  // showServices / selectedHostIp). Route every paint through a ref that is
+  // refreshed each render so ticks always run the latest draw.
+  const drawRef = useRef(drawNetwork);
+  drawRef.current = drawNetwork;
+
   // Coalesce ticks (and prop-driven redraws) into at most one canvas paint
   // per animation frame.
   function scheduleDraw() {
     if (rafRef.current) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
-      drawNetwork();
+      drawRef.current();
     });
   }
 
@@ -615,7 +647,7 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ hosts, onHostSelect, selectedHo
   const zoomOut = () => setScale((prev) => Math.max(0.1, prev / 1.2));
 
   return (
-    <div className="bg-gray-900 rounded-lg border border-gray-700 flex flex-col h-full">
+    <div className={`bg-gray-900 rounded-lg border border-gray-700 flex flex-col h-full ${className ?? ''}`}>
       <div className="p-2 border-b border-gray-700">
         <div className="flex items-center justify-start">
           <div className="flex items-center gap-2">

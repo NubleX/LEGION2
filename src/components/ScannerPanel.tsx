@@ -160,30 +160,34 @@ const EnhancedScannerPanel = () => {
     };
   }, [scanInProgress]);
 
-  // Auto-scroll terminal to bottom when new output arrives
-  // TEMPORARILY DISABLED - testing if this causes re-render loops
-  // useEffect(() => {
-  //   if (terminalRef.current) {
-  //     // Use requestAnimationFrame to ensure DOM updates are complete
-  //     requestAnimationFrame(() => {
-  //       if (terminalRef.current) {
-  //         terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-  //       }
-  //     });
-  //   }
-  // }, [liveOutput]);
+  // Auto-scroll the terminal to the bottom when new output arrives, but only
+  // if the user is already near the bottom. This way streaming output keeps
+  // following live, yet scrolling up to read earlier lines is not yanked back
+  // down on every batch. Reading scrollTop/scrollHeight here is a measurement,
+  // not a state write, so it cannot cause a re-render loop.
+  useEffect(() => {
+    const el = terminalRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < 80) {
+      requestAnimationFrame(() => {
+        if (terminalRef.current) {
+          terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+        }
+      });
+    }
+  }, [liveOutput]);
 
-  // Also scroll when switching to scanner tab during an active scan
-  // TEMPORARILY DISABLED - testing if this causes re-render loops
-  // useEffect(() => {
-  //   if (activeTab === 'scanner' && terminalRef.current) {
-  //     requestAnimationFrame(() => {
-  //       if (terminalRef.current) {
-  //         terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-  //       }
-  //     });
-  //   }
-  // }, [activeTab]);
+  // When switching to the scanner tab, jump to the latest output once.
+  useEffect(() => {
+    if (activeTab === 'scanner' && terminalRef.current) {
+      requestAnimationFrame(() => {
+        if (terminalRef.current) {
+          terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+        }
+      });
+    }
+  }, [activeTab]);
 
   // Hosts are provided by the host store via obs:host events
 
@@ -532,9 +536,9 @@ const EnhancedScannerPanel = () => {
                     </div>
                   ) : (
                     <div className="space-y-1">
-                      {liveOutput.map((line, index) => (
-                        <div key={index} className="text-green-400 whitespace-pre-wrap">
-                          {line}
+                      {liveOutput.map((line) => (
+                        <div key={line.id} className="text-green-400 whitespace-pre-wrap">
+                          {line.text}
                         </div>
                       ))}
                       {scanInProgress && (

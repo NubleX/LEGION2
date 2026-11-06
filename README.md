@@ -4,20 +4,31 @@
 # Advanced Network Security Scanner
 
 ![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)
-![Version](https://img.shields.io/badge/version-0.4.0-red.svg)
+![Version](https://img.shields.io/badge/version-0.4.1-red.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)
 ![Language](https://img.shields.io/badge/language-Rust%20%2B%20TypeScript-orange.svg)
 ![Status](https://img.shields.io/badge/status-beta-orange.svg)
 
-### Version: 0.4.0
+### Version: 0.4.1
 
 **A modern, high-performance network penetration testing platform built with Tauri, React, and Rust**
 
 </div>
 
-## What's New in v0.4.0
+## What's New in v0.4.1
 
-This release focuses on scan reliability, correctness, and keeping every scanner in sync with a single live database.
+This release makes the packaged builds usable and fixes the issues found during v0.4.0 beta testing:
+
+- **AppImage fixed** - resolves the missing `.DirIcon` that blocked the AppImage catalog listing (via a `tauri-bundler` upgrade).
+- **Database reliability** - scan data now lives in a stable per-user directory (`~/.local/share/legion2`) instead of next to the binary, fixing "readonly database" errors on AppImage and packaged installs. Host data is stored as plaintext for fast, queryable reporting, which ends the `DECRYPTION_ERROR` failures.
+- **Scanner capabilities** - running as root is now detected correctly, and granting capabilities covers the LEGION2 binary itself so NetSniffer's passive capture works.
+- **Clearer scan failures** - when nmap cannot complete a scan (e.g. missing privileges), its exit code and error now appear in the live output instead of failing silently.
+- **Topology and live output** - network map rendering and smooth, lossless live scan output restored.
+- **Lighter discovery** - NetSniffer active probing no longer spawns a swarm of `ping` processes.
+
+### Earlier in v0.4.0
+
+This release focused on scan reliability, correctness, and keeping every scanner in sync with a single live database.
 
 **Critical bug fixes:**
 
@@ -100,7 +111,7 @@ Broadcast Channel
 
 ## Project Status
 
-LEGION2 v0.4.0 delivers a stable, synchronized scan pipeline on Debian-based Linux. The Tauri/React/Rust architecture eliminates the GUI freezing issues that led to the original LEGION being archived.
+LEGION2 v0.4.1 delivers a stable, synchronized scan pipeline on Debian-based Linux, now with reliable packaged `.deb` and AppImage builds. The Tauri/React/Rust architecture eliminates the GUI freezing issues that led to the original LEGION being archived.
 
 **Implemented and stable:**
 
@@ -349,7 +360,8 @@ LEGION2 is licensed under the GNU General Public License v3.0, ensuring it remai
 - ✅ Unified observation bus and DB/UI synchronisity
 - ✅ Closed-port parsing correctness and XML DTD support
 - ✅ Scan phase handoff and UI stability fixes
-- 🔄 Packaged `.deb` and AppImage releases
+- ✅ Packaged `.deb` and AppImage releases (AppImage `.DirIcon` fixed)
+- ✅ Database reliability: stable per-user data dir, plaintext queryable storage
 - 🔄 Enhanced vulnerability reporting
 - 🔄 Multi-target session management
 

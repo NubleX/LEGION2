@@ -36,7 +36,7 @@ interface AppState {
   // Live data from UiSink events
   recentHosts: Array<{ ip: string; hostname?: string; timestamp: string }>;
   recentServices: Array<{ ip: string; port: number; protocol: string; timestamp: string }>;
-  liveOutput: string[];
+  liveOutput: LiveLine[];
   vulnerabilities?: Array<{
     id: string;
     host_ip: string;
@@ -80,6 +80,28 @@ interface AppActions {
   startNetsniffer: (iface?: string) => Promise<void>;
 }
 
+// A single line of live scanner output. The id is a stable, monotonically
+// increasing key: because liveOutput is a sliding, capped window (old lines
+// drop off the front), keying React rows on array index made every row's text
+// shift under a stable key as the window slid, which read as "jumpy" output.
+// Keying on this id instead keeps each line bound to its own DOM node.
+export interface LiveLine {
+  id: number;
+  text: string;
+}
+
+let liveLineSeq = 0;
+const LIVE_OUTPUT_CAP = 500;
+
+const makeLines = (texts: string[]): LiveLine[] =>
+  texts.map((text) => ({ id: liveLineSeq++, text }));
+
+// Append one or more lines and keep only the last LIVE_OUTPUT_CAP. Capping
+// here bounds the re-render cost on large scans; it is display-trimming only,
+// never source-level data loss (the backend batches losslessly).
+const appendLive = (prev: LiveLine[], texts: string[]): LiveLine[] =>
+  [...prev, ...makeLines(texts)].slice(-LIVE_OUTPUT_CAP);
+
 const useAppStore = create<AppState & AppActions>((set) => {
   // Set up backend event listeners once
   const setupEventListeners = async () => {
@@ -98,13 +120,24 @@ const useAppStore = create<AppState & AppActions>((set) => {
       }));
     });
 
+    // Single progress line (low-frequency paths, e.g. the vulnerability sink).
     await listen('obs:progress', (event: any) => {
       const progressData = event.payload;
       set(state => ({
-        // Cap like recentHosts/recentServices — an unbounded array here means
-        // every single event does an O(n) spread + re-render of the whole
-        // live-output list, which compounds into a UI stall on large scans.
-        liveOutput: [...state.liveOutput.slice(-499), progressData.message]
+        liveOutput: appendLive(state.liveOutput, [progressData.message])
+      }));
+    });
+
+    // Batched scanner output. The backend coalesces bursts of nmap/masscan
+    // lines into one event (lossless — every line is included, in order)
+    // instead of dropping lines under a throttle. Append the whole batch in a
+    // single set() so a flood costs one re-render, not one per line.
+    await listen('obs:progress_batch', (event: any) => {
+      const batch = event.payload as Array<{ message: string }>;
+      if (!batch || batch.length === 0) return;
+      const texts = batch.map((b) => b.message);
+      set(state => ({
+        liveOutput: appendLive(state.liveOutput, texts)
       }));
     });
 
@@ -116,7 +149,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
     await listen('obs:error', (event: any) => {
       const errorData = event.payload;
       set(state => ({
-        liveOutput: [...state.liveOutput, `ERROR: ${errorData.message}`]
+        liveOutput: appendLive(state.liveOutput, [`ERROR: ${errorData.message}`])
       }));
     });
 
@@ -124,7 +157,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
       const vuln = event.payload;
       const vulnMsg = `🔍 Vulnerability: ${vuln.name} on ${vuln.host_ip}:${vuln.port} (${vuln.severity})`;
       set((state) => ({
-        liveOutput: [...state.liveOutput, vulnMsg],
+        liveOutput: appendLive(state.liveOutput, [vulnMsg]),
         vulnerabilities: [...(state.vulnerabilities || []), vuln]
       }));
     });
@@ -148,7 +181,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
               activeScanIds: [],
               activeScanTargets: null,
               scanPhase: null,
-              liveOutput: [...state.liveOutput, 'Scan completed.']
+              liveOutput: appendLive(state.liveOutput, ['Scan completed.'])
             };
           }
           return state;
@@ -180,8 +213,8 @@ const useAppStore = create<AppState & AppActions>((set) => {
           activeScanIds: remainingScanIds,
           activeScanTargets: allScansDone ? null : state.activeScanTargets,
           liveOutput: allScansDone
-            ? [...state.liveOutput, 'All scans completed. Ready for new scan.']
-            : [...state.liveOutput, 'Scan phase completed. Continuing...']
+            ? appendLive(state.liveOutput, ['All scans completed. Ready for new scan.'])
+            : appendLive(state.liveOutput, ['Scan phase completed. Continuing...'])
         };
       });
     });
@@ -196,7 +229,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
       const existingHosts = await invoke<any[]>('get_all_hosts');
       if (existingHosts && existingHosts.length > 0) {
         set((state) => ({
-          liveOutput: [...state.liveOutput, `Loaded ${existingHosts.length} hosts from previous scans.`],
+          liveOutput: appendLive(state.liveOutput, [`Loaded ${existingHosts.length} hosts from previous scans.`]),
           metrics: {
             ...state.metrics,
             hosts_discovered: existingHosts.length
@@ -301,13 +334,12 @@ const useAppStore = create<AppState & AppActions>((set) => {
         scanPhase: plans.length > 0
           ? { current: 1, total: plans.length, label: initialPhaseLabel }
           : null,
-        liveOutput: [
-          ...state.liveOutput,
+        liveOutput: appendLive(state.liveOutput, [
           `Starting scan for ${targets} using ${plans.map(p => p.source_type).join(' & ')}...`,
           plans.length > 1
             ? `Massmap sequence: ${plans.length} phases (discovery → port scan → service detection).`
             : 'Single-phase scan starting.',
-        ],
+        ]),
       }));
 
       try {
@@ -351,7 +383,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
           console.log('Executing scan plan:', plan);
           set((state) => ({
             scanPhase: { current: i + 1, total: plans.length, label: phaseLabel },
-            liveOutput: [...state.liveOutput, `Starting ${phaseLabel}...`],
+            liveOutput: appendLive(state.liveOutput, [`Starting ${phaseLabel}...`]),
           }));
 
           // Set up completion listener BEFORE starting the scan (to avoid race condition)
@@ -368,14 +400,14 @@ const useAppStore = create<AppState & AppActions>((set) => {
           if (!isLastPlan && completionPromise) {
             console.log(`Waiting for ${plan.source_type} scan to complete before starting next scan...`);
             set((state) => ({
-              liveOutput: [...state.liveOutput, `Waiting for ${plan.source_type} to complete...`]
+              liveOutput: appendLive(state.liveOutput, [`Waiting for ${plan.source_type} to complete...`])
             }));
             
             try {
               await completionPromise;
               console.log(`${plan.source_type} scan completed successfully`);
               set((state) => ({
-                liveOutput: [...state.liveOutput, `${plan.source_type} scan completed. Starting next phase...`]
+                liveOutput: appendLive(state.liveOutput, [`${plan.source_type} scan completed. Starting next phase...`])
               }));
 
               // Phase handoff: after each phase, narrow the next phase's targets
@@ -389,12 +421,12 @@ const useAppStore = create<AppState & AppActions>((set) => {
                     const aliveIps = await invoke<string[]>('get_hosts_in_range', { targets });
                     if (aliveIps.length > 0) {
                       set((state) => ({
-                        liveOutput: [...state.liveOutput, `Discovery found ${aliveIps.length} alive host(s). Running masscan on discovered hosts only...`]
+                        liveOutput: appendLive(state.liveOutput, [`Discovery found ${aliveIps.length} alive host(s). Running masscan on discovered hosts only...`])
                       }));
                       plans[i + 1].targets = aliveIps.join(' ');
                     } else {
                       set((state) => ({
-                        liveOutput: [...state.liveOutput, 'Discovery found no alive hosts. Verify you are on the correct network/interface.']
+                        liveOutput: appendLive(state.liveOutput, ['Discovery found no alive hosts. Verify you are on the correct network/interface.'])
                       }));
                       // Keep original targets — masscan will confirm quickly and nmap will handle gracefully
                     }
@@ -409,7 +441,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
                     const nmapPlan = plans[i + 1];
                     if (aliveIps.length > 0) {
                       set((state) => ({
-                        liveOutput: [...state.liveOutput, `Running nmap service scan on ${aliveIps.length} alive host(s)...`]
+                        liveOutput: appendLive(state.liveOutput, [`Running nmap service scan on ${aliveIps.length} alive host(s)...`])
                       }));
                       nmapPlan.targets = aliveIps.join(' ');
                     }
@@ -430,7 +462,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
             } catch (error) {
               console.error(`Failed to wait for ${plan.source_type} completion:`, error);
               set((state) => ({
-                liveOutput: [...state.liveOutput, `Warning: ${plan.source_type} scan completion check failed, continuing anyway...`]
+                liveOutput: appendLive(state.liveOutput, [`Warning: ${plan.source_type} scan completion check failed, continuing anyway...`])
               }));
               // Continue anyway - don't block the next scan if wait fails
             }
@@ -441,7 +473,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
 
         // Don't set scanInProgress to false here - let the backend handle it via obs:done event from the last scan
         set((state) => ({
-          liveOutput: [...state.liveOutput, 'All scan plans submitted and executed.']
+          liveOutput: appendLive(state.liveOutput, ['All scan plans submitted and executed.'])
         }));
       } catch (error) {
         console.error('Scan execution failed:', error);
@@ -451,7 +483,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
           activeScanTargets: null,
           activeScanIds: [],
           scanPhase: null,
-          liveOutput: [...state.liveOutput, `ERROR: Scan failed - ${error}`]
+          liveOutput: appendLive(state.liveOutput, [`ERROR: Scan failed - ${error}`])
         }));
         useHostStore.getState().setActiveTargetRange(null);
         throw error;
@@ -469,12 +501,12 @@ const useAppStore = create<AppState & AppActions>((set) => {
           activeScanTargets: null,
           activeScanIds: [],
           scanPhase: null,
-          liveOutput: [...state.liveOutput, 'Scan cancelled by user.']
+          liveOutput: appendLive(state.liveOutput, ['Scan cancelled by user.'])
         }));
       } catch (error) {
         console.error('Failed to cancel scan:', error);
         set((state) => ({
-          liveOutput: [...state.liveOutput, 'ERROR: Failed to cancel scan.']
+          liveOutput: appendLive(state.liveOutput, ['ERROR: Failed to cancel scan.'])
         }));
       }
     },
@@ -492,7 +524,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
         activeScanIds: [],
         scanPhase: null,
         lastSessionAnalytics: null,
-        liveOutput: ['Previous scan data preserved. Ready for new scan.'],
+        liveOutput: makeLines(['Previous scan data preserved. Ready for new scan.']),
         // Keep existing data persistent:
         // recentHosts: [],
         // recentServices: [],
@@ -512,7 +544,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
         const existingHosts = await invoke<any[]>('get_all_hosts');
         if (existingHosts && existingHosts.length > 0) {
           set((state) => ({
-            liveOutput: [...state.liveOutput, `Loaded ${existingHosts.length} hosts from previous scans.`],
+            liveOutput: appendLive(state.liveOutput, [`Loaded ${existingHosts.length} hosts from previous scans.`]),
             metrics: {
               ...state.metrics,
               hosts_discovered: existingHosts.length
@@ -529,7 +561,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
       const interfaceName = iface || 'default';
 
       set((state) => ({
-        liveOutput: [...state.liveOutput, `Starting network sniffer on interface: ${interfaceName}...`]
+        liveOutput: appendLive(state.liveOutput, [`Starting network sniffer on interface: ${interfaceName}...`])
       }));
 
       try {
@@ -541,7 +573,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
         await invoke('engine_execute', { plan });
 
         set((state) => ({
-          liveOutput: [...state.liveOutput, 'Network sniffer started. Monitoring network traffic...']
+          liveOutput: appendLive(state.liveOutput, ['Network sniffer started. Monitoring network traffic...'])
         }));
       } catch (error) {
         const msg = String(error);
@@ -549,7 +581,7 @@ const useAppStore = create<AppState & AppActions>((set) => {
           ? ' — run: sudo setcap cap_net_raw+ep ./target/release/legion2 (or run with sudo)'
           : '';
         set((state) => ({
-          liveOutput: [...state.liveOutput, `ERROR: Network sniffer failed: ${msg}${hint}`]
+          liveOutput: appendLive(state.liveOutput, [`ERROR: Network sniffer failed: ${msg}${hint}`])
         }));
         // Do NOT re-throw — a re-throw here causes an unhandled promise rejection in the
         // onClick handler which triggers the Vite dev-mode error overlay (black screen).
