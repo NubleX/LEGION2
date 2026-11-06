@@ -73,12 +73,12 @@ impl CveDb {
     }
 
     pub fn get_cve_db_path() -> PathBuf {
-        // Use app data directory for CVE database
-        let app_data_dir = std::env::current_exe()
-            .unwrap_or_else(|_| std::env::current_dir().unwrap().join("legion2"))
-            .parent()
-            .unwrap()
-            .join(".legion2_data");
+        // Stable, writable per-user data dir (see main.rs::app_data_dir) - never
+        // exe-relative, which is read-only inside an AppImage.
+        let app_data_dir = dirs::data_local_dir()
+            .map(|d| d.join("legion2"))
+            .or_else(|| dirs::home_dir().map(|h| h.join(".legion2_data")))
+            .unwrap_or_else(|| PathBuf::from(".legion2_data"));
         app_data_dir.join("cve.db")
     }
 

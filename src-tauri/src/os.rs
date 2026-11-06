@@ -312,10 +312,23 @@ pub async fn set_scanner_capabilities() -> Result<String, String> {
 
     log::info!("Setting capabilities: masscan={:?} nmap={:?}", masscan, nmap);
 
+    // NetSniffer opens libpcap in-process, so the legion2 binary ITSELF needs
+    // cap_net_raw for passive capture - granting it to nmap/masscan does nothing
+    // for the sniffer. Add it best-effort (|| true): on an AppImage the binary
+    // lives on a read-only squashfs mount where setcap can't apply, and that
+    // must not fail the nmap/masscan grant that does work there.
+    let legion2_clause = std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(|p| p.to_str())
+        .map(|p| format!(" ; setcap cap_net_raw+eip '{}' || true", p))
+        .unwrap_or_default();
+
     let script = format!(
-        "setcap cap_net_raw,cap_net_admin=eip '{}' && setcap cap_net_raw+ep '{}'",
+        "setcap cap_net_raw,cap_net_admin=eip '{}' && setcap cap_net_raw+ep '{}'{}",
         masscan.display(),
-        nmap.display()
+        nmap.display(),
+        legion2_clause
     );
 
     let output = tokio::process::Command::new("pkexec")
@@ -334,9 +347,27 @@ pub async fn set_scanner_capabilities() -> Result<String, String> {
     }
 }
 
+/// True when the process runs with an effective uid of 0 (root / sudo). Child
+/// scanners then inherit the ability to open raw sockets regardless of file
+/// capabilities, so the cap_net_raw check is moot.
+#[cfg(target_os = "linux")]
+fn running_as_root() -> bool {
+    // geteuid() only reads the effective uid and has no safety preconditions.
+    unsafe { libc::geteuid() == 0 }
+}
+
 /// Check the capability status of masscan and nmap, returning a human-readable status string.
 #[cfg(target_os = "linux")]
 pub async fn check_scanner_capabilities() -> (bool, bool, String) {
+    // Running as root (e.g. `sudo legion2`) grants raw sockets to child
+    // processes outright, so file caps are irrelevant - report OK and let the
+    // UI hide the "missing capabilities" banner instead of nagging under sudo.
+    if running_as_root() {
+        let status =
+            "Running as root - raw-socket scans available (cap_net_raw not required).".to_string();
+        return (true, true, status);
+    }
+
     let masscan_path = resolve_absolute_path(get_masscan_binary_path())
         .await
         .unwrap_or_else(|| PathBuf::from("masscan"));

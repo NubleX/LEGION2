@@ -27,13 +27,16 @@ mod shared;
 mod utils;
 
 fn app_data_dir() -> std::path::PathBuf {
-    // Use app-local data directory for encrypted database
-    // Store in a hidden subdirectory within the app
-    std::env::current_exe()
-        .unwrap_or_else(|_| std::env::current_dir().unwrap().join("legion2"))
-        .parent()
-        .unwrap()
-        .join(".legion2_data")
+    // Stable, writable per-user data directory. It must NOT depend on the
+    // executable location: inside an AppImage, current_exe() points into a
+    // read-only, randomly-named squashfs mount (/tmp/.mount_*), which made the
+    // database unwritable ("attempt to write a readonly database") and changed
+    // the path every launch. Use the XDG data dir (~/.local/share/legion2),
+    // falling back to ~/.legion2_data.
+    dirs::data_local_dir()
+        .map(|d| d.join("legion2"))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".legion2_data")))
+        .unwrap_or_else(|| std::path::PathBuf::from(".legion2_data"))
 }
 
 fn open_db() -> Result<Db> {

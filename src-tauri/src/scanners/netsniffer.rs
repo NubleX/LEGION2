@@ -918,17 +918,29 @@ impl NetSnifferSource {
         Ok(())
     }
 
-    /// Send ICMP echo requests (ping)
+    /// Nudge each target so the kernel performs ARP resolution on the local
+    /// segment; the passive sniffer then learns the MAC/vendor from that ARP
+    /// exchange. This previously shelled out to one `ping` process per target
+    /// (50 processes per round, each blocking up to a second - the process
+    /// "swarm" seen in the task manager). It now sends a short native TCP
+    /// connect, which provokes the same ARP request without spawning any
+    /// process and without raw-socket privilege. The connect outcome is
+    /// irrelevant - even a refusal means the ARP exchange completed, which is
+    /// all the sniffer needs.
     fn send_icmp_pings(targets: &[Ipv4Addr]) -> Result<()> {
-        use std::process::Command;
-        
+        // Port 80 is common enough to provoke a fast accept or RST; neither the
+        // response nor its absence matters here.
+        const NUDGE_PORT: u16 = 80;
         for target in targets {
-            // Use system ping command for simplicity
-            let _ = Command::new("ping")
-                .args(&["-c", "1", "-W", "1", &target.to_string()])
-                .output();
+            let _ = std::net::TcpStream::connect_timeout(
+                &SocketAddr::new(std::net::IpAddr::V4(*target), NUDGE_PORT),
+                Duration::from_millis(120),
+            );
         }
-        log::debug!("Sent ICMP pings to {} targets", targets.len());
+        log::debug!(
+            "Nudged {} targets for ARP resolution (native connect, no ping processes)",
+            targets.len()
+        );
         Ok(())
     }
 

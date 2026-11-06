@@ -958,13 +958,14 @@ impl StealthyHostnameTransform {
         Ok(())
     }
 
-    /// Get app data directory (same logic as main.rs)
+    /// Get app data directory (same logic as main.rs). Must resolve to the same
+    /// stable, writable per-user path main.rs uses, independent of the exe
+    /// location, so this opens the very same network.db as the main process.
     fn app_data_dir() -> std::path::PathBuf {
-        std::env::current_exe()
-            .unwrap_or_else(|_| std::env::current_dir().unwrap().join("legion2"))
-            .parent()
-            .unwrap()
-            .join(".legion2_data")
+        dirs::data_local_dir()
+            .map(|d| d.join("legion2"))
+            .or_else(|| dirs::home_dir().map(|h| h.join(".legion2_data")))
+            .unwrap_or_else(|| std::path::PathBuf::from(".legion2_data"))
     }
 }
 

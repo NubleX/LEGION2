@@ -7,10 +7,6 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::Arc;
-use sha2::{Sha256, Digest};
-use hex;
-use aes_gcm::{Aes256Gcm, Key, Nonce, aead::{Aead, KeyInit}};
-use rand::Rng;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 
@@ -37,79 +33,33 @@ fn decode_tags(s: Option<String>) -> Vec<String> {
     }
 }
 
-struct EncryptionManager {
-    cipher: Aes256Gcm,
-}
-
-impl std::fmt::Debug for EncryptionManager {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EncryptionManager")
-            .field("cipher", &"<encrypted>")
-            .finish()
-    }
-}
+/// Stores scan values as-is. Per-field encryption was intentionally removed:
+///
+/// - It made every IP/host value unique (random nonce) and therefore
+///   **unindexable**, so lookups degraded to full-table scans plus a decrypt
+///   per row - the opposite of what report generation needs.
+/// - The key was derived from the executable path and volatile env vars, so an
+///   AppImage (random /tmp/.mount_* path each launch) or a sudo run produced a
+///   different key and every stored value failed to decrypt ("DECRYPTION_ERROR").
+///
+/// Scan data is now plaintext and queryable. At-rest protection, when wanted,
+/// belongs at the whole-file layer (SQLCipher) or the disk/volume layer, which
+/// is how comparable tools (runZero, Faraday) handle it - neither breaks
+/// indexing or querying.
+#[derive(Debug)]
+struct EncryptionManager;
 
 impl EncryptionManager {
     fn new() -> Self {
-        let key = Self::generate_key();
-        let cipher = Aes256Gcm::new(&key);
-        Self { cipher }
+        EncryptionManager
     }
-    
-    fn generate_key() -> Key<Aes256Gcm> {
-        // Generate a deterministic key based on system info + app constants
-        let mut hasher = <Sha256 as Digest>::new();
-        hasher.update(b"LEGION2_PENTESTING_TOOL_2025_ENCRYPTION_KEY");
-        
-        // Add system-specific entropy
-        if let Ok(hostname) = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")) {
-            hasher.update(hostname.as_bytes());
-        }
-        if let Ok(user) = std::env::var("USERNAME").or_else(|_| std::env::var("USER")) {
-            hasher.update(user.as_bytes());
-        }
-        
-        // Add current exe path for additional entropy
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(path_str) = exe.to_str() {
-                hasher.update(path_str.as_bytes());
-            }
-        }
-        
-        let hash = hasher.finalize();
-        *Key::<Aes256Gcm>::from_slice(&hash)
-    }
-    
+
     fn encrypt(&self, data: &str) -> Result<String> {
-        let mut rng = rand::rng();
-        let nonce_bytes: [u8; 12] = rng.random();
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        
-        let ciphertext = self.cipher.encrypt(nonce, data.as_bytes())
-            .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
-        
-        // Combine nonce + ciphertext and encode as hex
-        let mut result = nonce_bytes.to_vec();
-        result.extend_from_slice(&ciphertext);
-        Ok(hex::encode(result))
+        Ok(data.to_string())
     }
-    
-    fn decrypt(&self, encrypted_hex: &str) -> Result<String> {
-        let data = hex::decode(encrypted_hex)
-            .map_err(|e| anyhow::anyhow!("Invalid hex data: {}", e))?;
-        
-        if data.len() < 12 {
-            return Err(anyhow::anyhow!("Invalid encrypted data length"));
-        }
-        
-        let (nonce_bytes, ciphertext) = data.split_at(12);
-        let nonce = Nonce::from_slice(nonce_bytes);
-        
-        let plaintext = self.cipher.decrypt(nonce, ciphertext)
-            .map_err(|e| anyhow::anyhow!("Decryption failed: {}", e))?;
-        
-        String::from_utf8(plaintext)
-            .map_err(|e| anyhow::anyhow!("Invalid UTF-8 in decrypted data: {}", e))
+
+    fn decrypt(&self, stored: &str) -> Result<String> {
+        Ok(stored.to_string())
     }
 }
 

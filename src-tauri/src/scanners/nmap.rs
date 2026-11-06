@@ -307,10 +307,22 @@ impl Source for NmapScanner {
             .ok_or_else(|| anyhow!("Failed to get stderr"))?;
 
         let (stderr_tx, stderr_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        // Keep the last few stderr lines so that if nmap aborts (e.g. "requires
+        // root privileges") we can show the reason in the UI instead of only a
+        // silent XML parse failure.
+        let stderr_tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let stderr_tail_task = stderr_tail.clone();
         tokio::spawn(async move {
             let mut stderr_lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = stderr_lines.next_line().await {
                 log::debug!("[nmap stderr] {}", line);
+                if let Ok(mut t) = stderr_tail_task.lock() {
+                    t.push(line.clone());
+                    let len = t.len();
+                    if len > 20 {
+                        t.drain(0..len - 20);
+                    }
+                }
                 let _ = stderr_tx.send(line);
             }
         });
@@ -328,7 +340,12 @@ impl Source for NmapScanner {
 
         let stream = stream::unfold(
             (lines, parser, child, xml_file.clone(), false, Vec::new(), start_time, unique_hosts, ports_found, targets.clone(), stderr_rx),
-            move |(mut lines, parser, mut child, xml_file, xml_parsed, mut xml_obs_queue, start_time, mut unique_hosts, mut ports_found, targets, mut stderr_rx)| async move {
+            move |(mut lines, parser, mut child, xml_file, xml_parsed, mut xml_obs_queue, start_time, mut unique_hosts, mut ports_found, targets, mut stderr_rx)| {
+            // Clone the Arc per iteration: the inner `async move` would otherwise
+            // move the single captured stderr_tail into the first future, leaving
+            // nothing for this FnMut closure's later calls.
+            let stderr_tail = stderr_tail.clone();
+            async move {
                 // First, emit any queued XML observations
                 if let Some(queued_obs) = xml_obs_queue.pop() {
                     return Some((queued_obs, (lines, parser, child, xml_file, xml_parsed, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone(), stderr_rx)));
@@ -498,18 +515,83 @@ impl Source for NmapScanner {
                                                 ));
                                             }
                                             Err(e) => {
-                                                log::error!(
-                                                    "Failed to parse nmap XML with xml_parser: {}",
+                                                // nmap produced no parseable XML. This is almost
+                                                // always nmap aborting mid-scan: a SYN/OS scan with
+                                                // no root/cap_net_raw writes the "<nmaprun>" header
+                                                // then exits, so the XML "root node was opened but
+                                                // never closed". Surface nmap's exit code and the
+                                                // tail of its stderr to the UI instead of failing
+                                                // silently.
+                                                let tail = stderr_tail
+                                                    .lock()
+                                                    .map(|t| t.join(" | "))
+                                                    .unwrap_or_default();
+                                                let msg = format!(
+                                                    "ERROR: nmap did not complete a usable scan (exit {}). {}[xml: {}]",
+                                                    status,
+                                                    if tail.is_empty() {
+                                                        String::new()
+                                                    } else {
+                                                        format!("nmap: {} ", tail)
+                                                    },
                                                     e
                                                 );
+                                                log::error!("{}", msg);
+                                                let err_obs = Observation {
+                                                    scan_id,
+                                                    kind: ObservationKind::Metric,
+                                                    fields: {
+                                                        let mut fields = serde_json::Map::new();
+                                                        fields.insert("nmap_output".to_string(), msg.into());
+                                                        fields.insert("scan_status".to_string(), "failed".into());
+                                                        fields
+                                                    },
+                                                    ts: chrono::Utc::now(),
+                                                    key: "nmap-error".to_string(),
+                                                    raw: None,
+                                                };
+                                                return Some((
+                                                    err_obs,
+                                                    (lines, parser, child, xml_file, true, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone(), stderr_rx),
+                                                ));
                                             }
                                         }
                                     } else {
-                                        log::warn!("XML file not found: {}", xml_file);
+                                        let tail = stderr_tail
+                                            .lock()
+                                            .map(|t| t.join(" | "))
+                                            .unwrap_or_default();
+                                        let msg = format!(
+                                            "ERROR: nmap produced no output file (exit {}). {}",
+                                            status,
+                                            if tail.is_empty() {
+                                                "The scan may have been blocked by permissions or invalid arguments.".to_string()
+                                            } else {
+                                                format!("nmap: {}", tail)
+                                            }
+                                        );
+                                        log::error!("{}", msg);
+                                        let err_obs = Observation {
+                                            scan_id,
+                                            kind: ObservationKind::Metric,
+                                            fields: {
+                                                let mut fields = serde_json::Map::new();
+                                                fields.insert("nmap_output".to_string(), msg.into());
+                                                fields.insert("scan_status".to_string(), "failed".into());
+                                                fields
+                                            },
+                                            ts: chrono::Utc::now(),
+                                            key: "nmap-error".to_string(),
+                                            raw: None,
+                                        };
+                                        return Some((
+                                            err_obs,
+                                            (lines, parser, child, xml_file, true, xml_obs_queue, start_time, unique_hosts, ports_found, targets.clone(), stderr_rx),
+                                        ));
                                     }
 
                                     // Keep XML file for queue processing (don't delete it)
-                                    log::info!("XML file {} retained in .scans/ directory for queue processing", xml_file);
+                                    log::info!("XML file {} retained in temp scans dir for queue processing", xml_file);
                                 }
                             }
                             Err(e) => {
@@ -525,6 +607,7 @@ impl Source for NmapScanner {
                     }
                     } // end select! result arm match
                 } // end select!
+            } // end async move
             },
         );
 
